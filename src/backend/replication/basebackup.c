@@ -976,16 +976,6 @@ sendDir(char *path, int basepathlen, bool sizeonly, List *tablespaces,
 		}
 
 		/*
-		 * Skip pg_replslot, not useful to copy. But include it as an empty
-		 * directory anyway, so we get permissions right.
-		 */
-		if (strcmp(de->d_name, "pg_replslot") == 0)
-		{
-			size += _tarWriteDir(pathbuf, basepathlen, &statbuf, sizeonly);
-			continue;
-		}
-
-		/*
 		 * We can skip pg_xlog, the WAL segments need to be fetched from the
 		 * WAL archive anyway. But include it as an empty directory anyway, so
 		 * we get permissions right.
