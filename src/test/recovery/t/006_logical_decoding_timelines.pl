@@ -20,7 +20,7 @@ use warnings;
 
 use PostgresNode;
 use TestLib;
-use Test::More tests => 20;
+use Test::More tests => 19;
 use RecursiveCopy;
 use File::Copy;
 
@@ -32,9 +32,14 @@ $node_master->init(allows_streaming => 1, has_archiving => 1);
 $node_master->append_conf('postgresql.conf', "wal_level = 'logical'\n");
 $node_master->append_conf('postgresql.conf', "max_replication_slots = 2\n");
 $node_master->append_conf('postgresql.conf', "max_wal_senders = 2\n");
-$node_master->append_conf('postgresql.conf', "log_min_messages = 'debug2'\n");
+$node_master->append_conf('postgresql.conf', "log_min_messages = 'debug3'\n");
+$node_master->append_conf('postgresql.conf', "log_error_verbosity = verbose\n");
 $node_master->dump_info;
 $node_master->start;
+
+#---------------------------------------------------------------
+# Testing with FS-level copy
+#---------------------------------------------------------------
 
 diag "Testing logical timeline following with a filesystem-level copy";
 
@@ -64,10 +69,8 @@ $node_master->safe_psql('postgres',
 $node_master->safe_psql('postgres', 'CHECKPOINT;');
 
 # Verify that only the before base_backup slot is on the replica
-$stdout = $node_replica->safe_psql('postgres',
-	'SELECT slot_name FROM pg_replication_slots ORDER BY slot_name');
-is($stdout, 'before_basebackup',
-	'Expected to find only slot before_basebackup on replica');
+$stdout = $node_replica->safe_psql('postgres', 'SELECT slot_name FROM pg_replication_slots ORDER BY slot_name');
+is($stdout, '', 'Expected to find no slots on replica');
 
 # Boom, crash
 $node_master->stop('immediate');
@@ -89,27 +92,24 @@ like(
 	qr/replication slot "after_basebackup" does not exist/,
 	'after_basebackup slot missing');
 
-# Should be able to read from slot created before base backup
+# or before_basebackup, since pg_basebackup dropped it
 ($ret, $stdout, $stderr) = $node_replica->psql(
 	'postgres',
 "SELECT data FROM pg_logical_slot_peek_changes('before_basebackup', NULL, NULL, 'include-xids', '0', 'skip-empty-xacts', '1');",
 	timeout => 30);
-is($ret, 0, 'replay from slot before_basebackup succeeds');
-is( $stdout, q(BEGIN
-table public.decoding: INSERT: blah[text]:'beforebb'
-COMMIT
-BEGIN
-table public.decoding: INSERT: blah[text]:'afterbb'
-COMMIT
-BEGIN
-table public.decoding: INSERT: blah[text]:'after failover'
-COMMIT), 'decoded expected data from slot before_basebackup');
-is($stderr, '', 'replay from slot before_basebackup produces no stderr');
+is($ret, 3, 'replaying from beforebasebackup slot fails');
+like(
+	$stderr,
+	qr/replication slot "before_basebackup" does not exist/,
+	'before_basebackup slot missing');
 
 # We don't need the standby anymore
 $node_replica->teardown_node();
 
 
+#---------------------------------------------------------------
+# Testing with test_slot_timelines
+#---------------------------------------------------------------
 # OK, time to try the same thing again, but this time we'll be using slot
 # mirroring on the standby and a pg_basebackup of the master.
 
@@ -126,10 +126,12 @@ is( $node_master->psql(
 	'dropping slots succeeds via pg_drop_replication_slot');
 
 # Same as before, we'll make one slot before basebackup, one after. This time
-# the basebackup will be with pg_basebackup so it'll omit both slots, then
-# we'll use SQL functions provided by the test_slot_timelines test module to sync
-# them to the replica, do some work, sync them and fail over then test again.
-# This time we should have both the before- and after-basebackup slots working.
+# the basebackup will be with pg_basebackup. It'll copy the before_basebackup slot
+# but since it's a non-failover slot the server will drop it immediately.
+# We'll use SQL functions provided by the decoding_failover test module to
+# sync both slots to the replica, do some work, sync them and fail over then test
+# again. This time we should have both the before- and after-basebackup
+# slots working.
 
 is( $node_master->psql(
 		'postgres',
@@ -243,6 +245,7 @@ diag "oldest needed xlog seg is $oldest_needed_segment ";
 opendir(my $pg_xlog, $node_master->data_dir . "/pg_xlog") or die $!;
 while (my $seg = readdir $pg_xlog)
 {
+	diag "considering segment $seg against needed seg $oldest_needed_segment";
 	next unless $seg >= $oldest_needed_segment && $seg =~ /^[0-9]{24}/;
 	diag "copying xlog seg $seg";
 	copy(

@@ -24,7 +24,18 @@
  * directory. Inside that directory the state file will contain the slot's
  * own data. Additional data can be stored alongside that file if required.
  * While the server is running, the state data is also cached in memory for
- * efficiency.
+ * efficiency. Non-failover slots are NOT subject to WAL logging and may
+ * be used on standbys (though that's only supported for physical slots at
+ * the moment). They use tempfile writes and swaps for crash safety.
+ *
+ * A failover slot created on a master node generates WAL records that
+ * maintain a copy of the slot on standby nodes. If a standby node is
+ * promoted the failover slot allows access to be restarted just as if the
+ * the original master node was being accessed, allowing for the timeline
+ * change. The replica considers slot positions when removing WAL to make
+ * sure it can satisfy the needs of slots after promotion.  For logical
+ * decoding slots the slot's internal state is kept up to date so it's
+ * ready for use after promotion.
  *
  * ReplicationSlotAllocationLock must be taken in exclusive mode to allocate
  * or free a slot. ReplicationSlotControlLock must be taken in shared mode
@@ -40,9 +51,11 @@
 #include <sys/stat.h>
 
 #include "access/transam.h"
+#include "access/xlog_internal.h"
 #include "common/string.h"
 #include "miscadmin.h"
 #include "replication/slot.h"
+#include "replication/slot_xlog.h"
 #include "storage/fd.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -99,9 +112,13 @@ int			max_replication_slots = 0;	/* the maximum number of replication
 static void ReplicationSlotDropAcquired(void);
 
 /* internal persistency functions */
-static void RestoreSlotFromDisk(const char *name);
+static void RestoreSlotFromDisk(const char *name, bool drop_nonfailover_slots);
 static void CreateSlotOnDisk(ReplicationSlot *slot);
 static void SaveSlotToPath(ReplicationSlot *slot, const char *path, int elevel);
+
+/* internal redo functions */
+static void ReplicationSlotRedoCreateOrUpdate(ReplicationSlotInWAL xlrec);
+static void ReplicationSlotRedoDrop(const char * slotname);
 
 /*
  * Report shared-memory space needed by ReplicationSlotShmemInit.
@@ -211,7 +228,8 @@ ReplicationSlotValidateName(const char *name, int elevel)
  */
 void
 ReplicationSlotCreate(const char *name, bool db_specific,
-					  ReplicationSlotPersistency persistency)
+					  ReplicationSlotPersistency persistency,
+					  bool failover)
 {
 	ReplicationSlot *slot = NULL;
 	int			i;
@@ -219,6 +237,11 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 	Assert(MyReplicationSlot == NULL);
 
 	ReplicationSlotValidateName(name, ERROR);
+
+	if (failover && RecoveryInProgress())
+		ereport(ERROR,
+				(errmsg("a failover slot may not be created on a replica"),
+				 errhint("Create the slot on the master server instead")));
 
 	/*
 	 * If some other backend ran this code concurrently with us, we'd likely both
@@ -273,6 +296,7 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 	/* and then data only present in shared memory */
 	slot->just_dirtied = false;
 	slot->dirty = false;
+	slot->failover = failover;
 	slot->effective_xmin = InvalidTransactionId;
 	slot->effective_catalog_xmin = InvalidTransactionId;
 	slot->candidate_catalog_xmin = InvalidTransactionId;
@@ -318,6 +342,10 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 
 /*
  * Find a previously created slot and mark it as used by this backend.
+ *
+ * Sets active_pid and assigns MyReplicationSlot iff successfully acquired.
+ *
+ * ERRORs on an attempt to acquire a failover slot when in recovery.
  */
 void
 ReplicationSlotAcquire(const char *name)
@@ -342,7 +370,11 @@ ReplicationSlotAcquire(const char *name)
 
 			SpinLockAcquire(&s->mutex);
 			active_pid = vslot->active_pid;
-			if (active_pid == 0)
+			/*
+			 * We can only claim a slot for our use if it's not claimed
+			 * by someone else AND it isn't a failover slot on a standby.
+			 */
+			if (active_pid == 0 && !(RecoveryInProgress() && vslot->failover))
 				vslot->active_pid = MyProcPid;
 			SpinLockRelease(&s->mutex);
 			slot = s;
@@ -356,11 +388,23 @@ ReplicationSlotAcquire(const char *name)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("replication slot \"%s\" does not exist", name)));
+
 	if (active_pid != 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_IN_USE),
 			   errmsg("replication slot \"%s\" is already active for PID %d",
 					  name, active_pid)));
+
+	/*
+	 * An attempt to use a failover slot from a standby must fail since
+	 * we can't write WAL from a standby and there's no sensible way
+	 * to advance slot position from both replica and master anyway.
+	 */
+	if (RecoveryInProgress() && slot->failover)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_IN_USE),
+				 errmsg("replication slot \"%s\" is reserved for use after failover",
+					  name)));
 
 	/* We made this slot active, so it's ours now. */
 	MyReplicationSlot = slot;
@@ -417,9 +461,59 @@ ReplicationSlotDrop(const char *name)
 	ReplicationSlotDropAcquired();
 }
 
+static void
+ReplicationSlotXLOGDelete(ReplicationSlot *slot)
+{
+	xl_replslot_drop xlrec;
+
+	memcpy(&(xlrec.name), NameStr(slot->data.name), NAMEDATALEN);
+
+	XLogBeginInsert();
+	XLogRegisterData((char *) (&xlrec), sizeof(xlrec));
+	(void) XLogInsert(RM_REPLSLOT_ID, XLOG_REPLSLOT_DROP);
+}
+
+/*
+ * Set/clear the failover status for the current slot.
+ *
+ * If setting failover, force a flush of the slot so it is replicated
+ * promptly.
+ *
+ * If clearing failover, write a slot delete message to WAL so the
+ * slot is removed from the replica.
+ *
+ * We don't make sure the replica has actually retained all the WAL
+ * the failover slot needs. That's the user's responsibility.
+ */
+void
+ReplicationSlotAcquiredSetFailover(bool failover)
+{
+	ReplicationSlot *slot = MyReplicationSlot;
+
+	Assert(MyReplicationSlot != NULL);
+
+	if (failover == slot->failover)
+		return;
+
+	slot->failover = failover;
+
+	if (slot->failover)
+	{
+		ReplicationSlotMarkDirty();
+		ReplicationSlotSave();
+	}
+	else
+	{
+		ReplicationSlotXLOGDelete(slot);
+	}
+}
+
 /*
  * Permanently drop the currently acquired replication slot which will be
  * released by the point this function returns.
+ *
+ * Callers must NOT hold ReplicationSlotControlLock in SHARED mode.  EXCLUSIVE
+ * is OK, or not held at all.
  */
 static void
 ReplicationSlotDropAcquired(void)
@@ -427,8 +521,13 @@ ReplicationSlotDropAcquired(void)
 	char		path[MAXPGPATH];
 	char		tmppath[MAXPGPATH];
 	ReplicationSlot *slot = MyReplicationSlot;
+	bool slot_is_failover;
+	bool took_control_lock = false,
+		 took_allocation_lock = false;
 
 	Assert(MyReplicationSlot != NULL);
+
+	slot_is_failover = slot->failover;
 
 	/* slot isn't acquired anymore */
 	MyReplicationSlot = NULL;
@@ -437,8 +536,21 @@ ReplicationSlotDropAcquired(void)
 	 * If some other backend ran this code concurrently with us, we might try
 	 * to delete a slot with a certain name while someone else was trying to
 	 * create a slot with the same name.
+	 *
+	 * If called with the lock already held it MUST be held in
+	 * EXCLUSIVE mode.
 	 */
-	LWLockAcquire(ReplicationSlotAllocationLock, LW_EXCLUSIVE);
+	if (!LWLockHeldByMe(ReplicationSlotAllocationLock))
+	{
+		took_allocation_lock = true;
+		LWLockAcquire(ReplicationSlotAllocationLock, LW_EXCLUSIVE);
+	}
+
+	/* Record the drop in XLOG if we aren't replaying WAL */
+	if (XLogInsertAllowed() && slot_is_failover)
+	{
+		ReplicationSlotXLOGDelete(slot);
+	}
 
 	/* Generate pathnames. */
 	sprintf(path, "pg_replslot/%s", NameStr(slot->data.name));
@@ -469,7 +581,11 @@ ReplicationSlotDropAcquired(void)
 	else
 	{
 		volatile ReplicationSlot *vslot = slot;
-		bool		fail_softly = slot->data.persistency == RS_EPHEMERAL;
+		bool		fail_softly = false;
+
+		if (RecoveryInProgress() ||
+			slot->data.persistency == RS_EPHEMERAL)
+			fail_softly = true;
 
 		SpinLockAcquire(&slot->mutex);
 		vslot->active_pid = 0;
@@ -487,18 +603,27 @@ ReplicationSlotDropAcquired(void)
 	 * grabbing the mutex because nobody else can be scanning the array here,
 	 * and nobody can be attached to this slot and thus access it without
 	 * scanning the array.
+	 *
+	 * You must hold the lock in EXCLUSIVE mode or not at all.
 	 */
-	LWLockAcquire(ReplicationSlotControlLock, LW_EXCLUSIVE);
+	if (!LWLockHeldByMe(ReplicationSlotControlLock))
+	{
+		took_control_lock = true;
+		LWLockAcquire(ReplicationSlotControlLock, LW_EXCLUSIVE);
+	}
+
 	slot->active_pid = 0;
 	slot->in_use = false;
-	LWLockRelease(ReplicationSlotControlLock);
+
+	if (took_control_lock)
+		LWLockRelease(ReplicationSlotControlLock);
 
 	/*
 	 * Slot is dead and doesn't prevent resource removal anymore, recompute
 	 * limits.
 	 */
-	ReplicationSlotsComputeRequiredXmin(false);
-	ReplicationSlotsComputeRequiredLSN();
+	ReplicationSlotsUpdateRequiredXmin(false);
+	ReplicationSlotsUpdateRequiredLSN();
 
 	/*
 	 * If removing the directory fails, the worst thing that will happen is
@@ -514,7 +639,8 @@ ReplicationSlotDropAcquired(void)
 	 * We release this at the very end, so that nobody starts trying to create
 	 * a slot while we're still cleaning up the detritus of the old one.
 	 */
-	LWLockRelease(ReplicationSlotAllocationLock);
+	if (took_allocation_lock)
+		LWLockRelease(ReplicationSlotAllocationLock);
 }
 
 /*
@@ -557,6 +683,9 @@ ReplicationSlotMarkDirty(void)
 /*
  * Convert a slot that's marked as RS_EPHEMERAL to a RS_PERSISTENT slot,
  * guaranteeing it will be there after an eventual crash.
+ *
+ * Failover slots will emit a create xlog record at this time, having
+ * not been previously written to xlog.
  */
 void
 ReplicationSlotPersist(void)
@@ -582,7 +711,7 @@ ReplicationSlotPersist(void)
  * Compute the oldest xmin across all slots and store it in the ProcArray.
  */
 void
-ReplicationSlotsComputeRequiredXmin(bool already_locked)
+ReplicationSlotsUpdateRequiredXmin(bool already_locked)
 {
 	int			i;
 	TransactionId agg_xmin = InvalidTransactionId;
@@ -631,10 +760,20 @@ ReplicationSlotsComputeRequiredXmin(bool already_locked)
 }
 
 /*
- * Compute the oldest restart LSN across all slots and inform xlog module.
+ * Update the xlog module's copy of the minimum restart lsn across all slots
  */
 void
-ReplicationSlotsComputeRequiredLSN(void)
+ReplicationSlotsUpdateRequiredLSN(void)
+{
+	XLogSetReplicationSlotMinimumLSN(ReplicationSlotsComputeRequiredLSN(false));
+}
+
+/*
+ * Compute the oldest restart LSN across all slots (or optionally
+ * only failover slots) and return it.
+ */
+XLogRecPtr
+ReplicationSlotsComputeRequiredLSN(bool failover_only)
 {
 	int			i;
 	XLogRecPtr	min_required = InvalidXLogRecPtr;
@@ -646,6 +785,7 @@ ReplicationSlotsComputeRequiredLSN(void)
 	{
 		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
 		XLogRecPtr	restart_lsn;
+		bool		failover;
 
 		if (!s->in_use)
 			continue;
@@ -653,10 +793,14 @@ ReplicationSlotsComputeRequiredLSN(void)
 		{
 			volatile ReplicationSlot *vslot = s;
 
-			SpinLockAcquire(&s->mutex);
+			SpinLockAcquire(&vslot->mutex);
 			restart_lsn = vslot->data.restart_lsn;
-			SpinLockRelease(&s->mutex);
+			failover = vslot->failover;
+			SpinLockRelease(&vslot->mutex);
 		}
+
+		if (failover_only && !failover)
+			continue;
 
 		if (restart_lsn != InvalidXLogRecPtr &&
 			(min_required == InvalidXLogRecPtr ||
@@ -665,7 +809,7 @@ ReplicationSlotsComputeRequiredLSN(void)
 	}
 	LWLockRelease(ReplicationSlotControlLock);
 
-	XLogSetReplicationSlotMinimumLSN(min_required);
+	return min_required;
 }
 
 /*
@@ -674,7 +818,7 @@ ReplicationSlotsComputeRequiredLSN(void)
  * Returns InvalidXLogRecPtr if logical decoding is disabled or no logical
  * slots exist.
  *
- * NB: this returns a value >= ReplicationSlotsComputeRequiredLSN(), since it
+ * NB: this returns a value >= ReplicationSlotsUpdateRequiredLSN(), since it
  * ignores physical replication slots.
  *
  * The results aren't required frequently, so we don't maintain a precomputed
@@ -772,6 +916,45 @@ ReplicationSlotsCountDBSlots(Oid dboid, int *nslots, int *nactive)
 	return false;
 }
 
+void
+ReplicationSlotsDropDBSlots(Oid dboid)
+{
+	int			i;
+
+	Assert(MyReplicationSlot == NULL);
+
+	LWLockAcquire(ReplicationSlotControlLock, LW_EXCLUSIVE);
+	for (i = 0; i < max_replication_slots; i++)
+	{
+		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
+
+		if (s->data.database == dboid)
+		{
+			/*
+			 * There should be no connections to this dbid
+			 * therefore all slots for this dbid should be
+			 * logical, inactive failover slots.
+			 */
+			Assert(s->active_pid == 0);
+			Assert(s->in_use == false);
+			Assert(SlotIsLogical(s));
+
+			/*
+			 * Acquire the replication slot
+			 */
+			MyReplicationSlot = s;
+
+			/*
+			 * No need to deactivate slot, especially since we
+			 * already hold ReplicationSlotControlLock.
+			 */
+			ReplicationSlotDropAcquired();
+		}
+	}
+	LWLockRelease(ReplicationSlotControlLock);
+
+	MyReplicationSlot = NULL;
+}
 
 /*
  * Check whether the server's configuration supports using replication
@@ -789,6 +972,76 @@ CheckSlotRequirements(void)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("replication slots can only be used if wal_level >= archive")));
+}
+
+/*
+ * Reserve WAL for the currently active slot.
+ *
+ * Compute and set restart_lsn in a manner that's appropriate for the type of
+ * the slot and concurrency safe.
+ */
+void
+ReplicationSlotReserveWal(void)
+{
+	ReplicationSlot *slot = MyReplicationSlot;
+
+	Assert(slot != NULL);
+	Assert(slot->data.restart_lsn == InvalidXLogRecPtr);
+
+	/*
+	 * The replication slot mechanism is used to prevent removal of required
+	 * WAL. As there is no interlock between this routine and checkpoints, WAL
+	 * segments could concurrently be removed when a now stale return value of
+	 * ReplicationSlotsUpdateRequiredLSN() is used. In the unlikely case that
+	 * this happens we'll just retry.
+	 */
+	while (true)
+	{
+		XLogSegNo	segno;
+
+		/*
+		 * For logical slots log a standby snapshot and start logical decoding
+		 * at exactly that position. That allows the slot to start up more
+		 * quickly.
+		 *
+		 * That's not needed (or indeed helpful) for physical slots as they'll
+		 * start replay at the last logged checkpoint anyway. Instead return
+		 * the location of the last redo LSN. While that slightly increases
+		 * the chance that we have to retry, it's where a base backup has to
+		 * start replay at.
+		 */
+		if (!RecoveryInProgress() && SlotIsLogical(slot))
+		{
+			XLogRecPtr	flushptr;
+
+			/* start at current insert position */
+			slot->data.restart_lsn = GetXLogInsertRecPtr();
+
+			/* make sure we have enough information to start */
+			flushptr = LogStandbySnapshot();
+
+			/* and make sure it's fsynced to disk */
+			XLogFlush(flushptr);
+		}
+		else
+		{
+			slot->data.restart_lsn = GetRedoRecPtr();
+		}
+
+		/* prevent WAL removal as fast as possible */
+		ReplicationSlotsUpdateRequiredLSN();
+
+		/*
+		 * If all required WAL is still there, great, otherwise retry. The
+		 * slot should prevent further removal of WAL, unless there's a
+		 * concurrent ReplicationSlotsUpdateRequiredLSN() after we've written
+		 * the new restart_lsn above, so normally we should never need to loop
+		 * more than twice.
+		 */
+		XLByteToSeg(slot->data.restart_lsn, segno);
+		if (XLogGetLastRemovedSegno() < segno)
+			break;
+	}
 }
 
 /*
@@ -833,7 +1086,7 @@ CheckPointReplicationSlots(void)
  * needs to be run before we start crash recovery.
  */
 void
-StartupReplicationSlots(void)
+StartupReplicationSlots(bool drop_nonfailover_slots)
 {
 	DIR		   *replication_dir;
 	struct dirent *replication_de;
@@ -872,7 +1125,7 @@ StartupReplicationSlots(void)
 		}
 
 		/* looks like a slot in a normal state, restore */
-		RestoreSlotFromDisk(replication_de->d_name);
+		RestoreSlotFromDisk(replication_de->d_name, drop_nonfailover_slots);
 	}
 	FreeDir(replication_dir);
 
@@ -881,8 +1134,8 @@ StartupReplicationSlots(void)
 		return;
 
 	/* Now that we have recovered all the data, compute replication xmin */
-	ReplicationSlotsComputeRequiredXmin(false);
-	ReplicationSlotsComputeRequiredLSN();
+	ReplicationSlotsUpdateRequiredXmin(false);
+	ReplicationSlotsUpdateRequiredLSN();
 }
 
 /* ----
@@ -951,29 +1204,33 @@ CreateSlotOnDisk(ReplicationSlot *slot)
 
 /*
  * Shared functionality between saving and creating a replication slot.
+ *
+ * For failover slots this is where we emit xlog.
  */
 static void
 SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 {
 	char		tmppath[MAXPGPATH];
 	char		path[MAXPGPATH];
+	char		failoverpath[MAXPGPATH];
 	int			fd;
 	ReplicationSlotOnDisk cp;
 	bool		was_dirty;
 
-	/* first check whether there's something to write out */
+	if (!RecoveryInProgress())
 	{
+		/* first check whether there's something to write out */
 		volatile ReplicationSlot *vslot = slot;
 
 		SpinLockAcquire(&vslot->mutex);
 		was_dirty = vslot->dirty;
 		vslot->just_dirtied = false;
 		SpinLockRelease(&vslot->mutex);
-	}
 
-	/* and don't do anything if there's nothing to write */
-	if (!was_dirty)
-		return;
+		/* and don't do anything if there's nothing to write */
+		if (!was_dirty)
+			return;
+	}
 
 	LWLockAcquire(slot->io_in_progress_lock, LW_EXCLUSIVE);
 
@@ -982,6 +1239,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 
 	sprintf(tmppath, "%s/state.tmp", dir);
 	sprintf(path, "%s/state", dir);
+	sprintf(failoverpath, "%s/isfailover", dir);
 
 	fd = OpenTransientFile(tmppath,
 						   O_CREAT | O_EXCL | O_WRONLY | PG_BINARY,
@@ -1005,6 +1263,25 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 	memcpy(&cp.slotdata, &slot->data, sizeof(ReplicationSlotPersistentData));
 
 	SpinLockRelease(&slot->mutex);
+
+	/*
+	 * If needed, record this action in WAL
+	 */
+	if (slot->failover &&
+		slot->data.persistency == RS_PERSISTENT &&
+		!RecoveryInProgress())
+	{
+		XLogBeginInsert();
+		XLogRegisterData((char *) (&cp.slotdata), sizeof(ReplicationSlotPersistentData));
+		/*
+		 * Note that slot creation on the downstream is also an "update".
+		 *
+		 * Slots can start off ephemeral and be updated to persistent. We just
+		 * log the update and the downstream creates the new slot if it doesn't
+		 * exist yet.
+		 */
+		(void) XLogInsert(RM_REPLSLOT_ID, XLOG_REPLSLOT_UPDATE);
+	}
 
 	COMP_CRC32C(cp.checksum,
 				(char *) (&cp) + SnapBuildOnDiskNotChecksummedSize,
@@ -1039,6 +1316,58 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 	}
 
 	CloseTransientFile(fd);
+
+	/*
+	 * Make sure the state of the on-disk failover slot marker
+	 * file is the same as what we have in shmem.
+	 *
+	 * Since we don't support converting normal slots to failover
+	 * slots all this is actually going to do is write the file
+	 * on first slot sync if it's a failover slot. But we might as
+	 * well do it properly.
+	 *
+	 * This is not perfectly crashsafe; if the slot file is written
+	 * out, then we crash before writing out the marker file/fsync'ing the
+	 * directory, we will accidentally create a non-failover slot. There's
+	 * really no way around this while remaining backward compatible, and it'll
+	 * at least be visible that the slot status is !failover when querying it
+	 * later.
+	 */
+	if (slot->failover)
+	{
+		/*
+		 * Touch the file by opening and immediately closing it. No need to
+		 * write anything to it, the exitence of the file is what we use.
+		 */
+		fd = OpenTransientFile(failoverpath,
+							   O_CREAT | O_WRONLY | PG_BINARY,
+							   S_IRUSR | S_IWUSR);
+		if (fd < 0)
+		{
+			ereport(elevel,
+					(errcode_for_file_access(),
+					 errmsg("could not create file \"%s\": %m",
+							tmppath)));
+			return;
+		}
+
+		CloseTransientFile(fd);
+	}
+	else
+	{
+		/*
+		 * Try to unlink the file. If it fails we expect that the
+		 * file was already missing. Anything else is an error.
+		 */
+		if (unlink(failoverpath))
+		{
+			if (errno != ENOENT)
+			ereport(elevel,
+					(errcode_for_file_access(),
+					 errmsg("could not unlink file \"%s\": %m",
+							tmppath)));
+		}
+	}
 
 	/* rename to permanent file, fsync file and directory */
 	if (rename(tmppath, path) != 0)
@@ -1079,7 +1408,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
  * Load a single slot from disk into memory.
  */
 static void
-RestoreSlotFromDisk(const char *name)
+RestoreSlotFromDisk(const char *name, bool drop_nonfailover_slots)
 {
 	ReplicationSlotOnDisk cp;
 	int			i;
@@ -1088,6 +1417,7 @@ RestoreSlotFromDisk(const char *name)
 	bool		restored = false;
 	int			readBytes;
 	pg_crc32c	checksum;
+	bool		is_failover;
 
 	/* no need to lock here, no concurrent access allowed yet */
 
@@ -1198,10 +1528,50 @@ RestoreSlotFromDisk(const char *name)
 						path, checksum, cp.checksum)));
 
 	/*
-	 * If we crashed with an ephemeral slot active, don't restore but delete
-	 * it.
+ 	 * Stat the failover slot marker file to determine whether we're
+	 * restoring a failover slot or not.
 	 */
-	if (cp.slotdata.persistency != RS_PERSISTENT)
+	if (cp.slotdata.persistency == RS_PERSISTENT)
+	{
+		char		failoverpath[MAXPGPATH];
+		struct stat statbuf;
+		sprintf(failoverpath, "pg_replslot/%s/isfailover", name);
+
+		if (stat(failoverpath, &statbuf))
+		{
+			if (errno == ENOENT)
+			{
+				is_failover = false;
+			}
+			else
+			{
+				ereport(WARNING,
+						(errcode_for_file_access(),
+						 errmsg("could not stat \"%s\": %m", failoverpath)));
+			}
+		}
+		else
+		{
+			/* It's a failover slot */
+			is_failover = true;
+		}
+	}
+
+	/*
+	 * If we crashed with an ephemeral slot active, don't restore but
+	 * delete it.
+	 *
+	 * Similarly, if we're in archive recovery and will be running as
+	 * a standby (when drop_nonfailover_slots is set), non-failover
+	 * slots can't be relied upon. Logical slots might have a catalog
+	 * xmin lower than reality because the original slot on the master
+	 * advanced past the point the stale slot on the replica is stuck
+	 * at. Additionally slots might have been copied while being
+	 * written to if the basebackup copy method was not atomic.
+	 * Failover slots are safe since they're WAL-logged and follow the
+	 * master's slot position.
+	 */
+	if (cp.slotdata.persistency != RS_PERSISTENT || (drop_nonfailover_slots && !is_failover))
 	{
 		sprintf(path, "pg_replslot/%s", name);
 
@@ -1212,6 +1582,14 @@ RestoreSlotFromDisk(const char *name)
 					 errmsg("could not remove directory \"%s\"", path)));
 		}
 		fsync_fname("pg_replslot", true);
+
+		if (cp.slotdata.persistency == RS_PERSISTENT)
+		{
+			ereport(LOG,
+					(errmsg("dropped non-failover slot %s during archive recovery",
+							 NameStr(cp.slotdata.name))));
+		}
+
 		return;
 	}
 
@@ -1238,6 +1616,8 @@ RestoreSlotFromDisk(const char *name)
 		slot->candidate_restart_lsn = InvalidXLogRecPtr;
 		slot->candidate_restart_valid = InvalidXLogRecPtr;
 
+		slot->failover = is_failover;
+
 		slot->in_use = true;
 		slot->active_pid = 0;
 
@@ -1248,5 +1628,330 @@ RestoreSlotFromDisk(const char *name)
 	if (!restored)
 		ereport(PANIC,
 				(errmsg("too many replication slots active before shutdown"),
-				 errhint("Increase max_replication_slots and try again.")));
+				 errhint("Increase max_replication_slots (currently %u) and try again.",
+					 max_replication_slots)));
+}
+
+/*
+ * This usually just writes new persistent data to the slot state, but an
+ * update record might create a new slot on the downstream if we changed a
+ * previously ephemeral slot to persistent. We have to decide which
+ * by looking for the existing slot.
+ */
+static void
+ReplicationSlotRedoCreateOrUpdate(ReplicationSlotInWAL xlrec)
+{
+	ReplicationSlot *slot;
+	bool	found_available = false;
+	bool	found_duplicate = false;
+	int		use_slotid = 0;
+	int		i;
+
+	/*
+	 * We're in redo, but someone could still create a local
+	 * non-failover slot and race with us unless we take the
+	 * allocation lock.
+	 */
+	LWLockAcquire(ReplicationSlotAllocationLock, LW_EXCLUSIVE);
+
+	for (i = 0; i < max_replication_slots; i++)
+	{
+		slot = &ReplicationSlotCtl->replication_slots[i];
+
+		/*
+		 * Find first unused position in the slots array, but keep on
+		 * scanning in case there's an existing slot with the same
+		 * name.
+		 */
+		if (!slot->in_use && !found_available)
+		{
+			use_slotid = i;
+			found_available = true;
+		}
+
+		/*
+		 * Existing slot with same name? It could be our failover slot
+		 * to update or a non-failover slot with a conflicting name.
+		 */
+		if (strcmp(NameStr(xlrec->name), NameStr(slot->data.name)) == 0)
+		{
+			use_slotid = i;
+			found_available = true;
+			found_duplicate = true;
+			break;
+		}
+	}
+
+	if (found_duplicate && !slot->failover)
+	{
+		/*
+		 * A local non-failover slot exists with the same name as
+		 * the failover slot we're creating.
+		 *
+		 * Clobber the client, drop its slot, and carry on with
+		 * our business.
+		 *
+		 * First we must temporarily release the allocation lock while
+		 * we try to terminate the process that holds the slot, since
+		 * we don't want to hold the LWlock for ages. We'll reacquire
+		 * it later.
+		 */
+		LWLockRelease(ReplicationSlotAllocationLock);
+
+		/* We might race with other clients, so retry-loop */
+		do
+		{
+			int active_pid = slot->active_pid;
+			int max_sleep_millis = 120 * 1000;
+			int millis_per_sleep = 1000;
+
+			if (active_pid != 0)
+			{
+				ereport(INFO,
+						(errmsg("terminating active connection by pid %u to local slot %s because of conflict with recovery",
+							active_pid, NameStr(slot->data.name))));
+
+				if (kill(active_pid, SIGTERM))
+					elog(DEBUG1, "failed to signal pid %u to terminate on slot conflict: %m",
+							active_pid);
+
+				/*
+				 * Wait for the process using the slot to die. This just uses the
+				 * latch to poll; the process won't set our latch when it releases
+				 * the slot and dies.
+				 *
+				 * We're checking active_pid without any locks held, but we'll
+				 * recheck when we attempt to drop the slot.
+				 */
+				while (slot->in_use && slot->active_pid == active_pid
+						&& max_sleep_millis > 0)
+				{
+					int rc;
+
+					rc = WaitLatch(MyLatch,
+							WL_TIMEOUT | WL_LATCH_SET | WL_POSTMASTER_DEATH,
+							millis_per_sleep);
+
+					if (rc & WL_POSTMASTER_DEATH)
+						elog(FATAL, "exiting after postmaster termination");
+
+					/*
+					 * Might be shorter if something sets our latch, but
+					 * we don't care much.
+					 */
+					max_sleep_millis -= millis_per_sleep;
+				}
+
+				if (max_sleep_millis <= 0)
+					elog(WARNING, "process %u is taking too long to terminate after SIGTERM",
+							slot->active_pid);
+			}
+
+			if (slot->active_pid == 0)
+			{
+				/* Try to acquire and drop the slot */
+				SpinLockAcquire(&slot->mutex);
+
+				if (slot->active_pid != 0)
+				{
+					/* Lost the race, go around */
+				}
+				else
+				{
+					/* Claim the slot for ourselves */
+					slot->active_pid = MyProcPid;
+					MyReplicationSlot = slot;
+				}
+				SpinLockRelease(&slot->mutex);
+			}
+
+			if (slot->active_pid == MyProcPid)
+			{
+				NameData slotname;
+				strncpy(NameStr(slotname), NameStr(slot->data.name), NAMEDATALEN);
+				(NameStr(slotname))[NAMEDATALEN-1] = '\0';
+
+				/*
+				 * Reclaim the allocation lock and THEN drop the slot,
+				 * so nobody else can grab the name until we've
+				 * finished redo.
+				 */
+				LWLockAcquire(ReplicationSlotAllocationLock, LW_EXCLUSIVE);
+				ReplicationSlotDropAcquired();
+				/* We clobbered the duplicate, treat it as new */
+				found_duplicate = false;
+
+				ereport(WARNING,
+						(errmsg("dropped local replication slot %s because of conflict with recovery",
+								NameStr(slotname)),
+						 errdetail("A failover slot with the same name was created on the master server")));
+			}
+		}
+		while (slot->in_use);
+	}
+
+	Assert(LWLockHeldByMe(ReplicationSlotAllocationLock));
+
+	/*
+	 * This is either an empty slot control position to make a new slot or it's
+	 * an existing entry for this failover slot that we need to update.
+	 */
+	if (found_available)
+	{
+		LWLockAcquire(ReplicationSlotControlLock, LW_EXCLUSIVE);
+
+		slot = &ReplicationSlotCtl->replication_slots[use_slotid];
+
+		/* restore the entire set of persistent data */
+		memcpy(&slot->data, xlrec,
+			   sizeof(ReplicationSlotPersistentData));
+
+		Assert(strcmp(NameStr(xlrec->name), NameStr(slot->data.name)) == 0);
+		Assert(slot->data.persistency == RS_PERSISTENT);
+		/*
+		 * It came in via WAL so it must be a failover slot. Mark it so that
+		 * we create the slot marker file when we write it out.
+		 */
+		slot->failover = true;
+
+		/* Update the non-persistent in-memory state */
+		slot->effective_xmin = xlrec->xmin;
+		slot->effective_catalog_xmin = xlrec->catalog_xmin;
+
+		if (found_duplicate)
+		{
+			char		path[MAXPGPATH];
+
+			/* Write an existing slot to disk */
+			Assert(slot->in_use);
+			Assert(slot->active_pid == 0); /* can't be replaying from failover slot */
+
+			sprintf(path, "pg_replslot/%s", NameStr(slot->data.name));
+			slot->dirty = true;
+			SaveSlotToPath(slot, path, ERROR);
+		}
+		else
+		{
+			Assert(!slot->in_use);
+			/* In-memory state that's only set on create, not update */
+			slot->active_pid = 0;
+			slot->in_use = true;
+			slot->candidate_catalog_xmin = InvalidTransactionId;
+			slot->candidate_xmin_lsn = InvalidXLogRecPtr;
+			slot->candidate_restart_lsn = InvalidXLogRecPtr;
+			slot->candidate_restart_valid = InvalidXLogRecPtr;
+
+			CreateSlotOnDisk(slot);
+		}
+
+		LWLockRelease(ReplicationSlotControlLock);
+
+		ReplicationSlotsUpdateRequiredXmin(false);
+		ReplicationSlotsUpdateRequiredLSN();
+	}
+
+	LWLockRelease(ReplicationSlotAllocationLock);
+
+	if (!found_available)
+	{
+		/*
+		 * Because the standby should have the same or greater max_replication_slots
+		 * as the master this shouldn't happen, but just in case...
+		 */
+		ereport(ERROR,
+				(errmsg("max_replication_slots exceeded, cannot replay failover slot creation"),
+				 errhint("Increase max_replication_slots")));
+	}
+}
+
+/*
+ * Redo a slot drop of a failover slot. This might be a redo during crash
+ * recovery on the master or it may be replay on a standby.
+ */
+static void
+ReplicationSlotRedoDrop(const char * slotname)
+{
+	/*
+	 * Acquire the failover slot that's to be dropped.
+	 *
+	 * We can't ReplicationSlotAcquire here because we want to acquire
+	 * a replication slot during replay, which isn't usually allowed.
+	 * Also, because we might crash midway through a drop we can't
+	 * assume we'll actually find the slot so it's not an error for
+	 * the slot to be missing.
+	 */
+	int			i;
+
+	Assert(MyReplicationSlot == NULL);
+
+	ReplicationSlotValidateName(slotname, ERROR);
+
+	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+	for (i = 0; i < max_replication_slots; i++)
+	{
+		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
+
+		if (s->in_use && strcmp(slotname, NameStr(s->data.name)) == 0)
+		{
+			if (!s->data.persistency == RS_PERSISTENT)
+			{
+				/* shouldn't happen */
+				elog(WARNING, "found conflicting non-persistent slot during failover slot drop");
+				break;
+			}
+
+			/* A failover slot can't be active during recovery */
+			Assert(s->active_pid == 0);
+
+			/* Claim the slot */
+			s->active_pid = MyProcPid;
+			MyReplicationSlot = s;
+
+			break;
+		}
+	}
+	LWLockRelease(ReplicationSlotControlLock);
+
+	if (MyReplicationSlot != NULL)
+	{
+		ReplicationSlotDropAcquired();
+	}
+	else
+	{
+		elog(WARNING, "failover slot %s not found during redo of drop",
+				slotname);
+	}
+}
+
+void
+replslot_redo(XLogReaderState *record)
+{
+	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
+
+	switch (info)
+	{
+		/*
+		 * Update the values for an existing failover slot or, when a slot
+		 * is first logged as persistent, create it on the downstream.
+		 */
+		case XLOG_REPLSLOT_UPDATE:
+			ReplicationSlotRedoCreateOrUpdate((ReplicationSlotInWAL) XLogRecGetData(record));
+			break;
+
+		/*
+		 * Drop an existing failover slot.
+		 */
+		case XLOG_REPLSLOT_DROP:
+			{
+				xl_replslot_drop *xlrec =
+				(xl_replslot_drop *) XLogRecGetData(record);
+
+				ReplicationSlotRedoDrop(NameStr(xlrec->name));
+
+				break;
+			}
+
+		default:
+			elog(PANIC, "replslot_redo: unknown op code %u", info);
+	}
 }

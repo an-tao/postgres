@@ -158,7 +158,6 @@ struct XLogReaderState
 
 	/* beginning of the WAL record being read. */
 	XLogRecPtr	currRecPtr;
-
 	/* timeline to read it from, 0 if a lookup is required */
 	TimeLineID	currTLI;
 	/* timeline that follows currTLI */

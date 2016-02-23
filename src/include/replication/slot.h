@@ -4,6 +4,7 @@
  *
  * Copyright (c) 2012-2015, PostgreSQL Global Development Group
  *
+ * src/include/replication/slot.h
  *-------------------------------------------------------------------------
  */
 #ifndef SLOT_H
@@ -11,67 +12,10 @@
 
 #include "fmgr.h"
 #include "access/xlog.h"
-#include "access/xlogreader.h"
+#include "replication/slot_xlog.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
-
-/*
- * Behaviour of replication slots, upon release or crash.
- *
- * Slots marked as PERSISTENT are crashsafe and will not be dropped when
- * released. Slots marked as EPHEMERAL will be dropped when released or after
- * restarts.
- *
- * EPHEMERAL slots can be made PERSISTENT by calling ReplicationSlotPersist().
- */
-typedef enum ReplicationSlotPersistency
-{
-	RS_PERSISTENT,
-	RS_EPHEMERAL
-} ReplicationSlotPersistency;
-
-/*
- * On-Disk data of a replication slot, preserved across restarts.
- */
-typedef struct ReplicationSlotPersistentData
-{
-	/* The slot's identifier */
-	NameData	name;
-
-	/* database the slot is active on */
-	Oid			database;
-
-	/*
-	 * The slot's behaviour when being dropped (or restored after a crash).
-	 */
-	ReplicationSlotPersistency persistency;
-
-	/*
-	 * xmin horizon for data
-	 *
-	 * NB: This may represent a value that hasn't been written to disk yet;
-	 * see notes for effective_xmin, below.
-	 */
-	TransactionId xmin;
-
-	/*
-	 * xmin horizon for catalog tuples
-	 *
-	 * NB: This may represent a value that hasn't been written to disk yet;
-	 * see notes for effective_xmin, below.
-	 */
-	TransactionId catalog_xmin;
-
-	/* oldest LSN that might be required by this replication slot */
-	XLogRecPtr	restart_lsn;
-
-	/* oldest LSN that the client has acked receipt for */
-	XLogRecPtr	confirmed_flush;
-
-	/* plugin name */
-	NameData	plugin;
-} ReplicationSlotPersistentData;
 
 /*
  * Shared memory state of a single replication slot.
@@ -123,7 +67,17 @@ typedef struct ReplicationSlot
 	XLogRecPtr	candidate_xmin_lsn;
 	XLogRecPtr	candidate_restart_valid;
 	XLogRecPtr	candidate_restart_lsn;
+
+	/*
+	 * Failover slots needs to keep track whether a slot is a failover
+	 * slot. We use an on-disk marker file in the slot directory for this,
+	 * but to avoid checking it all the time that knowledge is cached
+	 * in shmem.
+	 */
+	bool		failover;
 } ReplicationSlot;
+
+#define SlotIsLogical(slot) (slot->data.database != InvalidOid)
 
 /*
  * Shared memory control area for all of replication slots.
@@ -152,7 +106,7 @@ extern void ReplicationSlotsShmemInit(void);
 
 /* management of individual slots */
 extern void ReplicationSlotCreate(const char *name, bool db_specific,
-					  ReplicationSlotPersistency p);
+					  ReplicationSlotPersistency p, bool failover);
 extern void ReplicationSlotPersist(void);
 extern void ReplicationSlotDrop(const char *name);
 
@@ -160,15 +114,19 @@ extern void ReplicationSlotAcquire(const char *name);
 extern void ReplicationSlotRelease(void);
 extern void ReplicationSlotSave(void);
 extern void ReplicationSlotMarkDirty(void);
+extern void ReplicationSlotAcquiredSetFailover(bool failover);
 
 /* misc stuff */
 extern bool ReplicationSlotValidateName(const char *name, int elevel);
-extern void ReplicationSlotsComputeRequiredXmin(bool already_locked);
-extern void ReplicationSlotsComputeRequiredLSN(void);
+extern void ReplicationSlotReserveWal(void);
+extern void ReplicationSlotsUpdateRequiredXmin(bool already_locked);
+extern void ReplicationSlotsUpdateRequiredLSN(void);
 extern XLogRecPtr ReplicationSlotsComputeLogicalRestartLSN(void);
+extern XLogRecPtr ReplicationSlotsComputeRequiredLSN(bool failover_only);
 extern bool ReplicationSlotsCountDBSlots(Oid dboid, int *nslots, int *nactive);
+extern void ReplicationSlotsDropDBSlots(Oid dboid);
 
-extern void StartupReplicationSlots(void);
+extern void StartupReplicationSlots(bool drop_nonfailover_slots);
 extern void CheckPointReplicationSlots(void);
 
 extern void CheckSlotRequirements(void);
@@ -178,5 +136,6 @@ extern Datum pg_create_physical_replication_slot(PG_FUNCTION_ARGS);
 extern Datum pg_create_logical_replication_slot(PG_FUNCTION_ARGS);
 extern Datum pg_drop_replication_slot(PG_FUNCTION_ARGS);
 extern Datum pg_get_replication_slots(PG_FUNCTION_ARGS);
+extern Datum slot_set_failover(PG_FUNCTION_ARGS);
 
 #endif   /* SLOT_H */
