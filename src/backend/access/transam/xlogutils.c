@@ -26,6 +26,7 @@
 #include "access/xlog_internal.h"
 #include "access/xlogutils.h"
 #include "catalog/catalog.h"
+#include "miscadmin.h"
 #include "storage/smgr.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
@@ -664,6 +665,8 @@ XLogRead(char *buf, TimeLineID tli, XLogRecPtr startptr, Size count)
 	static XLogSegNo sendSegNo = 0;
 	static TimeLineID sendTLI = 0;
 	static uint32 sendOff = 0;
+
+	elog(LOG, "XXX XLogRead tli = %u", tli);
 
 	p = buf;
 	recptr = startptr;
