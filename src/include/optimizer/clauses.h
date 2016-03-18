@@ -27,6 +27,25 @@ typedef struct
 	List	  **windowFuncs;	/* lists of WindowFuncs for each winref */
 } WindowFuncLists;
 
+/*
+ * PartialAggType
+ *	PartialAggType stores whether partial aggregation is allowed and
+ *	which context it is allowed in. We require three states here as there are
+ *	two different contexts in which partial aggregation is safe. For aggregates
+ *	which have an 'stype' of INTERNAL, within a single backend process it is
+ *	okay to pass a pointer to the aggregate state, as the memory to which the
+ *	pointer points to will belong to the same process. In cases where the
+ *	aggregate state must be passed between different processes, for example
+ *	during parallel aggregation, passing the pointer is not okay due to the
+ *	fact that the memory being referenced won't be accessible from another
+ *	process.
+ */
+typedef enum
+{
+	PAT_ANY = 0,		/* Any type of partial aggregation is okay. */
+	PAT_INTERNAL_ONLY,	/* Some aggregates support only internal mode. */
+	PAT_DISABLED		/* Some aggregates don't support partial mode at all */
+} PartialAggType;
 
 extern Expr *make_opclause(Oid opno, Oid opresulttype, bool opretset,
 			  Expr *leftop, Expr *rightop,
@@ -47,6 +66,7 @@ extern Node *make_and_qual(Node *qual1, Node *qual2);
 extern Expr *make_ands_explicit(List *andclauses);
 extern List *make_ands_implicit(Expr *clause);
 
+extern PartialAggType aggregates_allow_partial(Node *clause);
 extern bool contain_agg_clause(Node *clause);
 extern void count_agg_clauses(PlannerInfo *root, Node *clause,
 				  AggClauseCosts *costs);
