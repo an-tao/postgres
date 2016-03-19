@@ -4510,25 +4510,20 @@ ExecInitExpr(Expr *node, PlanState *parent)
 		case T_Aggref:
 			{
 				AggrefExprState *astate = makeNode(AggrefExprState);
-				AggState   *aggstate = (AggState *) parent;
-				Aggref   *aggref = (Aggref *) node;
 
 				astate->xprstate.evalfunc = (ExprStateEvalFunc) ExecEvalAggref;
-				if (!aggstate || !IsA(aggstate, AggState))
+				if (parent && IsA(parent, AggState))
+				{
+					AggState   *aggstate = (AggState *) parent;
+
+					aggstate->aggs = lcons(astate, aggstate->aggs);
+					aggstate->numaggs++;
+				}
+				else
 				{
 					/* planner messed up */
 					elog(ERROR, "Aggref found in non-Agg plan node");
 				}
-				if (aggref->aggpartial == aggstate->finalizeAggs)
-				{
-					/* planner messed up */
-					if (aggref->aggpartial)
-						elog(ERROR, "Partial type Aggref found in FinalizeAgg plan node");
-					else
-						elog(ERROR, "Non-Partial type Aggref found in Non-FinalizeAgg plan node");
-				}
-				aggstate->aggs = lcons(astate, aggstate->aggs);
-				aggstate->numaggs++;
 				state = (ExprState *) astate;
 			}
 			break;

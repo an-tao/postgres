@@ -1645,12 +1645,10 @@ translate_sub_tlist(List *tlist, int relid)
  * create_gather_path
  *	  Creates a path corresponding to a gather scan, returning the
  *	  pathnode.
- *
- * 'rows' may optionally be set to override row estimates from other sources.
  */
 GatherPath *
 create_gather_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
-				   PathTarget *target, Relids required_outer, double *rows)
+				   Relids required_outer)
 {
 	GatherPath *pathnode = makeNode(GatherPath);
 
@@ -1658,7 +1656,7 @@ create_gather_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 
 	pathnode->path.pathtype = T_Gather;
 	pathnode->path.parent = rel;
-	pathnode->path.pathtarget = target;
+	pathnode->path.pathtarget = rel->reltarget;
 	pathnode->path.param_info = get_baserel_parampathinfo(root, rel,
 														  required_outer);
 	pathnode->path.parallel_aware = false;
@@ -1676,7 +1674,7 @@ create_gather_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 		pathnode->single_copy = true;
 	}
 
-	cost_gather(pathnode, root, rel, pathnode->path.param_info, rows);
+	cost_gather(pathnode, root, rel, pathnode->path.param_info);
 
 	return pathnode;
 }
@@ -2389,8 +2387,6 @@ create_upper_unique_path(PlannerInfo *root,
  * 'qual' is the HAVING quals if any
  * 'aggcosts' contains cost info about the aggregate functions to be computed
  * 'numGroups' is the estimated number of groups (1 if not grouping)
- * 'combineStates' is set to true if the Agg node should combine agg states
- * 'finalizeAggs' is set to false if the Agg node should not call the finalfn
  */
 AggPath *
 create_agg_path(PlannerInfo *root,
@@ -2401,9 +2397,7 @@ create_agg_path(PlannerInfo *root,
 				List *groupClause,
 				List *qual,
 				const AggClauseCosts *aggcosts,
-				double numGroups,
-				bool combineStates,
-				bool finalizeAggs)
+				double numGroups)
 {
 	AggPath    *pathnode = makeNode(AggPath);
 
@@ -2426,8 +2420,6 @@ create_agg_path(PlannerInfo *root,
 	pathnode->numGroups = numGroups;
 	pathnode->groupClause = groupClause;
 	pathnode->qual = qual;
-	pathnode->finalizeAggs = finalizeAggs;
-	pathnode->combineStates = combineStates;
 
 	cost_agg(&pathnode->path, root,
 			 aggstrategy, aggcosts,
