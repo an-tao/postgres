@@ -256,19 +256,19 @@ typedef struct Param
  * The direct arguments appear in aggdirectargs (as a list of plain
  * expressions, not TargetEntry nodes).
  *
- * Normally 'aggtype' and 'aggoutputtype' are the same, however Aggref operates
- * in one of two modes. Normally an aggregate function's value is calculated
- * with a single Agg node; however there are times, such as parallel
- * aggregation, when we want to calculate the aggregate value in multiple
- * phases. This requires at least a Partial Aggregate phase, where normal
- * aggregation takes place, but the aggregate's final function is not called,
- * then later a Finalize Aggregate phase, where previously aggregated states
- * are combined and the final function is called. No settings in Aggref
- * determine this behaviour, the only thing that's required from Aggref is to
- * allow the ability to determine the data type which this Aggref will produce.
- * By default 'aggoutputtype' is initialized to 'aggtype', and this does not
- * change unless the Aggref is required for partial aggregation, in this case
- * the aggoutputtype is set to the data type of the aggregate state.
+ * An Aggref can operate in one of two modes. Normally an aggregate function's
+ * value is calculated with a single executor Agg node, however there are
+ * times, such as parallel aggregation when we want to calculate the aggregate
+ * value in multiple phases. This requires at least a Partial Aggregate phase,
+ * where normal aggregation takes place, but the aggregate's final function is
+ * not called, then later a Finalize Aggregate phase, where previously
+ * aggregated states are combined and the final function is called. No settings
+ * in Aggref determine this behaviour, the only thing that is required in
+ * Aggref to allow this behaviour is having the ability to determine the data
+ * type which this Aggref will produce. The 'aggpartial' field is used to
+ * determine to which of the two data types the Aggref will produce, either
+ * 'aggtype' or 'aggpartialtype', the latter of which is only set upon changing
+ * the Aggref into partial mode.
  *
  * Note: If you are adding fields here you may also need to add a comparison
  * in search_indexed_tlist_for_partial_aggref()
@@ -277,8 +277,8 @@ typedef struct Aggref
 {
 	Expr		xpr;
 	Oid			aggfnoid;		/* pg_proc Oid of the aggregate */
-	Oid			aggtype;		/* type Oid of final result of the aggregate */
-	Oid			aggoutputtype;	/* type Oid of result of this aggregate */
+	Oid			aggtype;		/* type Oid of result of the aggregate */
+	Oid			aggpartialtype;	/* return type if aggpartial is true */
 	Oid			aggcollid;		/* OID of collation of result */
 	Oid			inputcollid;	/* OID of collation that function should use */
 	List	   *aggdirectargs;	/* direct arguments, if an ordered-set agg */
@@ -289,6 +289,7 @@ typedef struct Aggref
 	bool		aggstar;		/* TRUE if argument list was really '*' */
 	bool		aggvariadic;	/* true if variadic arguments have been
 								 * combined into an array last argument */
+	bool		aggpartial;		/* TRUE if Agg value should not be finalized */
 	char		aggkind;		/* aggregate kind (see pg_aggregate.h) */
 	Index		agglevelsup;	/* > 0 if agg belongs to outer query */
 	int			location;		/* token location, or -1 if unknown */

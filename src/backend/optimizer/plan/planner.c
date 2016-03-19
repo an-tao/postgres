@@ -3349,7 +3349,7 @@ create_grouping_paths(PlannerInfo *root,
 
 	/*
 	 * Partial paths in the input rel could allow us to perform aggregation in
-	 * parallel. set_grouped_rel_consider_parallel() will determine if it's
+	 * parallel, set_grouped_rel_consider_parallel() will determine if it's
 	 * going to be safe to do so.
 	 */
 	if (input_rel->partial_pathlist != NIL)
@@ -3662,7 +3662,7 @@ create_grouping_paths(PlannerInfo *root,
 		}
 
 		/*
-		 * Generate a HashAgg Path atop of the cheapest partial path. Once
+		 * Generate a HashAgg Path atop of the cheapest partial path, once
 		 * again, we'll only do this if it looks as though the hash table won't
 		 * exceed work_mem.
 		 */
@@ -4214,9 +4214,8 @@ make_group_input_target(PlannerInfo *root, PathTarget *final_target)
  *
  * Similar to make_group_input_target(), only we don't recurse into Aggrefs, as
  * we need these to remain intact so that they can be found later in Combine
- * Aggregate nodes during set_combineagg_references(). Vars will be still
- * pulled out of non-Aggref nodes as these will still be required by the
- * combine aggregate phase.
+ * Aggregate nodes during setrefs. Vars will be still pulled out of non-Aggref
+ * nodes as these will still be required by the combine aggregate phase.
  *
  * We also convert any Aggrefs which we do find and put them into partial mode,
  * this adjusts the Aggref's return type so that the partially calculated
