@@ -552,7 +552,7 @@ _readAggref(void)
 
 	READ_OID_FIELD(aggfnoid);
 	READ_OID_FIELD(aggtype);
-	READ_OID_FIELD(aggpartialtype);
+	READ_OID_FIELD(aggoutputtype);
 	READ_OID_FIELD(aggcollid);
 	READ_OID_FIELD(inputcollid);
 	READ_NODE_FIELD(aggdirectargs);
@@ -562,7 +562,6 @@ _readAggref(void)
 	READ_NODE_FIELD(aggfilter);
 	READ_BOOL_FIELD(aggstar);
 	READ_BOOL_FIELD(aggvariadic);
-	READ_BOOL_FIELD(aggpartial);
 	READ_CHAR_FIELD(aggkind);
 	READ_UINT_FIELD(agglevelsup);
 	READ_LOCATION_FIELD(location);

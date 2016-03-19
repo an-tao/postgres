@@ -1722,11 +1722,12 @@ set_upper_references(PlannerInfo *root, Plan *plan, int rtoffset)
 
 /*
  * set_combineagg_references
- *	  This does a similar job as set_upper_references(), but additionally it
- *	  transforms Aggref nodes args to suit the combine aggregate phase, this
- *	  means that the Aggref->args are converted to reference the corresponding
- *	  aggregate function in the subplan rather than simple Var(s), as would be
- *	  the case for a non-combine aggregate node.
+ *	  This does a similar job as set_upper_references(), but treats Aggrefs
+ *	  in a different way. Here we transforms Aggref nodes args to suit the
+ *	  combine aggregate phase. This means that the Aggref->args are converted
+ *	  to reference the corresponding aggregate function in the subplan rather
+ *	  than simple Var(s), as would be the case for a non-combine aggregate
+ *	  node.
  */
 static void
 set_combineagg_references(PlannerInfo *root, Plan *plan, int rtoffset)
@@ -2053,15 +2054,13 @@ search_indexed_tlist_for_sortgroupref(Node *node,
 }
 
 /*
- * Find the Var for the matching 'aggref' in 'itlist'
+ * search_indexed_tlist_for_partial_aggref - find an Aggref in an indexed tlist
  *
- * Aggrefs for partial aggregates have their aggpartial setting adjusted to put
- * them in partial mode. This means that a standard equal() comparison won't
- * match when comparing an Aggref which is in partial mode with an Aggref which
- * is not. Here we manually compare all of the fields apart from
- * aggpartialtype, which is set only when putting the Aggref into partial mode,
- * and aggpartial, which is the flag which determines if the Aggref is in
- * partial mode or not.
+ * Aggrefs for partial aggregates have their aggoutputtype adjusted to set it
+ * to the aggregate state's type. This means that a standard equal() comparison
+ * won't match when comparing an Aggref which is in partial mode with an Aggref
+ * which is not. Here we manually compare all of the fields apart from
+ * aggoutputtype.
  */
 static Var *
 search_indexed_tlist_for_partial_aggref(Aggref *aggref, indexed_tlist *itlist,
@@ -2082,7 +2081,7 @@ search_indexed_tlist_for_partial_aggref(Aggref *aggref, indexed_tlist *itlist,
 				continue;
 			if (aggref->aggtype != tlistaggref->aggtype)
 				continue;
-			/* ignore aggpartialtype */
+			/* ignore aggoutputtype */
 			if (aggref->aggcollid != tlistaggref->aggcollid)
 				continue;
 			if (aggref->inputcollid != tlistaggref->inputcollid)
@@ -2101,7 +2100,6 @@ search_indexed_tlist_for_partial_aggref(Aggref *aggref, indexed_tlist *itlist,
 				continue;
 			if (aggref->aggvariadic != tlistaggref->aggvariadic)
 				continue;
-			/* ignore aggpartial */
 			if (aggref->aggkind != tlistaggref->aggkind)
 				continue;
 			if (aggref->agglevelsup != tlistaggref->agglevelsup)
