@@ -71,7 +71,7 @@ my $frontend_extrasource = {
 	    'src/bin/psql/psqlscan.l' ] };
 my @frontend_excludes = (
 	'pgevent',     'pg_basebackup', 'pg_rewind', 'pg_dump',
-	'pg_xlogdump', 'scripts');
+	'pg_xlogdump', 'scripts',       'pgbench');
 
 sub mkvcbuild
 {
@@ -136,8 +136,6 @@ sub mkvcbuild
 		'src/backend/port/win32_sema.c');
 	$postgres->ReplaceFile('src/backend/port/pg_shmem.c',
 		'src/backend/port/win32_shmem.c');
-	$postgres->ReplaceFile('src/backend/port/pg_latch.c',
-		'src/backend/port/win32_latch.c');
 	$postgres->AddFiles('src/port',   @pgportfiles);
 	$postgres->AddFiles('src/common', @pgcommonbkndfiles);
 	$postgres->AddDir('src/timezone');
@@ -673,6 +671,11 @@ sub mkvcbuild
 		$pg_xlogdump->AddFile($xf);
 	}
 	$pg_xlogdump->AddFile('src/backend/access/transam/xlogreader.c');
+
+	# fix up pgbench once it's been set up
+	# we're borrowing psqlscan.c from psql, so grab it from the correct place
+	my $pgbench = AddSimpleFrontend('pgbench');
+	$pgbench->ReplaceFile('src/bin/pgbench/psqlscan.c', 'src/bin/psql/psqlscan.c');
 
 	$solution->Save();
 	return $solution->{vcver};
