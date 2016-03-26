@@ -3457,7 +3457,8 @@ create_grouping_paths(PlannerInfo *root,
 													&agg_costs,
 													dNumPartialGroups,
 													false,
-													false));
+													false,
+													true));
 					else
 						add_partial_path(grouped_rel, (Path *)
 									create_group_path(root,
@@ -3498,7 +3499,8 @@ create_grouping_paths(PlannerInfo *root,
 											&agg_costs,
 											dNumPartialGroups,
 											false,
-											false));
+											false,
+											true));
 			}
 		}
 	}
@@ -3562,7 +3564,8 @@ create_grouping_paths(PlannerInfo *root,
 											 &agg_costs,
 											 dNumGroups,
 											 false,
-											 true));
+											 true,
+											 false));
 				}
 				else if (parse->groupClause)
 				{
@@ -3628,6 +3631,7 @@ create_grouping_paths(PlannerInfo *root,
 											&agg_costs,
 											dNumGroups,
 											true,
+											true,
 											true));
 			else
 				add_path(grouped_rel, (Path *)
@@ -3670,7 +3674,8 @@ create_grouping_paths(PlannerInfo *root,
 									 &agg_costs,
 									 dNumGroups,
 									 false,
-									 true));
+									 true,
+									 false));
 		}
 
 		/*
@@ -3707,6 +3712,7 @@ create_grouping_paths(PlannerInfo *root,
 											(List *) parse->havingQual,
 											&agg_costs,
 											dNumGroups,
+											true,
 											true,
 											true));
 			}
@@ -4041,7 +4047,8 @@ create_distinct_paths(PlannerInfo *root,
 								 NULL,
 								 numDistinctRows,
 								 false,
-								 true));
+								 true,
+								 false));
 	}
 
 	/* Give a helpful error if we failed to find any implementation */
