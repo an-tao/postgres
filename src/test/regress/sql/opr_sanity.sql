@@ -1004,6 +1004,53 @@ SELECT p.oid, proname
 FROM pg_proc AS p JOIN pg_aggregate AS a ON a.aggfnoid = p.oid
 WHERE proisagg AND provariadic != 0 AND a.aggkind = 'n';
 
+-- Check that all serial functions have a return type the same as the serial
+-- type.
+SELECT a.aggserialfn,a.aggserialtype,p.prorettype
+FROM pg_aggregate a
+INNER JOIN pg_proc p ON a.aggserialfn = p.oid
+WHERE a.aggserialtype <> p.prorettype;
+
+-- Check that all the deserial functions have the same input type as the
+-- serialtype
+SELECT a.aggserialfn,a.aggserialtype,p.proargtypes[0]
+FROM pg_aggregate a
+INNER JOIN pg_proc p ON a.aggdeserialfn = p.oid
+WHERE p.proargtypes[0] <> a.aggserialtype;
+
+-- An aggregate should either have a complete set of serialtype, serial func
+-- and deserial func, or none of them.
+SELECT aggserialtype,aggserialfn,aggdeserialfn
+FROM pg_aggregate
+WHERE (aggserialtype <> 0 OR aggserialfn <> 0 OR aggdeserialfn <> 0)
+  AND (aggserialtype = 0 OR aggserialfn = 0 OR aggdeserialfn = 0);
+
+-- Check that all aggregates with serialtypes have internal states.
+-- (There's no point in serializing anything apart from internal)
+SELECT aggfnoid,aggserialtype,aggtranstype
+FROM pg_aggregate
+WHERE aggserialtype <> 0 AND aggtranstype <> 'internal'::regtype;
+
+-- Check that all serial functions are strict. It's wasteful for these to be
+-- called with NULL values.
+SELECT aggfnoid,aggserialfn
+FROM pg_aggregate a
+INNER JOIN pg_proc p ON a.aggserialfn = p.oid
+WHERE p.proisstrict = false;
+
+-- Check that all deserial functions are strict. It's wasteful for these to be
+-- called with NULL values.
+SELECT aggfnoid,aggdeserialfn
+FROM pg_aggregate a
+INNER JOIN pg_proc p ON a.aggdeserialfn = p.oid
+WHERE p.proisstrict = false;
+
+-- Check that no combine functions with an INTERNAL return type are strict.
+SELECT aggfnoid,aggcombinefn
+FROM pg_aggregate a
+INNER JOIN pg_proc p ON a.aggcombinefn = p.oid
+INNER JOIN pg_type t ON a.aggtranstype = t.oid
+WHERE t.typname = 'internal' AND p.proisstrict = true;
 
 -- **************** pg_opfamily ****************
 
