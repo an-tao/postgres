@@ -12603,12 +12603,13 @@ NULL baz</literallayout>(3 rows)</entry>
   <table id="functions-aggregate-table">
    <title>General-Purpose Aggregate Functions</title>
 
-   <tgroup cols="4">
+   <tgroup cols="5">
     <thead>
      <row>
       <entry>Function</entry>
       <entry>Argument Type(s)</entry>
       <entry>Return Type</entry>
+      <entry>Partial Mode</entry>
       <entry>Description</entry>
      </row>
     </thead>
@@ -12627,6 +12628,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>
        array of the argument type
       </entry>
+      <entry>No</entry>
       <entry>input values, including nulls, concatenated into an array</entry>
      </row>
 
@@ -12640,6 +12642,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>
        same as argument data type
       </entry>
+      <entry>No</entry>
       <entry>input arrays concatenated into array of one higher dimension
        (inputs must all have same dimensionality,
         and cannot be empty or NULL)</entry>
@@ -12665,6 +12668,7 @@ NULL baz</literallayout>(3 rows)</entry>
        <type>double precision</type> for a floating-point argument,
        otherwise the same as the argument data type
       </entry>
+      <entry>All types apart from floating-point types</entry>
       <entry>the average (arithmetic mean) of all input values</entry>
      </row>
 
@@ -12682,6 +12686,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>
         same as argument data type
       </entry>
+      <entry>Yes</entry>
       <entry>the bitwise AND of all non-null input values, or null if none</entry>
      </row>
 
@@ -12699,6 +12704,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>
         same as argument data type
       </entry>
+      <entry>Yes</entry>
       <entry>the bitwise OR of all non-null input values, or null if none</entry>
      </row>
 
@@ -12715,6 +12721,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>
        <type>bool</type>
       </entry>
+      <entry>Yes</entry>
       <entry>true if all input values are true, otherwise false</entry>
      </row>
 
@@ -12731,6 +12738,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>
        <type>bool</type>
       </entry>
+      <entry>Yes</entry>
       <entry>true if at least one input value is true, otherwise false</entry>
      </row>
 
@@ -12743,6 +12751,7 @@ NULL baz</literallayout>(3 rows)</entry>
       </entry>
       <entry></entry>
       <entry><type>bigint</type></entry>
+      <entry>Yes</entry>
       <entry>number of input rows</entry>
      </row>
 
@@ -12750,6 +12759,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry><function>count(<replaceable class="parameter">expression</replaceable>)</function></entry>
       <entry>any</entry>
       <entry><type>bigint</type></entry>
+      <entry>Yes</entry>
       <entry>
        number of input rows for which the value of <replaceable
        class="parameter">expression</replaceable> is not null
@@ -12769,6 +12779,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>
        <type>bool</type>
       </entry>
+      <entry>Yes</entry>
       <entry>equivalent to <function>bool_and</function></entry>
      </row>
 
@@ -12785,6 +12796,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>
        <type>json</type>
       </entry>
+      <entry>No</entry>
       <entry>aggregates values as a JSON array</entry>
      </row>
 
@@ -12801,6 +12813,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>
        <type>jsonb</type>
       </entry>
+      <entry>No</entry>
       <entry>aggregates values as a JSON array</entry>
      </row>
 
@@ -12817,6 +12830,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>
        <type>json</type>
       </entry>
+      <entry>No</entry>
       <entry>aggregates name/value pairs as a JSON object</entry>
      </row>
 
@@ -12833,6 +12847,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>
        <type>jsonb</type>
       </entry>
+      <entry>No</entry>
       <entry>aggregates name/value pairs as a JSON object</entry>
      </row>
 
@@ -12846,6 +12861,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>any numeric, string, date/time, network, or enum type,
              or arrays of these types</entry>
       <entry>same as argument type</entry>
+      <entry>Yes</entry>
       <entry>
        maximum value of <replaceable
        class="parameter">expression</replaceable> across all input
@@ -12863,6 +12879,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>any numeric, string, date/time, network, or enum type,
              or arrays of these types</entry>
       <entry>same as argument type</entry>
+      <entry>Yes</entry>
       <entry>
        minimum value of <replaceable
        class="parameter">expression</replaceable> across all input
@@ -12886,6 +12903,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>
        same as argument types
       </entry>
+      <entry>No</entry>
       <entry>input values concatenated into a string, separated by delimiter</entry>
      </row>
 
@@ -12908,6 +12926,7 @@ NULL baz</literallayout>(3 rows)</entry>
        <type>bigint</type> arguments, otherwise the same as the
        argument data type
       </entry>
+      <entry>All types apart from floating-point types</entry>
       <entry>sum of <replaceable class="parameter">expression</replaceable> across all input values</entry>
      </row>
 
@@ -12924,6 +12943,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>
        <type>xml</type>
       </entry>
+      <entry>No</entry>
       <entry>concatenation of XML values (see also <xref linkend="functions-xml-xmlagg">)</entry>
      </row>
     </tbody>
@@ -12938,6 +12958,12 @@ NULL baz</literallayout>(3 rows)</entry>
    returns null rather than an empty array when there are no input
    rows.  The <function>coalesce</function> function can be used to
    substitute zero or an empty array for null when necessary.
+  </para>
+
+  <para>
+   Aggregate functions which support <firstterm>Partial Mode</firstterm>
+   are eligible to participate in various optimizations, such as parallel
+   aggregation.
   </para>
 
   <note>
@@ -13023,12 +13049,13 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
   <table id="functions-aggregate-statistics-table">
    <title>Aggregate Functions for Statistics</title>
 
-   <tgroup cols="4">
+   <tgroup cols="5">
     <thead>
      <row>
       <entry>Function</entry>
       <entry>Argument Type</entry>
       <entry>Return Type</entry>
+      <entry>Partial Mode</entry>
       <entry>Description</entry>
      </row>
     </thead>
@@ -13051,6 +13078,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>double precision</type>
       </entry>
+      <entry>No</entry>
       <entry>correlation coefficient</entry>
      </row>
 
@@ -13071,6 +13099,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>double precision</type>
       </entry>
+      <entry>No</entry>
       <entry>population covariance</entry>
      </row>
 
@@ -13091,6 +13120,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>double precision</type>
       </entry>
+      <entry>No</entry>
       <entry>sample covariance</entry>
      </row>
 
@@ -13107,6 +13137,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>double precision</type>
       </entry>
+      <entry>No</entry>
       <entry>average of the independent variable
       (<literal>sum(<replaceable class="parameter">X</replaceable>)/<replaceable class="parameter">N</replaceable></literal>)</entry>
      </row>
@@ -13124,6 +13155,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>double precision</type>
       </entry>
+      <entry>No</entry>
       <entry>average of the dependent variable
       (<literal>sum(<replaceable class="parameter">Y</replaceable>)/<replaceable class="parameter">N</replaceable></literal>)</entry>
      </row>
@@ -13141,6 +13173,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>bigint</type>
       </entry>
+      <entry>No</entry>
       <entry>number of input rows in which both expressions are nonnull</entry>
      </row>
 
@@ -13160,6 +13193,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>double precision</type>
       </entry>
+      <entry>No</entry>
       <entry>y-intercept of the least-squares-fit linear equation
       determined by the (<replaceable
       class="parameter">X</replaceable>, <replaceable
@@ -13179,6 +13213,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>double precision</type>
       </entry>
+      <entry>No</entry>
       <entry>square of the correlation coefficient</entry>
      </row>
 
@@ -13198,6 +13233,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>double precision</type>
       </entry>
+      <entry>No</entry>
       <entry>slope of the least-squares-fit linear equation determined
       by the (<replaceable class="parameter">X</replaceable>,
       <replaceable class="parameter">Y</replaceable>) pairs</entry>
@@ -13216,6 +13252,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>double precision</type>
       </entry>
+      <entry>No</entry>
       <entry><literal>sum(<replaceable
       class="parameter">X</replaceable>^2) - sum(<replaceable
       class="parameter">X</replaceable>)^2/<replaceable
@@ -13236,6 +13273,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>double precision</type>
       </entry>
+      <entry>No</entry>
       <entry><literal>sum(<replaceable
       class="parameter">X</replaceable>*<replaceable
       class="parameter">Y</replaceable>) - sum(<replaceable
@@ -13259,6 +13297,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>double precision</type>
       </entry>
+      <entry>No</entry>
       <entry><literal>sum(<replaceable
       class="parameter">Y</replaceable>^2) - sum(<replaceable
       class="parameter">Y</replaceable>)^2/<replaceable
@@ -13285,6 +13324,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
        <type>double precision</type> for floating-point arguments,
        otherwise <type>numeric</type>
       </entry>
+      <entry>All types apart from floating-point types</entry>
       <entry>historical alias for <function>stddev_samp</function></entry>
      </row>
 
@@ -13308,6 +13348,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
        <type>double precision</type> for floating-point arguments,
        otherwise <type>numeric</type>
       </entry>
+      <entry>All types apart from floating-point types</entry>
       <entry>population standard deviation of the input values</entry>
      </row>
 
@@ -13331,6 +13372,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
        <type>double precision</type> for floating-point arguments,
        otherwise <type>numeric</type>
       </entry>
+      <entry>All types apart from floating-point types</entry>
       <entry>sample standard deviation of the input values</entry>
      </row>
 
@@ -13350,6 +13392,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
        <type>double precision</type> for floating-point arguments,
        otherwise <type>numeric</type>
       </entry>
+      <entry>All types apart from floating-point types</entry>
       <entry>historical alias for <function>var_samp</function></entry>
      </row>
 
@@ -13373,6 +13416,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
        <type>double precision</type> for floating-point arguments,
        otherwise <type>numeric</type>
       </entry>
+      <entry>All types apart from floating-point types</entry>
       <entry>population variance of the input values (square of the population standard deviation)</entry>
      </row>
 
@@ -13396,6 +13440,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
        <type>double precision</type> for floating-point arguments,
        otherwise <type>numeric</type>
       </entry>
+      <entry>All types apart from floating-point types</entry>
       <entry>sample variance of the input values (square of the sample standard deviation)</entry>
      </row>
     </tbody>
@@ -13420,13 +13465,14 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
   <table id="functions-orderedset-table">
    <title>Ordered-Set Aggregate Functions</title>
 
-   <tgroup cols="5">
+   <tgroup cols="6">
     <thead>
      <row>
       <entry>Function</entry>
       <entry>Direct Argument Type(s)</entry>
       <entry>Aggregated Argument Type(s)</entry>
       <entry>Return Type</entry>
+      <entry>Partial Mode</entry>
       <entry>Description</entry>
      </row>
     </thead>
@@ -13449,6 +13495,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        same as sort expression
       </entry>
+      <entry>No</entry>
       <entry>
        returns the most frequent input value (arbitrarily choosing the first
        one if there are multiple equally-frequent results)
@@ -13475,6 +13522,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        same as sort expression
       </entry>
+      <entry>No</entry>
       <entry>
        continuous percentile: returns a value corresponding to the specified
        fraction in the ordering, interpolating between adjacent input items if
@@ -13495,6 +13543,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        array of sort expression's type
       </entry>
+      <entry>No</entry>
       <entry>
        multiple continuous percentile: returns an array of results matching
        the shape of the <literal>fractions</literal> parameter, with each
@@ -13519,6 +13568,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        same as sort expression
       </entry>
+      <entry>No</entry>
       <entry>
        discrete percentile: returns the first input value whose position in
        the ordering equals or exceeds the specified fraction
@@ -13538,6 +13588,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        array of sort expression's type
       </entry>
+      <entry>No</entry>
       <entry>
        multiple discrete percentile: returns an array of results matching the
        shape of the <literal>fractions</literal> parameter, with each non-null
@@ -13576,13 +13627,14 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
   <table id="functions-hypothetical-table">
    <title>Hypothetical-Set Aggregate Functions</title>
 
-   <tgroup cols="5">
+   <tgroup cols="6">
     <thead>
      <row>
       <entry>Function</entry>
       <entry>Direct Argument Type(s)</entry>
       <entry>Aggregated Argument Type(s)</entry>
       <entry>Return Type</entry>
+      <entry>Partial Mode</entry>
       <entry>Description</entry>
      </row>
     </thead>
@@ -13606,6 +13658,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>bigint</type>
       </entry>
+      <entry>No</entry>
       <entry>
        rank of the hypothetical row, with gaps for duplicate rows
       </entry>
@@ -13628,6 +13681,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>bigint</type>
       </entry>
+      <entry>No</entry>
       <entry>
        rank of the hypothetical row, without gaps
       </entry>
@@ -13650,6 +13704,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>double precision</type>
       </entry>
+      <entry>No</entry>
       <entry>
        relative rank of the hypothetical row, ranging from 0 to 1
       </entry>
@@ -13672,6 +13727,7 @@ SELECT xmlagg(x) FROM (SELECT x FROM test ORDER BY y DESC) AS tab;
       <entry>
        <type>double precision</type>
       </entry>
+      <entry>No</entry>
       <entry>
        relative rank of the hypothetical row, ranging from
        1/<replaceable>N</> to 1
