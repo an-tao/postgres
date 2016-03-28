@@ -279,21 +279,15 @@ ORDER BY 1, 2;
 -- Look for functions that return type "internal" and do not have any
 -- "internal" argument.  Such a function would be a security hole since
 -- it might be used to call an internal function from an SQL command.
--- As of 7.3 this query should find internal_in, and as of 9.6 aggregate
--- deserialization will be found too. These should contain a runtime check to
--- ensure they can only be called in an aggregate context.
+-- As of 7.3 this query should find only internal_in.
 SELECT p1.oid, p1.proname
 FROM pg_proc as p1
 WHERE p1.prorettype = 'internal'::regtype AND NOT
     'internal'::regtype = ANY (p1.proargtypes);
- oid  |         proname          
-------+--------------------------
- 2741 | numeric_avg_deserialize
- 3336 | numeric_deserialize
- 3340 | numeric_poly_deserialize
- 2787 | int8_avg_deserialize
+ oid  |   proname   
+------+-------------
  2304 | internal_in
-(5 rows)
+(1 row)
 
 -- Look for functions that return a polymorphic type and do not have any
 -- polymorphic argument.  Calls of such functions would be unresolvable
