@@ -1278,7 +1278,6 @@ create_unique_plan(PlannerInfo *root, UniquePath *best_path, int flags)
 								 AGG_HASHED,
 								 false,
 								 true,
-								 false,
 								 numGroupCols,
 								 groupColIdx,
 								 groupOperators,
@@ -1578,7 +1577,6 @@ create_agg_plan(PlannerInfo *root, AggPath *best_path)
 					best_path->aggstrategy,
 					best_path->combineStates,
 					best_path->finalizeAggs,
-					best_path->serialStates,
 					list_length(best_path->groupClause),
 					extract_grouping_cols(best_path->groupClause,
 										  subplan->targetlist),
@@ -1733,7 +1731,6 @@ create_groupingsets_plan(PlannerInfo *root, GroupingSetsPath *best_path)
 										 AGG_SORTED,
 										 false,
 										 true,
-										 false,
 									   list_length((List *) linitial(gsets)),
 										 new_grpColIdx,
 										 extract_grouping_ops(groupClause),
@@ -1770,7 +1767,6 @@ create_groupingsets_plan(PlannerInfo *root, GroupingSetsPath *best_path)
 						(numGroupCols > 0) ? AGG_SORTED : AGG_PLAIN,
 						false,
 						true,
-						false,
 						numGroupCols,
 						top_grpColIdx,
 						extract_grouping_ops(groupClause),
@@ -5639,7 +5635,7 @@ materialize_finished_plan(Plan *subplan)
 Agg *
 make_agg(List *tlist, List *qual,
 		 AggStrategy aggstrategy,
-		 bool combineStates, bool finalizeAggs, bool serialStates,
+		 bool combineStates, bool finalizeAggs,
 		 int numGroupCols, AttrNumber *grpColIdx, Oid *grpOperators,
 		 List *groupingSets, List *chain,
 		 double dNumGroups, Plan *lefttree)
@@ -5654,7 +5650,6 @@ make_agg(List *tlist, List *qual,
 	node->aggstrategy = aggstrategy;
 	node->combineStates = combineStates;
 	node->finalizeAggs = finalizeAggs;
-	node->serialStates = serialStates;
 	node->numCols = numGroupCols;
 	node->grpColIdx = grpColIdx;
 	node->grpOperators = grpOperators;
