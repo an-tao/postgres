@@ -141,7 +141,7 @@ typedef FormData_pg_aggregate *Form_pg_aggregate;
 DATA(insert ( 2100	n 0 int8_avg_accum		numeric_poly_avg	int8_avg_combine	int8_avg_serialize		int8_avg_deserialize	int8_avg_accum	int8_avg_accum_inv	numeric_poly_avg	f f 0	2281	17	48	2281	48	_null_ _null_ ));
 DATA(insert ( 2101	n 0 int4_avg_accum		int8_avg			int4_avg_combine	-						-						int4_avg_accum	int4_avg_accum_inv	int8_avg			f f 0	1016	0	0	1016	0	"{0,0}" "{0,0}" ));
 DATA(insert ( 2102	n 0 int2_avg_accum		int8_avg			int4_avg_combine	-						-						int2_avg_accum	int2_avg_accum_inv	int8_avg			f f 0	1016	0	0	1016	0	"{0,0}" "{0,0}" ));
-DATA(insert ( 2103	n 0 numeric_avg_accum	numeric_avg			numeric_avg_combine numeric_avg_serialize	numeric_avg_deserialize numeric_avg_accum numeric_accum_inv numeric_avg			f f 0	2281	17	128 2281	128 _null_ _null_ ));
+DATA(insert ( 2103	n 0 numeric_avg_accum	numeric_avg			numeric_avg_combine	numeric_avg_serialize	numeric_avg_deserialize	numeric_avg_accum numeric_accum_inv numeric_avg			f f 0	2281	17	128 2281	128	_null_ _null_ ));
 DATA(insert ( 2104	n 0 float4_accum		float8_avg			-					-						-						-				-				-						f f 0	1022	0	0	0		0	"{0,0,0}" _null_ ));
 DATA(insert ( 2105	n 0 float8_accum		float8_avg			-					-						-						-				-				-						f f 0	1022	0	0	0		0	"{0,0,0}" _null_ ));
 DATA(insert ( 2106	n 0 interval_accum		interval_avg		interval_combine	-						-						interval_accum	interval_accum_inv	interval_avg		f f 0	1187	0	0	1187	0	"{0 second,0 second}" "{0 second,0 second}" ));
@@ -154,7 +154,7 @@ DATA(insert ( 2110	n 0 float4pl			-					float4pl				-						-						-				-					-		
 DATA(insert ( 2111	n 0 float8pl			-					float8pl				-						-						-				-					-					f f 0	701		0	0	0		0	_null_ _null_ ));
 DATA(insert ( 2112	n 0 cash_pl				-					cash_pl					-						-						cash_pl			cash_mi				-					f f 0	790		0	0	790		0	_null_ _null_ ));
 DATA(insert ( 2113	n 0 interval_pl			-					interval_pl				-						-						interval_pl		interval_mi			-					f f 0	1186	0	0	1186	0	_null_ _null_ ));
-DATA(insert ( 2114	n 0 numeric_avg_accum	numeric_sum			numeric_combine			numeric_avg_serialize	numeric_avg_deserialize numeric_avg_accum numeric_accum_inv numeric_sum			f f 0	2281	17	128 2281	128 _null_ _null_ ));
+DATA(insert ( 2114	n 0 numeric_avg_accum	numeric_sum			numeric_combine			numeric_avg_serialize	numeric_avg_deserialize	numeric_avg_accum numeric_accum_inv	numeric_sum			f f 0	2281	17	128 2281	128 _null_ _null_ ));
 
 /* max */
 DATA(insert ( 2115	n 0 int8larger		-				int8larger			-	-	-				-				-				f f 413		20		0	0	0		0	_null_ _null_ ));
@@ -231,9 +231,9 @@ DATA(insert ( 2152	n 0 float8_accum	float8_var_samp			-						-						-							-			
 DATA(insert ( 2153	n 0 numeric_accum	numeric_var_samp		numeric_combine			numeric_serialize		numeric_deserialize			numeric_accum	numeric_accum_inv numeric_var_samp		f f 0	2281	17	128 2281	128 _null_ _null_ ));
 
 /* stddev_pop */
-DATA(insert ( 2724	n 0 int8_accum		numeric_stddev_pop		numeric_combine			numeric_serialize		numeric_deserialize			int8_accum		int8_accum_inv	numeric_stddev_pop		f f 0	2281	17	128 2281	128 _null_ _null_ ));
-DATA(insert ( 2725	n 0 int4_accum		numeric_poly_stddev_pop numeric_poly_combine	numeric_poly_serialize	numeric_poly_deserialize	int4_accum		int4_accum_inv	numeric_poly_stddev_pop f f 0	2281	17	48	2281	48	_null_ _null_ ));
-DATA(insert ( 2726	n 0 int2_accum		numeric_poly_stddev_pop numeric_poly_combine	numeric_poly_serialize	numeric_poly_deserialize	int2_accum		int2_accum_inv	numeric_poly_stddev_pop f f 0	2281	17	48	2281	48	_null_ _null_ ));
+DATA(insert ( 2724	n 0 int8_accum		numeric_stddev_pop		numeric_combine			numeric_serialize		numeric_deserialize			int8_accum		int8_accum_inv	numeric_stddev_pop		f f 0	2281	17	128	2281	128 _null_ _null_ ));
+DATA(insert ( 2725	n 0 int4_accum		numeric_poly_stddev_pop	numeric_poly_combine	numeric_poly_serialize	numeric_poly_deserialize	int4_accum		int4_accum_inv	numeric_poly_stddev_pop	f f 0	2281	17	48	2281	48	_null_ _null_ ));
+DATA(insert ( 2726	n 0 int2_accum		numeric_poly_stddev_pop	numeric_poly_combine	numeric_poly_serialize	numeric_poly_deserialize	int2_accum		int2_accum_inv	numeric_poly_stddev_pop	f f 0	2281	17	48	2281	48	_null_ _null_ ));
 DATA(insert ( 2727	n 0 float4_accum	float8_stddev_pop		-						-						-							-				-				-						f f 0	1022	0	0	0		0	"{0,0,0}" _null_ ));
 DATA(insert ( 2728	n 0 float8_accum	float8_stddev_pop		-						-						-							-				-				-						f f 0	1022	0	0	0		0	"{0,0,0}" _null_ ));
 DATA(insert ( 2729	n 0 numeric_accum	numeric_stddev_pop		numeric_combine			numeric_serialize		numeric_deserialize			numeric_accum	numeric_accum_inv numeric_stddev_pop	f f 0	2281	17	128 2281	128 _null_ _null_ ));
