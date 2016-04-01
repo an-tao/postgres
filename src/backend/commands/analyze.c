@@ -2072,6 +2072,12 @@ compute_distinct_stats(VacAttrStatsP stats,
 			 * recommend are considerably more complex, and are numerically
 			 * very unstable when n is much smaller than N.
 			 *
+			 * In this calculation, we consider only non-nulls.  We used to
+			 * include rows with null values in the n and N counts, but that
+			 * leads to inaccurate answers in columns with many nulls, and
+			 * it's intuitively bogus anyway considering the desired result is
+			 * the number of distinct non-null values.
+			 *
 			 * We assume (not very reliably!) that all the multiply-occurring
 			 * values are reflected in the final track[] list, and the other
 			 * nonnull values all appeared but once.  (XXX this usually
@@ -2081,21 +2087,22 @@ compute_distinct_stats(VacAttrStatsP stats,
 			 */
 			int			f1 = nonnull_cnt - summultiple;
 			int			d = f1 + nmultiple;
-			double		numer,
-						denom,
-						stadistinct;
+			double		n = samplerows - null_cnt;
+			double		N = totalrows * (1.0 - stats->stanullfrac);
+			double		stadistinct;
 
-			numer = (double) samplerows *(double) d;
+			/* N == 0 shouldn't happen, but just in case ... */
+			if (N > 0)
+				stadistinct = (n * d) / ((n - f1) + f1 * n / N);
+			else
+				stadistinct = 0;
 
-			denom = (double) (samplerows - f1) +
-				(double) f1 *(double) samplerows / totalrows;
-
-			stadistinct = numer / denom;
 			/* Clamp to sane range in case of roundoff error */
-			if (stadistinct < (double) d)
-				stadistinct = (double) d;
-			if (stadistinct > totalrows)
-				stadistinct = totalrows;
+			if (stadistinct < d)
+				stadistinct = d;
+			if (stadistinct > N)
+				stadistinct = N;
+			/* And round to integer */
 			stats->stadistinct = floor(stadistinct + 0.5);
 		}
 
@@ -2126,14 +2133,13 @@ compute_distinct_stats(VacAttrStatsP stats,
 		}
 		else
 		{
-			double		ndistinct = stats->stadistinct;
+			/* d here is the same as d in the Haas-Stokes formula */
+			int			d = nonnull_cnt - summultiple + nmultiple;
 			double		avgcount,
 						mincount;
 
-			if (ndistinct < 0)
-				ndistinct = -ndistinct * totalrows;
-			/* estimate # of occurrences in sample of a typical value */
-			avgcount = (double) samplerows / ndistinct;
+			/* estimate # occurrences in sample of a typical nonnull value */
+			avgcount = (double) nonnull_cnt / (double) d;
 			/* set minimum threshold count to store a value */
 			mincount = avgcount * 1.25;
 			if (mincount < 2)
@@ -2425,26 +2431,33 @@ compute_scalar_stats(VacAttrStatsP stats,
 			 * recommend are considerably more complex, and are numerically
 			 * very unstable when n is much smaller than N.
 			 *
+			 * In this calculation, we consider only non-nulls.  We used to
+			 * include rows with null values in the n and N counts, but that
+			 * leads to inaccurate answers in columns with many nulls, and
+			 * it's intuitively bogus anyway considering the desired result is
+			 * the number of distinct non-null values.
+			 *
 			 * Overwidth values are assumed to have been distinct.
 			 *----------
 			 */
 			int			f1 = ndistinct - nmultiple + toowide_cnt;
 			int			d = f1 + nmultiple;
-			double		numer,
-						denom,
-						stadistinct;
+			double		n = samplerows - null_cnt;
+			double		N = totalrows * (1.0 - stats->stanullfrac);
+			double		stadistinct;
 
-			numer = (double) samplerows *(double) d;
+			/* N == 0 shouldn't happen, but just in case ... */
+			if (N > 0)
+				stadistinct = (n * d) / ((n - f1) + f1 * n / N);
+			else
+				stadistinct = 0;
 
-			denom = (double) (samplerows - f1) +
-				(double) f1 *(double) samplerows / totalrows;
-
-			stadistinct = numer / denom;
 			/* Clamp to sane range in case of roundoff error */
-			if (stadistinct < (double) d)
-				stadistinct = (double) d;
-			if (stadistinct > totalrows)
-				stadistinct = totalrows;
+			if (stadistinct < d)
+				stadistinct = d;
+			if (stadistinct > N)
+				stadistinct = N;
+			/* And round to integer */
 			stats->stadistinct = floor(stadistinct + 0.5);
 		}
 
@@ -2480,21 +2493,20 @@ compute_scalar_stats(VacAttrStatsP stats,
 		}
 		else
 		{
-			double		ndistinct = stats->stadistinct;
+			/* d here is the same as d in the Haas-Stokes formula */
+			int			d = ndistinct + toowide_cnt;
 			double		avgcount,
 						mincount,
 						maxmincount;
 
-			if (ndistinct < 0)
-				ndistinct = -ndistinct * totalrows;
-			/* estimate # of occurrences in sample of a typical value */
-			avgcount = (double) samplerows / ndistinct;
+			/* estimate # occurrences in sample of a typical nonnull value */
+			avgcount = (double) values_cnt / (double) d;
 			/* set minimum threshold count to store a value */
 			mincount = avgcount * 1.25;
 			if (mincount < 2)
 				mincount = 2;
 			/* don't let threshold exceed 1/K, however */
-			maxmincount = (double) samplerows / (double) num_bins;
+			maxmincount = (double) values_cnt / (double) num_bins;
 			if (mincount > maxmincount)
 				mincount = maxmincount;
 			if (num_mcv > track_cnt)
