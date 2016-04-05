@@ -2055,7 +2055,11 @@ compute_distinct_stats(VacAttrStatsP stats,
 			/*
 			 * Our track list includes every value in the sample, and every
 			 * value appeared more than once.  Assume the column has just
-			 * these values.
+			 * these values.  (This case is meant to address columns with
+			 * small, fixed sets of possible values, such as boolean or enum
+			 * columns.  If there are any values that appear just once in the
+			 * sample, including too-wide values, we should assume that that's
+			 * not what we're dealing with.)
 			 */
 			stats->stadistinct = track_cnt;
 		}
@@ -2123,6 +2127,16 @@ compute_distinct_stats(VacAttrStatsP stats,
 		 * significantly more common than the (estimated) average. We set the
 		 * threshold rather arbitrarily at 25% more than average, with at
 		 * least 2 instances in the sample.
+		 *
+		 * Note: the first of these cases is meant to address columns with
+		 * small, fixed sets of possible values, such as boolean or enum
+		 * columns.  If we can *completely* represent the column population by
+		 * an MCV list that will fit into the stats target, then we should do
+		 * so and thus provide the planner with complete information.  But if
+		 * the MCV list is not complete, it's generally worth being more
+		 * selective, and not just filling it all the way up to the stats
+		 * target.  So for an incomplete list, we try to take only MCVs that
+		 * are significantly more common than average.
 		 */
 		if (track_cnt < track_max && toowide_cnt == 0 &&
 			stats->stadistinct > 0 &&
@@ -2133,13 +2147,15 @@ compute_distinct_stats(VacAttrStatsP stats,
 		}
 		else
 		{
-			/* d here is the same as d in the Haas-Stokes formula */
-			int			d = nonnull_cnt - summultiple + nmultiple;
+			double		ndistinct_table = stats->stadistinct;
 			double		avgcount,
 						mincount;
 
+			/* Re-extract estimate of # distinct nonnull values in table */
+			if (ndistinct_table < 0)
+				ndistinct_table = -ndistinct_table * totalrows;
 			/* estimate # occurrences in sample of a typical nonnull value */
-			avgcount = (double) nonnull_cnt / (double) d;
+			avgcount = (double) nonnull_cnt / ndistinct_table;
 			/* set minimum threshold count to store a value */
 			mincount = avgcount * 1.25;
 			if (mincount < 2)
@@ -2414,7 +2430,11 @@ compute_scalar_stats(VacAttrStatsP stats,
 		{
 			/*
 			 * Every value in the sample appeared more than once.  Assume the
-			 * column has just these values.
+			 * column has just these values.  (This case is meant to address
+			 * columns with small, fixed sets of possible values, such as
+			 * boolean or enum columns.  If there are any values that appear
+			 * just once in the sample, including too-wide values, we should
+			 * assume that that's not what we're dealing with.)
 			 */
 			stats->stadistinct = ndistinct;
 		}
@@ -2483,6 +2503,16 @@ compute_scalar_stats(VacAttrStatsP stats,
 		 * emit duplicate histogram bin boundaries.  (We might end up with
 		 * duplicate histogram entries anyway, if the distribution is skewed;
 		 * but we prefer to treat such values as MCVs if at all possible.)
+		 *
+		 * Note: the first of these cases is meant to address columns with
+		 * small, fixed sets of possible values, such as boolean or enum
+		 * columns.  If we can *completely* represent the column population by
+		 * an MCV list that will fit into the stats target, then we should do
+		 * so and thus provide the planner with complete information.  But if
+		 * the MCV list is not complete, it's generally worth being more
+		 * selective, and not just filling it all the way up to the stats
+		 * target.  So for an incomplete list, we try to take only MCVs that
+		 * are significantly more common than average.
 		 */
 		if (track_cnt == ndistinct && toowide_cnt == 0 &&
 			stats->stadistinct > 0 &&
@@ -2493,14 +2523,16 @@ compute_scalar_stats(VacAttrStatsP stats,
 		}
 		else
 		{
-			/* d here is the same as d in the Haas-Stokes formula */
-			int			d = ndistinct + toowide_cnt;
+			double		ndistinct_table = stats->stadistinct;
 			double		avgcount,
 						mincount,
 						maxmincount;
 
+			/* Re-extract estimate of # distinct nonnull values in table */
+			if (ndistinct_table < 0)
+				ndistinct_table = -ndistinct_table * totalrows;
 			/* estimate # occurrences in sample of a typical nonnull value */
-			avgcount = (double) values_cnt / (double) d;
+			avgcount = (double) nonnull_cnt / ndistinct_table;
 			/* set minimum threshold count to store a value */
 			mincount = avgcount * 1.25;
 			if (mincount < 2)
