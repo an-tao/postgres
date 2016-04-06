@@ -10903,6 +10903,9 @@ table2-mapping
    <primary>jsonb_set</primary>
   </indexterm>
   <indexterm>
+   <primary>jsonb_insert</primary>
+  </indexterm>
+  <indexterm>
    <primary>jsonb_pretty</primary>
   </indexterm>
 
@@ -11184,6 +11187,39 @@ table2-mapping
         </para></entry>
        </row>
       <row>
+       <entry>
+           <para><literal>
+           jsonb_insert(target jsonb, path text[], new_value jsonb, <optional><parameter>insert_after</parameter> <type>boolean</type></optional>)
+           </literal></para>
+       </entry>
+       <entry><para><type>jsonb</type></para></entry>
+       <entry>
+         Returns <replaceable>target</replaceable> with
+         <replaceable>new_value</replaceable> inserted. If
+         <replaceable>target</replaceable> section designated by
+         <replaceable>path</replaceable> is in a JSONB array,
+         <replaceable>new_value</replaceable> will be inserted before target or
+         after if <replaceable>insert_after</replaceable> is true (default is
+         <literal>false</>). If <replaceable>target</replaceable> section
+         designated by <replaceable>path</replaceable> is in JSONB object,
+         <replaceable>new_value</replaceable> will be inserted only if
+         <replaceable>target</replaceable> does not exist. As with the path
+         orientated operators, negative integers that appear in
+         <replaceable>path</replaceable> count from the end of JSON arrays.
+       </entry>
+       <entry>
+           <para><literal>
+               jsonb_insert('{"a": [0,1,2]}', '{a, 1}', '"new_value"')
+           </literal></para>
+           <para><literal>
+               jsonb_insert('{"a": [0,1,2]}', '{a, 1}', '"new_value"', true)
+           </literal></para>
+       </entry>
+       <entry><para><literal>{"a": [0, "new_value", 1, 2]}</literal>
+         </para><para><literal>{"a": [0, 1, "new_value", 2]}</literal>
+        </para></entry>
+       </row>
+      <row>
        <entry><para><literal>jsonb_pretty(from_json jsonb)</literal>
          </para></entry>
        <entry><para><type>text</type></para></entry>
@@ -11235,10 +11271,11 @@ table2-mapping
   <note>
     <para>
       All the items of the <literal>path</> parameter of <literal>jsonb_set</>
-      must be present in the <literal>target</>, unless
-      <literal>create_missing</> is true, in which case all but the last item
-      must be present. If these conditions are not met the <literal>target</>
-      is returned unchanged.
+      as well as <literal>jsonb_insert</> except the last item must be present
+      in the <literal>target</>. If <literal>create_missing</> is false, all
+      items of the <literal>path</> parameter of <literal>jsonb_set</> must be
+      present. If these conditions are not met the <literal>target</> is
+      returned unchanged.
     </para>
     <para>
       If the last path item is an object key, it will be created if it
@@ -18252,6 +18289,51 @@ postgres=# SELECT * FROM pg_xlogfile_name_offset(pg_stop_backup());
         parameter <parameter>flush</parameter> determines whether the
         corresponding local transaction will be guaranteed to have been
         flushed to disk or not.
+       </entry>
+      </row>
+
+      <row>
+       <entry id="pg-logical-emit-message-text">
+        <indexterm>
+         <primary>pg_logical_emit_message</primary>
+        </indexterm>
+        <literal><function>pg_logical_emit_message(<parameter>transactional</parameter> <type>bool</type>, <parameter>prefix</parameter> <type>text</type>, <parameter>content</parameter> <type>text</type>)</function></literal>
+       </entry>
+       <entry>
+        void
+       </entry>
+       <entry>
+        Emit text logical decoding message. This can be used to pass generic
+        messages to logical decoding plugins through WAL. The parameter
+        <parameter>transactional</parameter> specifies if the message should
+        be part of current transaction or if it should be written immediately
+        and decoded as soon as the logical decoding reads the record. The
+        <parameter>prefix</parameter> is textual prefix used by the logical
+        decoding plugins to easily recognize interesting messages for them.
+        The <parameter>content</parameter> is the text of the message.
+       </entry>
+      </row>
+
+      <row>
+       <entry id="pg-logical-emit-message-bytea">
+        <indexterm>
+         <primary>>pg_logical_emit_message</primary>
+        </indexterm>
+        <literal><function>>pg_logical_emit_message(<parameter>transactional</parameter> <type>bool</type>, <parameter>prefix</parameter> <type>text</type>, <parameter>content</parameter> <type>bytea</type>)</function></literal>
+       </entry>
+       <entry>
+        void
+       </entry>
+       <entry>
+        Emit binary logical decoding message. This can be used to pass generic
+        messages to logical decoding plugins through WAL. The parameter
+        <parameter>transactional</parameter> specifies if the message should
+        be part of current transaction or if it should be written immediately
+        and decoded as soon as the logical decoding reads the record. The
+        <parameter>prefix</parameter> is textual prefix used by the logical
+        decoding plugins to easily recognize interesting messages for them.
+        The <parameter>content</parameter> is the binary content of the
+        message.
        </entry>
       </row>
 
