@@ -400,6 +400,8 @@ DATA(insert OID = 220 (  float8um		   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0
 DATA(insert OID = 221 (  float8abs		   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 701 "701" _null_ _null_ _null_ _null_ _null_	float8abs _null_ _null_ _null_ ));
 DATA(insert OID = 222 (  float8_accum	   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 1022 "1022 701" _null_ _null_ _null_ _null_ _null_ float8_accum _null_ _null_ _null_ ));
 DESCR("aggregate transition function");
+DATA(insert OID = 276 (  float8_combine		   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 1022 "1022 1022" _null_ _null_ _null_ _null_ _null_ float8_combine _null_ _null_ _null_ ));
+DESCR("aggregate combine function");
 DATA(insert OID = 223 (  float8larger	   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 701 "701 701" _null_ _null_ _null_ _null_ _null_	float8larger _null_ _null_ _null_ ));
 DESCR("larger of two");
 DATA(insert OID = 224 (  float8smaller	   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 701 "701 701" _null_ _null_ _null_ _null_ _null_	float8smaller _null_ _null_ _null_ ));
@@ -2542,6 +2544,8 @@ DATA(insert OID = 2805 (  int8inc_float8_float8		PGNSP PGUID 12 1 0 0 0 f f f f 
 DESCR("aggregate transition function");
 DATA(insert OID = 2806 (  float8_regr_accum			PGNSP PGUID 12 1 0 0 0 f f f f t f i s 3 0 1022 "1022 701 701" _null_ _null_ _null_ _null_ _null_ float8_regr_accum _null_ _null_ _null_ ));
 DESCR("aggregate transition function");
+DATA(insert OID = 3342 (  float8_regr_combine		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 1022 "1022 1022" _null_ _null_ _null_ _null_ _null_ float8_regr_combine _null_ _null_ _null_ ));
+DESCR("aggregate combine function");
 DATA(insert OID = 2807 (  float8_regr_sxx			PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 701 "1022" _null_ _null_ _null_ _null_ _null_ float8_regr_sxx _null_ _null_ _null_ ));
 DESCR("aggregate final function");
 DATA(insert OID = 2808 (  float8_regr_syy			PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 701 "1022" _null_ _null_ _null_ _null_ _null_ float8_regr_syy _null_ _null_ _null_ ));
@@ -4607,6 +4611,9 @@ DESCR("less-equal-greater");
 
 DATA(insert OID = 3669 (  tsquery_and		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 3615 "3615 3615" _null_ _null_ _null_ _null_ _null_ tsquery_and _null_ _null_ _null_ ));
 DATA(insert OID = 3670 (  tsquery_or		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 3615 "3615 3615" _null_ _null_ _null_ _null_ _null_ tsquery_or _null_ _null_ _null_ ));
+DATA(insert OID = 5003 (  tsquery_phrase	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 3615 "3615 3615" _null_ _null_ _null_ _null_ _null_ tsquery_phrase _null_ _null_ _null_ ));
+DATA(insert OID = 5004 (  tsquery_phrase	PGNSP PGUID 12 1 0 0 0 f f f f t f i s 3 0 3615 "3615 3615 23" _null_ _null_ _null_ _null_ _null_ tsquery_phrase_distance _null_ _null_ _null_ ));
+DESCR("phrase-concatenate with distance");
 DATA(insert OID = 3671 (  tsquery_not		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 1 0 3615 "3615" _null_ _null_ _null_ _null_ _null_ tsquery_not _null_ _null_ _null_ ));
 
 DATA(insert OID = 3691 (  tsq_mcontains		PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 16 "3615 3615" _null_ _null_ _null_ _null_ _null_ tsq_mcontains _null_ _null_ _null_ ));
@@ -4726,11 +4733,15 @@ DATA(insert OID = 3746 (  to_tsquery		PGNSP PGUID 12 100 0 0 0 f f f f t f i s 2
 DESCR("make tsquery");
 DATA(insert OID = 3747 (  plainto_tsquery	PGNSP PGUID 12 100 0 0 0 f f f f t f i s 2 0 3615 "3734 25" _null_ _null_ _null_ _null_ _null_ plainto_tsquery_byid _null_ _null_ _null_ ));
 DESCR("transform to tsquery");
+DATA(insert OID = 5006 (  phraseto_tsquery	PGNSP PGUID 12 100 0 0 0 f f f f t f i s 2 0 3615 "3734 25" _null_ _null_ _null_ _null_ _null_ phraseto_tsquery_byid _null_ _null_ _null_ ));
+DESCR("transform to tsquery");
 DATA(insert OID = 3749 (  to_tsvector		PGNSP PGUID 12 100 0 0 0 f f f f t f s s 1 0 3614 "25" _null_ _null_ _null_ _null_ _null_ to_tsvector _null_ _null_ _null_ ));
 DESCR("transform to tsvector");
 DATA(insert OID = 3750 (  to_tsquery		PGNSP PGUID 12 100 0 0 0 f f f f t f s s 1 0 3615 "25" _null_ _null_ _null_ _null_ _null_ to_tsquery _null_ _null_ _null_ ));
 DESCR("make tsquery");
 DATA(insert OID = 3751 (  plainto_tsquery	PGNSP PGUID 12 100 0 0 0 f f f f t f s s 1 0 3615 "25" _null_ _null_ _null_ _null_ _null_ plainto_tsquery _null_ _null_ _null_ ));
+DESCR("transform to tsquery");
+DATA(insert OID = 5001 (  phraseto_tsquery	PGNSP PGUID 12 100 0 0 0 f f f f t f s s 1 0 3615 "25" _null_ _null_ _null_ _null_ _null_ phraseto_tsquery _null_ _null_ _null_ ));
 DESCR("transform to tsquery");
 
 DATA(insert OID = 3752 (  tsvector_update_trigger			PGNSP PGUID 12 1 0 0 0 f f f f f f v s 0 0 2279 "" _null_ _null_ _null_ _null_ _null_ tsvector_update_trigger_byid _null_ _null_ _null_ ));
@@ -5244,6 +5255,8 @@ DESCR("for use by pg_upgrade");
 DATA(insert OID = 3590 ( binary_upgrade_set_next_pg_authid_oid PGNSP PGUID	12 1 0 0 0 f f f f t f v r 1 0 2278 "26" _null_ _null_ _null_ _null_ _null_ binary_upgrade_set_next_pg_authid_oid _null_ _null_ _null_ ));
 DESCR("for use by pg_upgrade");
 DATA(insert OID = 3591 ( binary_upgrade_create_empty_extension PGNSP PGUID	12 1 0 0 0 f f f f f f v r 7 0 2278 "25 25 16 25 1028 1009 1009" _null_ _null_ _null_ _null_ _null_ binary_upgrade_create_empty_extension _null_ _null_ _null_ ));
+DESCR("for use by pg_upgrade");
+DATA(insert OID = 4083 ( binary_upgrade_set_record_init_privs PGNSP PGUID	12 1 0 0 0 f f f f t f v r 1 0 2278 "16" _null_ _null_ _null_ _null_ _null_ binary_upgrade_set_record_init_privs _null_ _null_ _null_ ));
 DESCR("for use by pg_upgrade");
 
 /* replication/origin.h */

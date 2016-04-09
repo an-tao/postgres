@@ -109,6 +109,8 @@ static int fsm_set_and_search(Relation rel, FSMAddress addr, uint16 slot,
 				   uint8 newValue, uint8 minValue);
 static BlockNumber fsm_search(Relation rel, uint8 min_cat);
 static uint8 fsm_vacuum_page(Relation rel, FSMAddress addr, bool *eof);
+static BlockNumber fsm_get_lastblckno(Relation rel, FSMAddress addr);
+static void fsm_update_recursive(Relation rel, FSMAddress addr, uint8 new_cat);
 
 
 /******** Public API ********/
@@ -189,6 +191,46 @@ RecordPageWithFreeSpace(Relation rel, BlockNumber heapBlk, Size spaceAvail)
 }
 
 /*
+ * Update the upper levels of the free space map all the way up to the root
+ * to make sure we don't lose track of new blocks we just inserted.  This is
+ * intended to be used after adding many new blocks to the relation; we judge
+ * it not worth updating the upper levels of the tree every time data for
+ * a single page changes, but for a bulk-extend it's worth it.
+ */
+void
+UpdateFreeSpaceMap(Relation rel, BlockNumber startBlkNum,
+					BlockNumber endBlkNum, Size freespace)
+{
+	int			new_cat = fsm_space_avail_to_cat(freespace);
+	FSMAddress	addr;
+	uint16		slot;
+	BlockNumber	blockNum;
+	BlockNumber	lastBlkOnPage;
+
+	blockNum = startBlkNum;
+
+	while (blockNum <= endBlkNum)
+	{
+		/*
+		 * Find FSM address for this block; update tree all the way to the
+		 * root.
+		 */
+		addr = fsm_get_location(blockNum, &slot);
+		fsm_update_recursive(rel, addr, new_cat);
+
+		/*
+		 * Get the last block number on this FSM page.  If that's greater
+		 * than or equal to our endBlkNum, we're done.  Otherwise, advance
+		 * to the first block on the next page.
+		 */
+		lastBlkOnPage = fsm_get_lastblckno(rel, addr);
+		if (lastBlkOnPage >= endBlkNum)
+			break;
+		blockNum = lastBlkOnPage + 1;
+	}
+}
+
+/*
  * XLogRecordPageWithFreeSpace - like RecordPageWithFreeSpace, for use in
  *		WAL replay
  */
@@ -211,7 +253,7 @@ XLogRecordPageWithFreeSpace(RelFileNode rnode, BlockNumber heapBlk,
 	buf = XLogReadBufferExtended(rnode, FSM_FORKNUM, blkno, RBM_ZERO_ON_ERROR);
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 
-	page = BufferGetPage(buf);
+	page = BufferGetPage(buf, NULL, NULL, BGP_NO_SNAPSHOT_TEST);
 	if (PageIsNew(page))
 		PageInit(page, BLCKSZ, 0);
 
@@ -238,7 +280,8 @@ GetRecordedFreeSpace(Relation rel, BlockNumber heapBlk)
 	buf = fsm_readbuf(rel, addr, false);
 	if (!BufferIsValid(buf))
 		return 0;
-	cat = fsm_get_avail(BufferGetPage(buf), slot);
+	cat = fsm_get_avail(BufferGetPage(buf, NULL, NULL, BGP_NO_SNAPSHOT_TEST),
+						slot);
 	ReleaseBuffer(buf);
 
 	return fsm_space_cat_to_avail(cat);
@@ -285,7 +328,9 @@ FreeSpaceMapTruncateRel(Relation rel, BlockNumber nblocks)
 		if (!BufferIsValid(buf))
 			return;				/* nothing to do; the FSM was already smaller */
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-		fsm_truncate_avail(BufferGetPage(buf), first_removed_slot);
+		fsm_truncate_avail(BufferGetPage(buf, NULL, NULL,
+										 BGP_NO_SNAPSHOT_TEST),
+						   first_removed_slot);
 		MarkBufferDirtyHint(buf, false);
 		UnlockReleaseBuffer(buf);
 
@@ -535,8 +580,9 @@ fsm_readbuf(Relation rel, FSMAddress addr, bool extend)
 	 * headers, for example.
 	 */
 	buf = ReadBufferExtended(rel, FSM_FORKNUM, blkno, RBM_ZERO_ON_ERROR, NULL);
-	if (PageIsNew(BufferGetPage(buf)))
-		PageInit(BufferGetPage(buf), BLCKSZ, 0);
+	if (PageIsNew(BufferGetPage(buf, NULL, NULL, BGP_NO_SNAPSHOT_TEST)))
+		PageInit(BufferGetPage(buf, NULL, NULL, BGP_NO_SNAPSHOT_TEST),
+				 BLCKSZ, 0);
 	return buf;
 }
 
@@ -615,7 +661,7 @@ fsm_set_and_search(Relation rel, FSMAddress addr, uint16 slot,
 	buf = fsm_readbuf(rel, addr, true);
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 
-	page = BufferGetPage(buf);
+	page = BufferGetPage(buf, NULL, NULL, BGP_NO_SNAPSHOT_TEST);
 
 	if (fsm_set_avail(page, slot, newValue))
 		MarkBufferDirtyHint(buf, false);
@@ -659,7 +705,9 @@ fsm_search(Relation rel, uint8 min_cat)
 									(addr.level == FSM_BOTTOM_LEVEL),
 									false);
 			if (slot == -1)
-				max_avail = fsm_get_max_avail(BufferGetPage(buf));
+				max_avail =
+					fsm_get_max_avail(BufferGetPage(buf, NULL, NULL,
+													BGP_NO_SNAPSHOT_TEST));
 			UnlockReleaseBuffer(buf);
 		}
 		else
@@ -741,7 +789,7 @@ fsm_vacuum_page(Relation rel, FSMAddress addr, bool *eof_p)
 	else
 		*eof_p = false;
 
-	page = BufferGetPage(buf);
+	page = BufferGetPage(buf, NULL, NULL, BGP_NO_SNAPSHOT_TEST);
 
 	/*
 	 * Recurse into children, and fix the information stored about them at
@@ -768,14 +816,17 @@ fsm_vacuum_page(Relation rel, FSMAddress addr, bool *eof_p)
 			if (fsm_get_avail(page, slot) != child_avail)
 			{
 				LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-				fsm_set_avail(BufferGetPage(buf), slot, child_avail);
+				fsm_set_avail(BufferGetPage(buf, NULL, NULL,
+											BGP_NO_SNAPSHOT_TEST),
+							  slot, child_avail);
 				MarkBufferDirtyHint(buf, false);
 				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 			}
 		}
 	}
 
-	max_avail = fsm_get_max_avail(BufferGetPage(buf));
+	max_avail = fsm_get_max_avail(BufferGetPage(buf, NULL, NULL,
+												BGP_NO_SNAPSHOT_TEST));
 
 	/*
 	 * Reset the next slot pointer. This encourages the use of low-numbered
@@ -787,4 +838,43 @@ fsm_vacuum_page(Relation rel, FSMAddress addr, bool *eof_p)
 	ReleaseBuffer(buf);
 
 	return max_avail;
+}
+
+/*
+ * This function will return the last block number stored on given
+ * FSM page address.
+ */
+static BlockNumber
+fsm_get_lastblckno(Relation rel, FSMAddress addr)
+{
+	int			slot;
+
+	/*
+	 * Get the last slot number on the given address and convert that to
+	 * block number
+	 */
+	slot = SlotsPerFSMPage - 1;
+	return fsm_get_heap_blk(addr, slot);
+}
+
+/*
+ * Recursively update the FSM tree from given address to
+ * all the way up to root.
+ */
+static void
+fsm_update_recursive(Relation rel, FSMAddress addr, uint8 new_cat)
+{
+	uint16		parentslot;
+	FSMAddress	parent;
+
+	if (addr.level == FSM_ROOT_LEVEL)
+		return;
+
+	/*
+	 * Get the parent page and our slot in the parent page, and
+	 * update the information in that.
+	 */
+	parent = fsm_get_parent(addr, &parentslot);
+	fsm_set_and_search(rel, parent, parentslot, new_cat, 0);
+	fsm_update_recursive(rel, parent, new_cat);
 }

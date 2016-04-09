@@ -877,6 +877,15 @@ static struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
+	{
+		{"enable_fkey_estimates", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables use of foreign keys for estimating joins."),
+			NULL
+		},
+		&enable_fkey_estimates,
+		true,
+		NULL, NULL, NULL
+	},
 
 	{
 		{"geqo", PGC_USERSET, QUERY_TUNING_GEQO,
@@ -1919,6 +1928,16 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"replacement_sort_tuples", PGC_USERSET, RESOURCES_MEM,
+			gettext_noop("Sets the maximum number of tuples to be sorted using replacement selection."),
+			gettext_noop("When more tuples than this are present, quicksort will be used.")
+		},
+		&replacement_sort_tuples,
+		150000, 0, INT_MAX,
+		NULL, NULL, NULL
+	},
+
 	/*
 	 * We use the hopefully-safely-small value of 100kB as the compiled-in
 	 * default for max_stack_depth.  InitializeGUCOptions will increase it if
@@ -2656,6 +2675,17 @@ static struct config_int ConfigureNamesInt[] =
 		&autovacuum_work_mem,
 		-1, -1, MAX_KILOBYTES,
 		check_autovacuum_work_mem, NULL, NULL
+	},
+
+	{
+		{"old_snapshot_threshold", PGC_POSTMASTER, RESOURCES_ASYNCHRONOUS,
+			gettext_noop("Time before a snapshot is too old to read pages changed after the snapshot was taken."),
+			gettext_noop("A value of -1 disables this feature."),
+			GUC_UNIT_MIN
+		},
+		&old_snapshot_threshold,
+		-1, -1, MINS_PER_HOUR * HOURS_PER_DAY * 60,
+		NULL, NULL, NULL
 	},
 
 	{

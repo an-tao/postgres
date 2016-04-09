@@ -1472,6 +1472,45 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-replacement-sort-tuples" xreflabel="replacement_sort_tuples">
+      <term><varname>replacement_sort_tuples</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>replacement_sort_tuples</> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        When the number of tuples to be sorted is smaller than this number,
+        a sort will produce its first output run using replacement selection
+        rather than quicksort.  This may be useful in memory-constrained
+        environments where tuples that are input into larger sort operations
+        have a strong physical-to-logical correlation.  Note that this does
+        not include input tuples with an <emphasis>inverse</emphasis>
+        correlation.  It is possible for the replacement selection algorithm
+        to generate one long run that requires no merging, where use of the
+        default strategy would result in many runs that must be merged
+        to produce a final sorted output.  This may allow sort
+        operations to complete sooner.
+       </para>
+       <para>
+        The default is 150,000 tuples.  Note that higher values are typically
+        not much more effective, and may be counter-productive, since the
+        priority queue is sensitive to the size of available CPU cache, whereas
+        the default strategy sorts runs using a <firstterm>cache
+        oblivious</firstterm> algorithm.  This property allows the default sort
+        strategy to automatically and transparently make effective use
+        of available CPU cache.
+       </para>
+       <para>
+        Setting <varname>maintenance_work_mem</varname> to its default
+        value usually prevents utility command external sorts (e.g.,
+        sorts used by <command>CREATE INDEX</> to build B-Tree
+        indexes) from ever using replacement selection sort, unless the
+        input tuples are quite wide.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-autovacuum-work-mem" xreflabel="autovacuum_work_mem">
       <term><varname>autovacuum_work_mem</varname> (<type>integer</type>)
       <indexterm>
@@ -1999,6 +2038,42 @@ include_dir 'conf.d'
          <symbol>BLCKSZ</symbol> change the default and maximum.)
          This parameter can only be set in the <filename>postgresql.conf</>
          file or on the server command line.
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-old-snapshot-threshold" xreflabel="old_snapshot_threshold">
+       <term><varname>old_snapshot_threshold</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>old_snapshot_threshold</> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Sets the minimum time that a snapshot can be used without risk of a
+         <literal>snapshot too old</> error occurring when using the snapshot.
+         This parameter can only be set at server start.
+        </para>
+
+        <para>
+         Beyond the threshold, old data may be vacuumed away.  This can help
+         prevent bloat in the face of snapshots which remain in use for a
+         long time.  To prevent incorrect results due to cleanup of data which
+         would otherwise be visible to the snapshot, an error is generated
+         when the snapshot is older than this threshold and the snapshot is
+         used to read a page which has been modified since the snapshot was
+         built.
+        </para>
+
+        <para>
+         A value of <literal>-1</> disables this feature, and is the default.
+         Useful values for production work probably range from a small number
+         of hours to a few days.  The setting will be coerced to a granularity
+         of minutes, and small numbers (such as <literal>0</> or
+         <literal>1min</>) are only allowed because they may sometimes be
+         useful for testing.  While a setting as high as <literal>60d</> is
+         allowed, please note that in many workloads extreme bloat or
+         transaction ID wraparound may occur in much shorter time frames.
         </para>
        </listitem>
       </varlistentry>
@@ -3012,6 +3087,10 @@ include_dir 'conf.d'
         You should also consider setting <varname>hot_standby_feedback</>
         on standby server(s) as an alternative to using this parameter.
        </para>
+       <para>
+        This does not prevent cleanup of dead rows which have reached the age
+        specified by <varname>old_snapshot_threshold</>.
+       </para>
       </listitem>
      </varlistentry>
 
@@ -3158,6 +3237,16 @@ include_dir 'conf.d'
         If cascaded replication is in use the feedback is passed upstream
         until it eventually reaches the primary.  Standbys make no other use
         of feedback they receive other than to pass upstream.
+       </para>
+       <para>
+        This setting does not override the behavior of
+        <varname>old_snapshot_threshold</> on the primary; a snapshot on the
+        standby which exceeds the primary's age threshold can become invalid,
+        resulting in cancellation of transactions on the standby.  This is
+        because <varname>old_snapshot_threshold</> is intended to provide an
+        absolute limit on the time which dead rows can contribute to bloat,
+        which would otherwise be violated because of the configuration of a
+        standby.
        </para>
       </listitem>
      </varlistentry>
