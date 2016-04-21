@@ -48,19 +48,6 @@ typedef enum
 								 * replay; otherwise same as RBM_NORMAL */
 } ReadBufferMode;
 
-/*
- * Forced choice for whether BufferGetPage() must check snapshot age
- *
- * A scan must test for old snapshot, unless the test would be redundant (for
- * example, to tests already made at a lower level on all code paths).
- * Positioning for DML or vacuuming does not need this sort of test.
- */
-typedef enum
-{
-	BGP_NO_SNAPSHOT_TEST,		/* Not used for scan, or is redundant */
-	BGP_TEST_FOR_OLD_SNAPSHOT	/* Test for old snapshot is needed */
-} BufferGetPageAgeTest;
-
 /* forward declared, to avoid having to expose buf_internals.h here */
 struct WritebackContext;
 
@@ -178,6 +165,15 @@ extern PGDLLIMPORT int32 *LocalRefCount;
 )
 
 /*
+ * BufferGetPage
+ *		Returns the page associated with a buffer.
+ *
+ * When this is called as part of a scan, there may be a need for a nearby
+ * call to TestForOldSnapshot().  See the definition of that for details.
+ */
+#define BufferGetPage(buffer) ((Page)BufferGetBlock(buffer))
+
+/*
  * prototypes for functions in bufmgr.c
  */
 extern bool ComputeIoConcurrency(int io_concurrency, double *target);
@@ -253,23 +249,14 @@ extern void FreeAccessStrategy(BufferAccessStrategy strategy);
 /* inline functions */
 
 /*
- * BufferGetPage
- *		Returns the page associated with a buffer.
- *
- * For call sites where the check is not needed (which is the vast majority of
- * them), the snapshot and relation parameters can, and generally should, be
- * NULL.
+ * Although this header file is nominally backend-only, certain frontend
+ * programs like pg_xlogdump include it.  For compilers that emit static
+ * inline functions even when they're unused, that leads to unsatisfied
+ * external references; hence hide these with #ifndef FRONTEND.
  */
-static inline Page
-BufferGetPage(Buffer buffer, Snapshot snapshot, Relation relation,
-			  BufferGetPageAgeTest agetest)
-{
-	Page		page = (Page) BufferGetBlock(buffer);
 
-	if (agetest == BGP_TEST_FOR_OLD_SNAPSHOT)
-		TestForOldSnapshot(snapshot, relation, page);
+#ifndef FRONTEND
 
-	return page;
-}
+#endif   /* FRONTEND */
 
-#endif
+#endif   /* BUFMGR_H */

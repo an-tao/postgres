@@ -1198,9 +1198,10 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 		{
 			/* if it wasn't valid, we need only the new partition */
 			LWLockAcquire(newPartitionLock, LW_EXCLUSIVE);
-			/* these just keep the compiler quiet about uninit variables */
+			/* remember we have no old-partition lock or tag */
+			oldPartitionLock = NULL;
+			/* this just keeps the compiler quiet about uninit variables */
 			oldHash = 0;
-			oldPartitionLock = 0;
 		}
 
 		/*
@@ -1223,7 +1224,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			UnpinBuffer(buf, true);
 
 			/* Can give up that buffer's mapping partition lock now */
-			if ((oldFlags & BM_TAG_VALID) &&
+			if (oldPartitionLock != NULL &&
 				oldPartitionLock != newPartitionLock)
 				LWLockRelease(oldPartitionLock);
 
@@ -1277,7 +1278,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 		UnlockBufHdr(buf, buf_state);
 		BufTableDelete(&newTag, newHash);
-		if ((oldFlags & BM_TAG_VALID) &&
+		if (oldPartitionLock != NULL &&
 			oldPartitionLock != newPartitionLock)
 			LWLockRelease(oldPartitionLock);
 		LWLockRelease(newPartitionLock);
@@ -1303,7 +1304,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 
 	UnlockBufHdr(buf, buf_state);
 
-	if (oldFlags & BM_TAG_VALID)
+	if (oldPartitionLock != NULL)
 	{
 		BufTableDelete(&oldTag, oldHash);
 		if (oldPartitionLock != newPartitionLock)
@@ -2814,7 +2815,7 @@ XLogRecPtr
 BufferGetLSNAtomic(Buffer buffer)
 {
 	BufferDesc *bufHdr = GetBufferDescriptor(buffer - 1);
-	char	   *page = BufferGetPage(buffer, NULL, NULL, BGP_NO_SNAPSHOT_TEST);
+	char	   *page = BufferGetPage(buffer);
 	XLogRecPtr	lsn;
 	uint32		buf_state;
 
@@ -3361,7 +3362,7 @@ void
 MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 {
 	BufferDesc *bufHdr;
-	Page		page = BufferGetPage(buffer, NULL, NULL, BGP_NO_SNAPSHOT_TEST);
+	Page		page = BufferGetPage(buffer);
 
 	if (!BufferIsValid(buffer))
 		elog(ERROR, "bad buffer ID: %d", buffer);
@@ -4029,8 +4030,10 @@ rnode_comparator(const void *p1, const void *p2)
 uint32
 LockBufHdr(BufferDesc *desc)
 {
-	SpinDelayStatus delayStatus = init_local_spin_delay();
+	SpinDelayStatus delayStatus;
 	uint32		old_buf_state;
+
+	init_local_spin_delay(&delayStatus);
 
 	while (true)
 	{
@@ -4055,8 +4058,10 @@ LockBufHdr(BufferDesc *desc)
 static uint32
 WaitBufHdrUnlocked(BufferDesc *buf)
 {
-	SpinDelayStatus delayStatus = init_local_spin_delay();
+	SpinDelayStatus delayStatus;
 	uint32		buf_state;
+
+	init_local_spin_delay(&delayStatus);
 
 	buf_state = pg_atomic_read_u32(&buf->state);
 
@@ -4283,10 +4288,8 @@ IssuePendingWritebacks(WritebackContext *context)
  * This test generally needs to be performed after every BufferGetPage() call
  * that is executed as part of a scan.  It is not needed for calls made for
  * modifying the page (for example, to position to the right place to insert a
- * new index tuple or for vacuuming).  To minimize errors of omission, the
- * BufferGetPage() macro accepts parameters to specify whether the test should
- * be run, and supply the necessary snapshot and relation parameters.  See the
- * declaration of BufferGetPage() for more details.
+ * new index tuple or for vacuuming).  It may also be omitted where calls to
+ * lower-level functions will have already performed the test.
  *
  * Note that a NULL snapshot argument is allowed and causes a fast return
  * without error; this is to support call sites which can be called from
@@ -4295,7 +4298,7 @@ IssuePendingWritebacks(WritebackContext *context)
  * For best performance, keep the tests that are fastest and/or most likely to
  * exclude a page from old snapshot testing near the front.
  */
-extern void
+void
 TestForOldSnapshot(Snapshot snapshot, Relation relation, Page page)
 {
 	Assert(relation != NULL);
