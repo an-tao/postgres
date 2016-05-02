@@ -167,7 +167,7 @@
 
 #effective_io_concurrency = 1		# 1-1000; 0 disables prefetching
 #max_worker_processes = 8
-#max_parallel_degree = 0		# max number of worker processes per node
+#max_parallel_degree = 2		# max number of worker processes per node
 #old_snapshot_threshold = -1		# 1min-60d; -1 disables; 0 is immediate
 									# (change requires restart)
 #backend_flush_after = 0		# 0 disables,
@@ -182,7 +182,9 @@
 
 #wal_level = minimal			# minimal, replica, or logical
 					# (change requires restart)
-#fsync = on				# turns forced synchronization on or off
+#fsync = on				# flush data to disk for crash safety
+						# (turning this off can cause
+						# unrecoverable data corruption)
 #synchronous_commit = on		# synchronization level;
 					# off, local, remote_write, remote_apply, or on
 #wal_sync_method = fsync		# the default is the first option
