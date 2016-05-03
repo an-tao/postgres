@@ -755,10 +755,12 @@ XLogRead(char *buf, TimeLineID tli, XLogRecPtr startptr, Size count)
 }
 
 /*
- * Determine XLogReaderState->currTLI and ->currTLIValidUntil;
- * XLogReaderState->EndRecPtr, ->currRecPtr and ThisTimeLineID affect the
- * decision.  This may later be used to determine which xlog segment file to
- * open, etc.
+ * Determine which timeline to read an xlog page from and set the
+ * XLogReaderState's state->currTLI to that timeline ID.
+ *
+ * wantPage must be set to the start address of the page to read and
+ * wantLength to the amount of the page that will be read, up to
+ * XLOG_BLCKSZ. If the amount to be read isn't known, pass XLOG_BLCKSZ.
  *
  * We switch to an xlog segment from the new timeline eagerly when on a
  * historical timeline, as soon as we reach the start of the xlog segment
@@ -768,130 +770,124 @@ XLogRead(char *buf, TimeLineID tli, XLogRecPtr startptr, Size count)
  * renamed with a .partial suffix so we can't necessarily keep reading from
  * the old TLI even though tliSwitchPoint says it's OK.
  *
+ * We can't just check the timeline when we read a page on a different segment
+ * to the last page. We could've received a timeline switch from a cascading
+ * upstream, so the current segment ends and we have to switch to a new one.
+ * Even in the middle of reading a page we could have to dump the cached page
+ * and switch to a new TLI.
+ *
  * Because of this, callers MAY NOT assume that currTLI is the timeline that
  * will be in a page's xlp_tli; the page may begin on an older timeline or we
  * might be reading from historical timeline data on a segment that's been
  * copied to a new timeline.
+ *
+ * The caller must also make sure it doesn't read past the current redo pointer
+ * so it doesn't fail to notice that the current timeline became historical.
  */
 void
-XLogReadDetermineTimeline(XLogReaderState *state)
+XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage, uint32 wantLength)
 {
-	/* Read the history on first time through */
-	if (state->timelineHistory == NIL)
-		state->timelineHistory = readTimeLineHistory(ThisTimeLineID);
+	const XLogRecPtr lastReadPage = state->readSegNo * XLogSegSize + state->readOff;
+
+	elog(DEBUG4, "Determining timeline for read at %X/%X+%X",
+			(uint32)(wantPage>>32), (uint32)wantPage, wantLength);
+
+	Assert(wantPage != InvalidXLogRecPtr && wantPage % XLOG_BLCKSZ == 0);
+	Assert(wantLength <= XLOG_BLCKSZ);
+	Assert(state->readLen == 0 || state->readLen <= XLOG_BLCKSZ);
 
 	/*
-	 * Are we reading the record immediately following the one we read last
-	 * time?  If not, then don't use the cached timeline info.
+	 * If the desired page is currently read in and valid, we have nothing to do.
+	 *
+	 * The caller should've ensured that it didn't previously advance readOff
+	 * past the valid limit of this timeline, so it doesn't matter if the current
+	 * TLI has since become historical.
 	 */
-	if (state->currRecPtr != state->EndRecPtr)
+	if (lastReadPage == wantPage &&
+		state->readLen != 0 &&
+		lastReadPage + state->readLen >= wantPage + Min(wantLength,XLOG_BLCKSZ-1))
 	{
-		state->currTLI = 0;
-		state->currTLIValidUntil = InvalidXLogRecPtr;
+		elog(DEBUG4, "Wanted data already valid"); //XXX
+		return;
 	}
 
 	/*
-	 * Are we reading a timeline that used to be the latest one, but became
-	 * historical?	This can happen in a replica that gets promoted, and in a
-	 * cascading replica whose upstream gets promoted.  In either case,
-	 * re-read the timeline history data.  We cannot read past the timeline
-	 * switch point, because either the records in the old timeline might be
-	 * invalid, or worse, they may valid but *different* from the ones we
-	 * should be reading.
+	 * If we're reading from the current timeline, it hasn't become historical
+	 * and the page we're reading is after the last page read, we can again
+	 * just carry on. (Seeking backwards requires a check to make sure the older
+	 * page isn't on a prior timeline).
 	 */
-	if (state->currTLIValidUntil == InvalidXLogRecPtr &&
+	if (state->currTLI == ThisTimeLineID && wantPage >= lastReadPage)
+	{
+		Assert(state->currTLIValidUntil == InvalidXLogRecPtr);
+		elog(DEBUG4, "On current timeline");
+		return;
+	}
+
+	/*
+	 * If we're just reading pages from a previously validated historical
+	 * timeline and the timeline we're reading from is valid until the
+	 * end of the current segment we can just keep reading.
+	 */
+	if (state->currTLIValidUntil != InvalidXLogRecPtr &&
 		state->currTLI != ThisTimeLineID &&
-		state->currTLI != 0)
+		state->currTLI != 0 &&
+		(wantPage + wantLength) / XLogSegSize < state->currTLIValidUntil / XLogSegSize)
 	{
-		/* re-read timeline history */
-		list_free_deep(state->timelineHistory);
-		state->timelineHistory = readTimeLineHistory(ThisTimeLineID);
-
-		elog(DEBUG2, "timeline %u became historical during decoding",
-			 state->currTLI);
-
-		/* then invalidate the cached timeline info */
-		state->currTLI = 0;
-		state->currTLIValidUntil = InvalidXLogRecPtr;
+		elog(DEBUG4, "Still on historical timeline %u until %X/%X",
+				state->currTLI,
+				(uint32)(state->currTLIValidUntil >> 32),
+				(uint32)(state->currTLIValidUntil));
+		return;
 	}
 
 	/*
-	 * Are we reading a record immediately following a timeline switch?  If
-	 * so, we must follow the switch too.
+	 * If we reach this point we're either looking up a page for random access,
+	 * the current timeline just became historical, or we're reading from a new
+	 * segment containing a timeline switch. In all cases we need to determine
+	 * the newest timeline on the segment.
+	 *
+	 * If it's the current timeline we can just keep reading from here unless
+	 * we detect a timeline switch that makes the current timeline historical.
+	 * If it's a historical timeline we can read all the segment on the newest
+	 * timeline because it contains all the old timelines' data too. So only
+	 * one switch check is required.
 	 */
-	if (state->currRecPtr == state->EndRecPtr &&
-		state->currTLI != 0 &&
-		state->currTLIValidUntil != InvalidXLogRecPtr &&
-		state->currRecPtr >= state->currTLIValidUntil)
-	{
-		elog(DEBUG2,
-			 "requested record %X/%X is on segment containing end of timeline %u valid until %X/%X, switching to next timeline",
-			 (uint32) (state->currRecPtr >> 32),
-			 (uint32) state->currRecPtr,
-			 state->currTLI,
-			 (uint32) (state->currTLIValidUntil >> 32),
-			 (uint32) (state->currTLIValidUntil));
-
-		/* invalidate TLI info so we look up the next TLI */
-		state->currTLI = 0;
-		state->currTLIValidUntil = InvalidXLogRecPtr;
-	}
-
-	if (state->currTLI == 0)
 	{
 		/*
-		 * Something changed; work out what timeline this record is on. We
-		 * might read it from the segment on this TLI or, if the segment is
-		 * also contained by newer timelines, the copy from a newer TLI.
+		 * We need to re-read the timeline history in case it's been changed
+		 * by a promotion or replay from a cascaded replica.
 		 */
-		state->currTLI = tliOfPointInHistory(state->currRecPtr,
-											 state->timelineHistory);
+		List *timelineHistory = readTimeLineHistory(ThisTimeLineID);
 
-		/*
-		 * Look for the most recent timeline that's on the same xlog segment
-		 * as this record, since that's the only one we can assume is still
-		 * readable.
-		 */
-		while (state->currTLI != ThisTimeLineID &&
-			   state->currTLIValidUntil == InvalidXLogRecPtr)
-		{
-			XLogRecPtr	tliSwitch;
+		XLogRecPtr endOfSegment = (((wantPage / XLogSegSize) + 1) * XLogSegSize) - 1;
 
-			CHECK_FOR_INTERRUPTS();
+		Assert(wantPage / XLogSegSize == endOfSegment / XLogSegSize);
 
-			tliSwitch = tliSwitchPoint(state->currTLI, state->timelineHistory,
-									   &state->nextTLI);
+	 	/* Find the timeline of the last LSN on the segment containing wantPage. */
+		state->currTLI = tliOfPointInHistory(endOfSegment, timelineHistory);
+		state->currTLIValidUntil = tliSwitchPoint(state->currTLI, timelineHistory, NULL);
 
-			/* round ValidUntil down to start of seg containing the switch */
-			state->currTLIValidUntil =
-				((tliSwitch / XLogSegSize) * XLogSegSize);
+		Assert(state->currTLIValidUntil == InvalidXLogRecPtr ||
+				wantPage + wantLength < state->currTLIValidUntil);
 
-			if (state->currRecPtr >= state->currTLIValidUntil)
-			{
-				/*
-				 * The new currTLI ends on this WAL segment so check the next
-				 * TLI to see if it's the last one on the segment.
-				 *
-				 * If that's the current TLI we'll stop searching.
-				 */
-				state->currTLI = state->nextTLI;
-				state->currTLIValidUntil = InvalidXLogRecPtr;
-			}
-		}
+		list_free_deep(timelineHistory);
 
-		/*
-		 * We're now either reading from the first xlog segment in the current
-		 * server's timeline or the most recent historical timeline that
-		 * exists on the target segment.
-		 */
-		elog(DEBUG2, "XLog read ptr %X/%X is on segment with TLI %u valid until %X/%X, server current TLI is %u",
-			 (uint32) (state->currRecPtr >> 32),
-			 (uint32) state->currRecPtr,
-			 state->currTLI,
-			 (uint32) (state->currTLIValidUntil >> 32),
-			 (uint32) (state->currTLIValidUntil),
-			 ThisTimeLineID);
+		elog(DEBUG3, "switched to timeline %u valid until %X/%X",
+				state->currTLI,
+				(uint32)(state->currTLIValidUntil >> 32),
+				(uint32)(state->currTLIValidUntil));
 	}
+
+	elog(DEBUG3, "page read ptr %X/%X (for record %X/%X) is on segment with TLI %u valid until %X/%X, server current TLI is %u",
+		 (uint32) (wantPage >> 32),
+		 (uint32) wantPage,
+		 (uint32) (state->currRecPtr >> 32),
+		 (uint32) state->currRecPtr,
+		 state->currTLI,
+		 (uint32) (state->currTLIValidUntil >> 32),
+		 (uint32) (state->currTLIValidUntil),
+		 ThisTimeLineID);
 }
 
 /*
@@ -926,7 +922,7 @@ read_local_xlog_page(XLogReaderState *state, XLogRecPtr targetPagePtr,
 		 * recovery as a cascading standby, the current timeline might've
 		 * become historical.
 		 */
-		XLogReadDetermineTimeline(state);
+		XLogReadDetermineTimeline(state, targetPagePtr, reqLen);
 
 		if (state->currTLI == ThisTimeLineID)
 		{
