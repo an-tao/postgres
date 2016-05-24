@@ -931,7 +931,6 @@ ReplicationSlotReserveWal(void)
 
 	Assert(slot != NULL);
 	Assert(slot->data.restart_lsn == InvalidXLogRecPtr);
-	Assert(slot->data.restart_tli == 0);
 
 	/*
 	 * The replication slot mechanism is used to prevent removal of required
