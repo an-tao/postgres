@@ -2326,6 +2326,9 @@ _allocAH(const char *FileSpec, const ArchiveFormat fmt,
 	return AH;
 }
 
+/*
+ * Write out all data (tables & blobs)
+ */
 void
 WriteDataChunks(ArchiveHandle *AH, ParallelState *pstate)
 {
@@ -2343,15 +2346,18 @@ WriteDataChunks(ArchiveHandle *AH, ParallelState *pstate)
 		{
 			/*
 			 * If we are in a parallel backup, then we are always the master
-			 * process.
+			 * process.  Dispatch each data-transfer job to a worker.
 			 */
 			EnsureIdleWorker(AH, pstate);
-			Assert(GetIdleWorker(pstate) != NO_SLOT);
 			DispatchJobForTocEntry(AH, pstate, te, ACT_DUMP);
 		}
 		else
 			WriteDataChunksForTocEntry(AH, te);
 	}
+
+	/*
+	 * If parallel, wait for workers to finish.
+	 */
 	EnsureWorkersFinished(AH, pstate);
 }
 
@@ -3475,17 +3481,7 @@ WriteHead(ArchiveHandle *AH)
 	(*AH->WriteBytePtr) (AH, AH->intSize);
 	(*AH->WriteBytePtr) (AH, AH->offSize);
 	(*AH->WriteBytePtr) (AH, AH->format);
-
-#ifndef HAVE_LIBZ
-	if (AH->compression != 0)
-		write_msg(modulename, "WARNING: requested compression not available in this "
-				  "installation -- archive will be uncompressed\n");
-
-	AH->compression = 0;
-#endif
-
 	WriteInt(AH, AH->compression);
-
 	crtm = *localtime(&AH->createDate);
 	WriteInt(AH, crtm.tm_sec);
 	WriteInt(AH, crtm.tm_min);
@@ -3829,13 +3825,11 @@ restore_toc_entries_parallel(ArchiveHandle *AH, ParallelState *pstate,
 
 			par_list_remove(next_work_item);
 
-			Assert(GetIdleWorker(pstate) != NO_SLOT);
 			DispatchJobForTocEntry(AH, pstate, next_work_item, ACT_RESTORE);
 		}
 		else
 		{
 			/* at least one child is working and we have nothing ready. */
-			Assert(!IsEveryWorkerIdle(pstate));
 		}
 
 		for (;;)
