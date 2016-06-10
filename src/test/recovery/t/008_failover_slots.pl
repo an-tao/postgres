@@ -34,7 +34,7 @@ sub get_slot_info
 	my $esc_slot_name = $slot_name;
 	$esc_slot_name =~ s/'/''/g;
 	my @selectlist = ('slot_name', 'plugin', 'slot_type', 'database', 'active_pid', 'xmin', 'catalog_xmin', 'restart_lsn', 'confirmed_flush_lsn', 'failover');
-	my $row = $node->safe_psql('postgres', "SELECT " . join(', ', @selectlist) . " FROM pg_replication_slots WHERE slot_name = '$esc_slot_name';");
+	my $row = $node->safe_psql('postgres', "SELECT " . join(', ', @selectlist) . " FROM pg_replication_slots_failover() WHERE slot_name = '$esc_slot_name';");
 	chomp $row;
 	my @fields = split('\|', $row, -1);
 	if (scalar @fields != scalar @selectlist)
@@ -242,6 +242,8 @@ $node_master->append_conf('postgresql.conf', "max_connections = 20\n");
 $node_master->dump_info;
 $node_master->start;
 
+my $node_master->safe_psql('postgres', 'CREATE EXTENSION failover_slots;');
+
 my $master_beforecreate_bb_lsn = $node_master->safe_psql('postgres',
 	"SELECT pg_current_xlog_insert_location()");
 
@@ -353,7 +355,7 @@ is($proc->result, 1, 'pg_receivexlog exited with error code when attempting repl
 is($$stdout, '', 'no stdout');
 like($$stderr, qr/ERROR:.*replication slot "bb_phys_failover" is reserved for use after failover/, 'pg_receivexlog exited with expected error');
 
-$stdout = $node_master->safe_psql('postgres', 'SELECT slot_name FROM pg_replication_slots ORDER BY slot_name');
+$stdout = $node_master->safe_psql('postgres', 'SELECT slot_name FROM pg_replication_slots_failover() ORDER BY slot_name');
 is($stdout, q(ab
 ab_failover
 ab_phys
@@ -367,7 +369,7 @@ bb_phys_failover), 'Expected slots exist on master')
 
 # Verify that only the failover slots and the physical slot we created
 # directly are present on the replica
-$stdout = $node_replica->safe_psql('postgres', 'SELECT slot_name FROM pg_replication_slots ORDER BY slot_name');
+$stdout = $node_replica->safe_psql('postgres', 'SELECT slot_name FROM pg_replication_slots_failover() ORDER BY slot_name');
 is($stdout, q(ab_failover
 ab_phys_failover
 bb_failover
@@ -403,7 +405,7 @@ my @slot_updates = @{ read_slot_updates_from_xlog($node_master, 1) };
 # location advances, only when the flush location or xmin advance. The restart lsn
 # and confirmed flush LSN in the slot's WAL record must not be less than the LSN
 # of the master before we created the slot and not greater than the position we saw
-# in pg_replication_slots after slot creation.
+# in pg_replication_slots_failover() after slot creation.
 #
 
 # bb_failover created
@@ -588,7 +590,7 @@ $node_master->safe_psql("postgres", "SELECT pg_drop_replication_slot('replace_me
 wait_for_catchup($node_master, $node_replica);
 
 
-$stdout = $node_replica->safe_psql('postgres', 'SELECT slot_name FROM pg_replication_slots ORDER BY slot_name');
+$stdout = $node_replica->safe_psql('postgres', 'SELECT slot_name FROM pg_replication_slots_failover() ORDER BY slot_name');
 is($stdout, '', 'No slots exist on replica')
   or BAIL_OUT('Remaining tests meaningless');
 
