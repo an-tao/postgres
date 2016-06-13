@@ -1322,7 +1322,7 @@ checkExtensionMembership(DumpableObject *dobj, Archive *fout)
 			dobj->dump = DUMP_COMPONENT_NONE;
 		else
 			dobj->dump = ext->dobj.dump_contains & (DUMP_COMPONENT_ACL |
-					DUMP_COMPONENT_SECLABEL | DUMP_COMPONENT_POLICY);
+							DUMP_COMPONENT_SECLABEL | DUMP_COMPONENT_POLICY);
 
 	}
 
@@ -1576,16 +1576,16 @@ static void
 selectDumpableExtension(ExtensionInfo *extinfo, DumpOptions *dopt)
 {
 	/*
-	 * Use DUMP_COMPONENT_ACL for from-initdb extensions, to allow users
-	 * to change permissions on those objects, if they wish to, and have
-	 * those changes preserved.
+	 * Use DUMP_COMPONENT_ACL for from-initdb extensions, to allow users to
+	 * change permissions on those objects, if they wish to, and have those
+	 * changes preserved.
 	 */
 	if (dopt->binary_upgrade && extinfo->dobj.catId.oid < (Oid) FirstNormalObjectId)
 		extinfo->dobj.dump = extinfo->dobj.dump_contains = DUMP_COMPONENT_ACL;
 	else
 		extinfo->dobj.dump = extinfo->dobj.dump_contains =
-			dopt->include_everything ?  DUMP_COMPONENT_ALL :
-				DUMP_COMPONENT_NONE;
+			dopt->include_everything ? DUMP_COMPONENT_ALL :
+			DUMP_COMPONENT_NONE;
 }
 
 /*
@@ -1779,6 +1779,11 @@ dumpTableData_copy(Archive *fout, void *dcontext)
 		exit_nicely(1);
 	}
 	PQclear(res);
+
+	/* Do this to ensure we've pumped libpq back to idle state */
+	if (PQgetResult(conn) != NULL)
+		write_msg(NULL, "WARNING: unexpected extra results during COPY of table \"%s\"\n",
+				  classname);
 
 	destroyPQExpBuffer(q);
 	return 1;
@@ -5238,7 +5243,7 @@ getTables(Archive *fout, int *numTables)
 						dopt->binary_upgrade);
 
 		buildACLQueries(attacl_subquery, attracl_subquery, attinitacl_subquery,
-						attinitracl_subquery, "at.attacl", "c.relowner", "'c'",
+					  attinitracl_subquery, "at.attacl", "c.relowner", "'c'",
 						dopt->binary_upgrade);
 
 		appendPQExpBuffer(query,
@@ -5944,8 +5949,8 @@ getTables(Archive *fout, int *numTables)
 
 		/*
 		 * If the table-level and all column-level ACLs for this table are
-		 * unchanged, then we don't need to worry about including the ACLs
-		 * for this table.  If any column-level ACLs have been changed, the
+		 * unchanged, then we don't need to worry about including the ACLs for
+		 * this table.  If any column-level ACLs have been changed, the
 		 * 'changed_acl' column from the query will indicate that.
 		 *
 		 * This can result in a significant performance improvement in cases
@@ -5972,10 +5977,11 @@ getTables(Archive *fout, int *numTables)
 		 * NOTE: it'd be kinda nice to lock other relations too, not only
 		 * plain tables, but the backend doesn't presently allow that.
 		 *
-		 * We only need to lock the table for certain components; see pg_dump.h
+		 * We only need to lock the table for certain components; see
+		 * pg_dump.h
 		 */
 		if (tblinfo[i].dobj.dump && tblinfo[i].relkind == RELKIND_RELATION &&
-				(tblinfo[i].dobj.dump & DUMP_COMPONENTS_REQUIRING_LOCK))
+			(tblinfo[i].dobj.dump & DUMP_COMPONENTS_REQUIRING_LOCK))
 		{
 			resetPQExpBuffer(query);
 			appendPQExpBuffer(query,
@@ -8603,7 +8609,7 @@ getForeignDataWrappers(Archive *fout, int *numForeignDataWrappers)
 						  "FROM pg_foreign_data_wrapper f "
 						  "LEFT JOIN pg_init_privs pip ON "
 						  "(f.oid = pip.objoid "
-						  "AND pip.classoid = 'pg_foreign_data_wrapper'::regclass "
+					"AND pip.classoid = 'pg_foreign_data_wrapper'::regclass "
 						  "AND pip.objsubid = 0) ",
 						  username_subquery,
 						  acl_subquery->data,
@@ -12467,20 +12473,22 @@ dumpAccessMethod(Archive *fout, AccessMethodInfo *aminfo)
 	appendPQExpBuffer(labelq, "ACCESS METHOD %s",
 					  qamname);
 
-	ArchiveEntry(fout, aminfo->dobj.catId, aminfo->dobj.dumpId,
-				 aminfo->dobj.name,
-				 NULL,
-				 NULL,
-				 "",
-				 false, "ACCESS METHOD", SECTION_PRE_DATA,
-				 q->data, delq->data, NULL,
-				 NULL, 0,
-				 NULL, NULL);
+	if (aminfo->dobj.dump & DUMP_COMPONENT_DEFINITION)
+		ArchiveEntry(fout, aminfo->dobj.catId, aminfo->dobj.dumpId,
+					 aminfo->dobj.name,
+					 NULL,
+					 NULL,
+					 "",
+					 false, "ACCESS METHOD", SECTION_PRE_DATA,
+					 q->data, delq->data, NULL,
+					 NULL, 0,
+					 NULL, NULL);
 
 	/* Dump Access Method Comments */
-	dumpComment(fout, labelq->data,
-				NULL, "",
-				aminfo->dobj.catId, 0, aminfo->dobj.dumpId);
+	if (aminfo->dobj.dump & DUMP_COMPONENT_COMMENT)
+		dumpComment(fout, labelq->data,
+					NULL, "",
+					aminfo->dobj.catId, 0, aminfo->dobj.dumpId);
 
 	pg_free(qamname);
 
@@ -13450,30 +13458,30 @@ dumpAgg(Archive *fout, AggInfo *agginfo)
 	if (fout->remoteVersion >= 90600)
 	{
 		appendPQExpBuffer(query, "SELECT aggtransfn, "
-			"aggfinalfn, aggtranstype::pg_catalog.regtype, "
-			"aggcombinefn, aggserialfn, aggdeserialfn, aggmtransfn, "
-			"aggminvtransfn, aggmfinalfn, aggmtranstype::pg_catalog.regtype, "
-			"aggfinalextra, aggmfinalextra, "
-			"aggsortop::pg_catalog.regoperator, "
-			"aggserialtype::pg_catalog.regtype, "
-			"(aggkind = 'h') AS hypothetical, "
-			"aggtransspace, agginitval, "
-			"aggmtransspace, aggminitval, "
-			"true AS convertok, "
-			"pg_catalog.pg_get_function_arguments(p.oid) AS funcargs, "
-			"pg_catalog.pg_get_function_identity_arguments(p.oid) AS funciargs, "
-			"p.proparallel "
-			"FROM pg_catalog.pg_aggregate a, pg_catalog.pg_proc p "
-			"WHERE a.aggfnoid = p.oid "
-			"AND p.oid = '%u'::pg_catalog.oid",
-			agginfo->aggfn.dobj.catId.oid);
+						  "aggfinalfn, aggtranstype::pg_catalog.regtype, "
+					"aggcombinefn, aggserialfn, aggdeserialfn, aggmtransfn, "
+		   "aggminvtransfn, aggmfinalfn, aggmtranstype::pg_catalog.regtype, "
+						  "aggfinalextra, aggmfinalextra, "
+						  "aggsortop::pg_catalog.regoperator, "
+						  "aggserialtype::pg_catalog.regtype, "
+						  "(aggkind = 'h') AS hypothetical, "
+						  "aggtransspace, agginitval, "
+						  "aggmtransspace, aggminitval, "
+						  "true AS convertok, "
+				  "pg_catalog.pg_get_function_arguments(p.oid) AS funcargs, "
+		"pg_catalog.pg_get_function_identity_arguments(p.oid) AS funciargs, "
+						  "p.proparallel "
+					  "FROM pg_catalog.pg_aggregate a, pg_catalog.pg_proc p "
+						  "WHERE a.aggfnoid = p.oid "
+						  "AND p.oid = '%u'::pg_catalog.oid",
+						  agginfo->aggfn.dobj.catId.oid);
 	}
 	else if (fout->remoteVersion >= 90400)
 	{
 		appendPQExpBuffer(query, "SELECT aggtransfn, "
 						  "aggfinalfn, aggtranstype::pg_catalog.regtype, "
 						  "'-' AS aggcombinefn, '-' AS aggserialfn, "
-						  "'-' AS aggdeserialfn, aggmtransfn, aggminvtransfn, "
+						"'-' AS aggdeserialfn, aggmtransfn, aggminvtransfn, "
 						  "aggmfinalfn, aggmtranstype::pg_catalog.regtype, "
 						  "aggfinalextra, aggmfinalextra, "
 						  "aggsortop::pg_catalog.regoperator, "
@@ -13713,7 +13721,7 @@ dumpAgg(Archive *fout, AggInfo *agginfo)
 
 	if (strcmp(aggcombinefn, "-") != 0)
 	{
-		appendPQExpBuffer(details, ",\n    COMBINEFUNC = %s",	aggcombinefn);
+		appendPQExpBuffer(details, ",\n    COMBINEFUNC = %s", aggcombinefn);
 	}
 
 	/*
@@ -13722,9 +13730,9 @@ dumpAgg(Archive *fout, AggInfo *agginfo)
 	 */
 	if (strcmp(aggserialfn, "-") != 0)
 	{
-		appendPQExpBuffer(details, ",\n    SERIALFUNC = %s",	aggserialfn);
-		appendPQExpBuffer(details, ",\n    DESERIALFUNC = %s",	aggdeserialfn);
-		appendPQExpBuffer(details, ",\n    SERIALTYPE = %s",	aggserialtype);
+		appendPQExpBuffer(details, ",\n    SERIALFUNC = %s", aggserialfn);
+		appendPQExpBuffer(details, ",\n    DESERIALFUNC = %s", aggdeserialfn);
+		appendPQExpBuffer(details, ",\n    SERIALTYPE = %s", aggserialtype);
 	}
 
 	if (strcmp(aggmtransfn, "-") != 0)
@@ -13815,7 +13823,7 @@ dumpAgg(Archive *fout, AggInfo *agginfo)
 		dumpSecLabel(fout, labelq->data,
 					 agginfo->aggfn.dobj.namespace->dobj.name,
 					 agginfo->aggfn.rolname,
-					 agginfo->aggfn.dobj.catId, 0, agginfo->aggfn.dobj.dumpId);
+				   agginfo->aggfn.dobj.catId, 0, agginfo->aggfn.dobj.dumpId);
 
 	/*
 	 * Since there is no GRANT ON AGGREGATE syntax, we have to make the ACL
@@ -15012,7 +15020,7 @@ dumpTable(Archive *fout, TableInfo *tbinfo)
 					   "JOIN pg_catalog.pg_class c ON (at.attrelid = c.oid) "
 							  "LEFT JOIN pg_catalog.pg_init_privs pip ON "
 							  "(at.attrelid = pip.objoid "
-			  "AND pip.classoid = 'pg_catalog.pg_class'::pg_catalog.regclass "
+			 "AND pip.classoid = 'pg_catalog.pg_class'::pg_catalog.regclass "
 							  "AND at.attnum = pip.objsubid) "
 							  "WHERE at.attrelid = '%u'::pg_catalog.oid AND "
 							  "NOT at.attisdropped "
@@ -15043,7 +15051,7 @@ dumpTable(Archive *fout, TableInfo *tbinfo)
 							  "SELECT attname, attacl, NULL as rattacl, "
 							  "NULL AS initattacl, NULL AS initrattacl "
 							  "FROM pg_catalog.pg_attribute "
-							  "WHERE attrelid = '%u'::pg_catalog.oid AND NOT attisdropped "
+				"WHERE attrelid = '%u'::pg_catalog.oid AND NOT attisdropped "
 							  "AND attacl IS NOT NULL "
 							  "ORDER BY attnum",
 							  tbinfo->dobj.catId.oid);

@@ -1973,7 +1973,7 @@ BufferSync(int flags)
 		}
 
 		/*
-		 * Measure progress independent of actualy having to flush the buffer
+		 * Measure progress independent of actually having to flush the buffer
 		 * - otherwise writing become unbalanced.
 		 */
 		ts_stat->progress += ts_stat->progress_slice;
@@ -4290,9 +4290,8 @@ IssuePendingWritebacks(WritebackContext *context)
 void
 TestForOldSnapshot_impl(Snapshot snapshot, Relation relation)
 {
-	if (!IsCatalogRelation(relation)
-	 && !RelationIsAccessibleInLogicalDecoding(relation)
-	 && (snapshot)->whenTaken < GetOldSnapshotThresholdTimestamp())
+	if (RelationAllowsEarlyPruning(relation)
+		&& (snapshot)->whenTaken < GetOldSnapshotThresholdTimestamp())
 		ereport(ERROR,
 				(errcode(ERRCODE_SNAPSHOT_TOO_OLD),
 				 errmsg("snapshot too old")));

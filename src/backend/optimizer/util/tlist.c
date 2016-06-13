@@ -770,17 +770,17 @@ apply_pathtarget_labeling_to_tlist(List *tlist, PathTarget *target)
  *	  the aggtranstype or aggserialtype. This allows exprType() to return the
  *	  actual type that will be produced.
  *
- * Note: We expect 'target' to be a flat target list and not have Aggrefs burried
+ * Note: We expect 'target' to be a flat target list and not have Aggrefs buried
  * within other expressions.
  */
 void
 apply_partialaggref_adjustment(PathTarget *target)
 {
-	ListCell *lc;
+	ListCell   *lc;
 
 	foreach(lc, target->exprs)
 	{
-		Aggref *aggref = (Aggref *) lfirst(lc);
+		Aggref	   *aggref = (Aggref *) lfirst(lc);
 
 		if (IsA(aggref, Aggref))
 		{
