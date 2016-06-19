@@ -3952,14 +3952,6 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
  * Assess whether the join between inner and outer relations can be pushed down
  * to the foreign server. As a side effect, save information we obtain in this
  * function to PgFdwRelationInfo passed in.
- *
- * Joins that satisfy conditions below are safe to push down.
- *
- * 1) Join type is INNER or OUTER (one of LEFT/RIGHT/FULL)
- * 2) Both outer and inner portions are safe to push-down
- * 3) All join conditions are safe to push down
- * 4) No relation has local filter (this can be relaxed for INNER JOIN, if we
- *	  can move unpushable clauses upwards in the join tree).
  */
 static bool
 foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
@@ -4033,6 +4025,26 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
 		Expr	   *expr = (Expr *) lfirst(lc);
 
 		if (!is_foreign_expr(root, joinrel, expr))
+			return false;
+	}
+
+	/*
+	 * deparseExplicitTargetList() isn't smart enough to handle anything other
+	 * than a Var.  In particular, if there's some PlaceHolderVar that would
+	 * need to be evaluated within this join tree (because there's an upper
+	 * reference to a quantity that may go to NULL as a result of an outer
+	 * join), then we can't try to push the join down because we'll fail when
+	 * we get to deparseExplicitTargetList().  However, a PlaceHolderVar that
+	 * needs to be evaluated *at the top* of this join tree is OK, because we
+	 * can do that locally after fetching the results from the remote side.
+	 */
+	foreach(lc, root->placeholder_list)
+	{
+		PlaceHolderInfo *phinfo = lfirst(lc);
+		Relids		relids = joinrel->relids;
+
+		if (bms_is_subset(phinfo->ph_eval_at, relids) &&
+			bms_nonempty_difference(relids, phinfo->ph_eval_at))
 			return false;
 	}
 
@@ -4116,9 +4128,9 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
 	}
 
 	/*
-	 * For an inner join, as explained above all restrictions can be treated
-	 * alike. Treating the pushed down conditions as join conditions allows a
-	 * top level full outer join to be deparsed without requiring subqueries.
+	 * For an inner join, all restrictions can be treated alike. Treating the
+	 * pushed down conditions as join conditions allows a top level full outer
+	 * join to be deparsed without requiring subqueries.
 	 */
 	if (jointype == JOIN_INNER)
 	{
@@ -4252,16 +4264,15 @@ postgresGetForeignJoinPaths(PlannerInfo *root,
 	fpinfo->attrs_used = NULL;
 
 	/*
-	 * In case there is a possibility that EvalPlanQual will be executed, we
-	 * should be able to reconstruct the row, from base relations applying all
-	 * the conditions. We create a local plan from a suitable local path
-	 * available in the path list. In case such a path doesn't exist, we can
-	 * not push the join to the foreign server since we won't be able to
+	 * If there is a possibility that EvalPlanQual will be executed, we need
+	 * to be able to reconstruct the row using scans of the base relations.
+	 * GetExistingLocalJoinPath will find a suitable path for this purpose in
+	 * the path list of the joinrel, if one exists.  We must be careful to
+	 * call it before adding any ForeignPath, since the ForeignPath might
+	 * dominate the only suitable local path available.  We also do it before
 	 * reconstruct the row for EvalPlanQual(). Find an alternative local path
-	 * before we add ForeignPath, lest the new path would kick possibly the
-	 * only local path. Do this before calling foreign_join_ok(), since that
-	 * function updates fpinfo and marks it as pushable if the join is found
-	 * to be pushable.
+	 * calling foreign_join_ok(), since that function updates fpinfo and marks
+	 * it as pushable if the join is found to be pushable.
 	 */
 	if (root->parse->commandType == CMD_DELETE ||
 		root->parse->commandType == CMD_UPDATE ||
