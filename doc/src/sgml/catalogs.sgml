@@ -464,12 +464,6 @@
       <entry>Data type of the aggregate function's internal transition (state) data</entry>
      </row>
      <row>
-      <entry><structfield>aggserialtype</structfield></entry>
-      <entry><type>oid</type></entry>
-      <entry><literal><link linkend="catalog-pg-type"><structname>pg_type</structname></link>.oid</literal></entry>
-      <entry>Return data type of the aggregate function's serialization function (zero if none)</entry>
-     </row>
-     <row>
       <entry><structfield>aggtransspace</structfield></entry>
       <entry><type>int4</type></entry>
       <entry></entry>
@@ -8916,6 +8910,16 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
       <entry></entry>
       <entry>Password expiry time (only used for password authentication);
        null if no expiration</entry>
+     </row>
+
+     <row>
+      <entry><structfield>rolbypassrls</structfield></entry>
+      <entry><type>bool</type></entry>
+      <entry></entry>
+      <entry>
+       Role bypasses every row level security policy, see
+       <xref linkend="ddl-rowsecurity"> for more information.
+      </entry>
      </row>
 
      <row>
