@@ -23,6 +23,7 @@
 #include "access/sysattr.h"
 #include "access/xact.h"
 #include "catalog/pg_constraint_fn.h"
+#include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "executor/nodeAgg.h"
 #include "foreign/fdwapi.h"
@@ -109,8 +110,10 @@ static double get_number_of_groups(PlannerInfo *root,
 					 List *rollup_groupclauses);
 static void set_grouped_rel_consider_parallel(PlannerInfo *root,
 								  RelOptInfo *grouped_rel,
-								  PathTarget *target);
-static Size estimate_hashagg_tablesize(Path *path, AggClauseCosts *agg_costs,
+								  PathTarget *target,
+								  const AggClauseCosts *agg_costs);
+static Size estimate_hashagg_tablesize(Path *path,
+						   const AggClauseCosts *agg_costs,
 						   double dNumGroups);
 static RelOptInfo *create_grouping_paths(PlannerInfo *root,
 					  RelOptInfo *input_rel,
@@ -140,8 +143,8 @@ static RelOptInfo *create_ordered_paths(PlannerInfo *root,
 					 double limit_tuples);
 static PathTarget *make_group_input_target(PlannerInfo *root,
 						PathTarget *final_target);
-static PathTarget *make_partialgroup_input_target(PlannerInfo *root,
-							   PathTarget *final_target);
+static PathTarget *make_partial_grouping_target(PlannerInfo *root,
+							 PathTarget *grouping_target);
 static List *postprocess_setop_tlist(List *new_tlist, List *orig_tlist);
 static List *select_active_windows(PlannerInfo *root, WindowFuncLists *wflists);
 static PathTarget *make_window_input_target(PlannerInfo *root,
@@ -3206,7 +3209,8 @@ get_number_of_groups(PlannerInfo *root,
  */
 static void
 set_grouped_rel_consider_parallel(PlannerInfo *root, RelOptInfo *grouped_rel,
-								  PathTarget *target)
+								  PathTarget *target,
+								  const AggClauseCosts *agg_costs)
 {
 	Query	   *parse = root->parse;
 
@@ -3239,15 +3243,14 @@ set_grouped_rel_consider_parallel(PlannerInfo *root, RelOptInfo *grouped_rel,
 		return;
 
 	/*
-	 * All that's left to check now is to make sure all aggregate functions
-	 * support partial mode. If there's no aggregates then we can skip
-	 * checking that.
+	 * If we have any non-partial-capable aggregates, or if any of them can't
+	 * be serialized, we can't go parallel.
 	 */
-	if (!parse->hasAggs)
-		grouped_rel->consider_parallel = true;
-	else if (aggregates_allow_partial((Node *) target->exprs) == PAT_ANY &&
-			 aggregates_allow_partial(root->parse->havingQual) == PAT_ANY)
-		grouped_rel->consider_parallel = true;
+	if (agg_costs->hasNonPartial || agg_costs->hasNonSerial)
+		return;
+
+	/* OK, consider parallelization */
+	grouped_rel->consider_parallel = true;
 }
 
 /*
@@ -3256,7 +3259,7 @@ set_grouped_rel_consider_parallel(PlannerInfo *root, RelOptInfo *grouped_rel,
  *	  require based on the agg_costs, path width and dNumGroups.
  */
 static Size
-estimate_hashagg_tablesize(Path *path, AggClauseCosts *agg_costs,
+estimate_hashagg_tablesize(Path *path, const AggClauseCosts *agg_costs,
 						   double dNumGroups)
 {
 	Size		hashentrysize;
@@ -3390,10 +3393,10 @@ create_grouping_paths(PlannerInfo *root,
 	MemSet(&agg_costs, 0, sizeof(AggClauseCosts));
 	if (parse->hasAggs)
 	{
-		count_agg_clauses(root, (Node *) target->exprs, &agg_costs, true,
-						  false, false);
-		count_agg_clauses(root, parse->havingQual, &agg_costs, true, false,
-						  false);
+		get_agg_clause_costs(root, (Node *) target->exprs, AGGSPLIT_SIMPLE,
+							 &agg_costs);
+		get_agg_clause_costs(root, parse->havingQual, AGGSPLIT_SIMPLE,
+							 &agg_costs);
 	}
 
 	/*
@@ -3410,7 +3413,8 @@ create_grouping_paths(PlannerInfo *root,
 	 * going to be safe to do so.
 	 */
 	if (input_rel->partial_pathlist != NIL)
-		set_grouped_rel_consider_parallel(root, grouped_rel, target);
+		set_grouped_rel_consider_parallel(root, grouped_rel,
+										  target, &agg_costs);
 
 	/*
 	 * Determine whether it's possible to perform sort-based implementations
@@ -3456,12 +3460,13 @@ create_grouping_paths(PlannerInfo *root,
 		Path	   *cheapest_partial_path = linitial(input_rel->partial_pathlist);
 
 		/*
-		 * Build target list for partial aggregate paths. We cannot reuse the
-		 * final target as Aggrefs must be set in partial mode, and we must
-		 * also include Aggrefs from the HAVING clause in the target as these
-		 * may not be present in the final target.
+		 * Build target list for partial aggregate paths.  These paths cannot
+		 * just emit the same tlist as regular aggregate paths, because (1) we
+		 * must include Vars and Aggrefs needed in HAVING, which might not
+		 * appear in the result tlist, and (2) the Aggrefs must be set in
+		 * partial mode.
 		 */
-		partial_grouping_target = make_partialgroup_input_target(root, target);
+		partial_grouping_target = make_partial_grouping_target(root, target);
 
 		/* Estimate number of partial groups. */
 		dNumPartialGroups = get_number_of_groups(root,
@@ -3478,14 +3483,17 @@ create_grouping_paths(PlannerInfo *root,
 		if (parse->hasAggs)
 		{
 			/* partial phase */
-			count_agg_clauses(root, (Node *) partial_grouping_target->exprs,
-							  &agg_partial_costs, false, false, true);
+			get_agg_clause_costs(root, (Node *) partial_grouping_target->exprs,
+								 AGGSPLIT_INITIAL_SERIAL,
+								 &agg_partial_costs);
 
 			/* final phase */
-			count_agg_clauses(root, (Node *) target->exprs, &agg_final_costs,
-							  true, true, true);
-			count_agg_clauses(root, parse->havingQual, &agg_final_costs, true,
-							  true, true);
+			get_agg_clause_costs(root, (Node *) target->exprs,
+								 AGGSPLIT_FINAL_DESERIAL,
+								 &agg_final_costs);
+			get_agg_clause_costs(root, parse->havingQual,
+								 AGGSPLIT_FINAL_DESERIAL,
+								 &agg_final_costs);
 		}
 
 		if (can_sort)
@@ -3521,13 +3529,11 @@ create_grouping_paths(PlannerInfo *root,
 														 path,
 													 partial_grouping_target,
 								 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+													 AGGSPLIT_INITIAL_SERIAL,
 														 parse->groupClause,
 														 NIL,
 														 &agg_partial_costs,
-														 dNumPartialGroups,
-														 false,
-														 false,
-														 true));
+														 dNumPartialGroups));
 					else
 						add_partial_path(grouped_rel, (Path *)
 										 create_group_path(root,
@@ -3563,13 +3569,11 @@ create_grouping_paths(PlannerInfo *root,
 												 cheapest_partial_path,
 												 partial_grouping_target,
 												 AGG_HASHED,
+												 AGGSPLIT_INITIAL_SERIAL,
 												 parse->groupClause,
 												 NIL,
 												 &agg_partial_costs,
-												 dNumPartialGroups,
-												 false,
-												 false,
-												 true));
+												 dNumPartialGroups));
 			}
 		}
 	}
@@ -3628,13 +3632,11 @@ create_grouping_paths(PlannerInfo *root,
 											 path,
 											 target,
 								 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+											 AGGSPLIT_SIMPLE,
 											 parse->groupClause,
 											 (List *) parse->havingQual,
 											 &agg_costs,
-											 dNumGroups,
-											 false,
-											 true,
-											 false));
+											 dNumGroups));
 				}
 				else if (parse->groupClause)
 				{
@@ -3695,13 +3697,11 @@ create_grouping_paths(PlannerInfo *root,
 										 path,
 										 target,
 								 parse->groupClause ? AGG_SORTED : AGG_PLAIN,
+										 AGGSPLIT_FINAL_DESERIAL,
 										 parse->groupClause,
 										 (List *) parse->havingQual,
 										 &agg_final_costs,
-										 dNumGroups,
-										 true,
-										 true,
-										 true));
+										 dNumGroups));
 			else
 				add_path(grouped_rel, (Path *)
 						 create_group_path(root,
@@ -3738,13 +3738,11 @@ create_grouping_paths(PlannerInfo *root,
 									 cheapest_path,
 									 target,
 									 AGG_HASHED,
+									 AGGSPLIT_SIMPLE,
 									 parse->groupClause,
 									 (List *) parse->havingQual,
 									 &agg_costs,
-									 dNumGroups,
-									 false,
-									 true,
-									 false));
+									 dNumGroups));
 		}
 
 		/*
@@ -3777,13 +3775,11 @@ create_grouping_paths(PlannerInfo *root,
 										 path,
 										 target,
 										 AGG_HASHED,
+										 AGGSPLIT_FINAL_DESERIAL,
 										 parse->groupClause,
 										 (List *) parse->havingQual,
 										 &agg_final_costs,
-										 dNumGroups,
-										 true,
-										 true,
-										 true));
+										 dNumGroups));
 			}
 		}
 	}
@@ -4121,13 +4117,11 @@ create_distinct_paths(PlannerInfo *root,
 								 cheapest_input_path,
 								 cheapest_input_path->pathtarget,
 								 AGG_HASHED,
+								 AGGSPLIT_SIMPLE,
 								 parse->distinctClause,
 								 NIL,
 								 NULL,
-								 numDistinctRows,
-								 false,
-								 true,
-								 false));
+								 numDistinctRows));
 	}
 
 	/* Give a helpful error if we failed to find any implementation */
@@ -4317,46 +4311,48 @@ make_group_input_target(PlannerInfo *root, PathTarget *final_target)
 }
 
 /*
- * make_partialgroup_input_target
- *	  Generate appropriate PathTarget for input for Partial Aggregate nodes.
+ * make_partial_grouping_target
+ *	  Generate appropriate PathTarget for output of partial aggregate
+ *	  (or partial grouping, if there are no aggregates) nodes.
  *
- * Similar to make_group_input_target(), only we don't recurse into Aggrefs, as
- * we need these to remain intact so that they can be found later in Combine
- * Aggregate nodes during set_combineagg_references(). Vars will be still
- * pulled out of non-Aggref nodes as these will still be required by the
- * combine aggregate phase.
+ * A partial aggregation node needs to emit all the same aggregates that
+ * a regular aggregation node would, plus any aggregates used in HAVING;
+ * except that the Aggref nodes should be marked as partial aggregates.
  *
- * We also convert any Aggrefs which we do find and put them into partial mode,
- * this adjusts the Aggref's return type so that the partially calculated
- * aggregate value can make its way up the execution tree up to the Finalize
- * Aggregate node.
+ * In addition, we'd better emit any Vars and PlaceholderVars that are
+ * used outside of Aggrefs in the aggregation tlist and HAVING.  (Presumably,
+ * these would be Vars that are grouped by or used in grouping expressions.)
+ *
+ * grouping_target is the tlist to be emitted by the topmost aggregation step.
+ * We get the HAVING clause out of *root.
  */
 static PathTarget *
-make_partialgroup_input_target(PlannerInfo *root, PathTarget *final_target)
+make_partial_grouping_target(PlannerInfo *root, PathTarget *grouping_target)
 {
 	Query	   *parse = root->parse;
-	PathTarget *input_target;
+	PathTarget *partial_target;
 	List	   *non_group_cols;
 	List	   *non_group_exprs;
 	int			i;
 	ListCell   *lc;
 
-	input_target = create_empty_pathtarget();
+	partial_target = create_empty_pathtarget();
 	non_group_cols = NIL;
 
 	i = 0;
-	foreach(lc, final_target->exprs)
+	foreach(lc, grouping_target->exprs)
 	{
 		Expr	   *expr = (Expr *) lfirst(lc);
-		Index		sgref = get_pathtarget_sortgroupref(final_target, i);
+		Index		sgref = get_pathtarget_sortgroupref(grouping_target, i);
 
 		if (sgref && parse->groupClause &&
 			get_sortgroupref_clause_noerr(sgref, parse->groupClause) != NULL)
 		{
 			/*
-			 * It's a grouping column, so add it to the input target as-is.
+			 * It's a grouping column, so add it to the partial_target as-is.
+			 * (This allows the upper agg step to repeat the grouping calcs.)
 			 */
-			add_column_to_pathtarget(input_target, expr, sgref);
+			add_column_to_pathtarget(partial_target, expr, sgref);
 		}
 		else
 		{
@@ -4371,35 +4367,89 @@ make_partialgroup_input_target(PlannerInfo *root, PathTarget *final_target)
 	}
 
 	/*
-	 * If there's a HAVING clause, we'll need the Aggrefs it uses, too.
+	 * If there's a HAVING clause, we'll need the Vars/Aggrefs it uses, too.
 	 */
 	if (parse->havingQual)
 		non_group_cols = lappend(non_group_cols, parse->havingQual);
 
 	/*
-	 * Pull out all the Vars mentioned in non-group cols (plus HAVING), and
-	 * add them to the input target if not already present.  (A Var used
-	 * directly as a GROUP BY item will be present already.)  Note this
-	 * includes Vars used in resjunk items, so we are covering the needs of
-	 * ORDER BY and window specifications.  Vars used within Aggrefs will be
-	 * ignored and the Aggrefs themselves will be added to the PathTarget.
+	 * Pull out all the Vars, PlaceHolderVars, and Aggrefs mentioned in
+	 * non-group cols (plus HAVING), and add them to the partial_target if not
+	 * already present.  (An expression used directly as a GROUP BY item will
+	 * be present already.)  Note this includes Vars used in resjunk items, so
+	 * we are covering the needs of ORDER BY and window specifications.
 	 */
 	non_group_exprs = pull_var_clause((Node *) non_group_cols,
 									  PVC_INCLUDE_AGGREGATES |
 									  PVC_RECURSE_WINDOWFUNCS |
 									  PVC_INCLUDE_PLACEHOLDERS);
 
-	add_new_columns_to_pathtarget(input_target, non_group_exprs);
+	add_new_columns_to_pathtarget(partial_target, non_group_exprs);
+
+	/*
+	 * Adjust Aggrefs to put them in partial mode.  At this point all Aggrefs
+	 * are at the top level of the target list, so we can just scan the list
+	 * rather than recursing through the expression trees.
+	 */
+	foreach(lc, partial_target->exprs)
+	{
+		Aggref	   *aggref = (Aggref *) lfirst(lc);
+
+		if (IsA(aggref, Aggref))
+		{
+			Aggref	   *newaggref;
+
+			/*
+			 * We shouldn't need to copy the substructure of the Aggref node,
+			 * but flat-copy the node itself to avoid damaging other trees.
+			 */
+			newaggref = makeNode(Aggref);
+			memcpy(newaggref, aggref, sizeof(Aggref));
+
+			/* For now, assume serialization is required */
+			mark_partial_aggref(newaggref, AGGSPLIT_INITIAL_SERIAL);
+
+			lfirst(lc) = newaggref;
+		}
+	}
 
 	/* clean up cruft */
 	list_free(non_group_exprs);
 	list_free(non_group_cols);
 
-	/* Adjust Aggrefs to put them in partial mode. */
-	apply_partialaggref_adjustment(input_target);
-
 	/* XXX this causes some redundant cost calculation ... */
-	return set_pathtarget_cost_width(root, input_target);
+	return set_pathtarget_cost_width(root, partial_target);
+}
+
+/*
+ * mark_partial_aggref
+ *	  Adjust an Aggref to make it represent a partial-aggregation step.
+ *
+ * The Aggref node is modified in-place; caller must do any copying required.
+ */
+void
+mark_partial_aggref(Aggref *agg, AggSplit aggsplit)
+{
+	/* aggtranstype should be computed by this point */
+	Assert(OidIsValid(agg->aggtranstype));
+	/* ... but aggsplit should still be as the parser left it */
+	Assert(agg->aggsplit == AGGSPLIT_SIMPLE);
+
+	/* Mark the Aggref with the intended partial-aggregation mode */
+	agg->aggsplit = aggsplit;
+
+	/*
+	 * Adjust result type if needed.  Normally, a partial aggregate returns
+	 * the aggregate's transition type; but if that's INTERNAL and we're
+	 * serializing, it returns BYTEA instead.
+	 */
+	if (DO_AGGSPLIT_SKIPFINAL(aggsplit))
+	{
+		if (agg->aggtranstype == INTERNALOID && DO_AGGSPLIT_SERIALIZE(aggsplit))
+			agg->aggtype = BYTEAOID;
+		else
+			agg->aggtype = agg->aggtranstype;
+	}
 }
 
 /*
