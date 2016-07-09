@@ -314,15 +314,12 @@ create_plan(PlannerInfo *root, Path *best_path)
 
 	/*
 	 * Attach any initPlans created in this query level to the topmost plan
-	 * node.  (The initPlans could actually go in any plan node at or above
-	 * where they're referenced, but there seems no reason to put them any
-	 * lower than the topmost node for the query level.)
+	 * node.  (In principle the initplans could go in any plan node at or
+	 * above where they're referenced, but there seems no reason to put them
+	 * any lower than the topmost node for the query level.  Also, see
+	 * comments for SS_finalize_plan before you try to change this.)
 	 */
 	SS_attach_initplans(root, plan);
-
-	/* Update parallel safety information if needed. */
-	if (!best_path->parallel_safe)
-		root->glob->wholePlanParallelSafe = false;
 
 	/* Check we successfully assigned all NestLoopParams to plan nodes */
 	if (root->curOuterParams != NIL)
@@ -544,8 +541,13 @@ create_scan_plan(PlannerInfo *root, Path *best_path, int flags)
 		{
 			/* For index-only scan, the preferred tlist is the index's */
 			tlist = copyObject(((IndexPath *) best_path)->indexinfo->indextlist);
-			/* Transfer any sortgroupref data to the replacement tlist */
-			apply_pathtarget_labeling_to_tlist(tlist, best_path->pathtarget);
+
+			/*
+			 * Transfer any sortgroupref data to the replacement tlist, unless
+			 * we don't care because the gating Result will handle it.
+			 */
+			if (!gating_clauses)
+				apply_pathtarget_labeling_to_tlist(tlist, best_path->pathtarget);
 		}
 		else
 		{
@@ -557,8 +559,9 @@ create_scan_plan(PlannerInfo *root, Path *best_path, int flags)
 			}
 			else
 			{
-				/* Transfer any sortgroupref data to the replacement tlist */
-				apply_pathtarget_labeling_to_tlist(tlist, best_path->pathtarget);
+				/* As above, transfer sortgroupref data to replacement tlist */
+				if (!gating_clauses)
+					apply_pathtarget_labeling_to_tlist(tlist, best_path->pathtarget);
 			}
 		}
 	}

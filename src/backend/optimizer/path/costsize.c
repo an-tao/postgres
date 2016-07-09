@@ -263,7 +263,7 @@ cost_seqscan(Path *path, PlannerInfo *root,
 		 * because they'll anticipate receiving more rows than any given copy
 		 * will actually get.
 		 */
-		path->rows /= parallel_divisor;
+		path->rows = clamp_row_est(path->rows / parallel_divisor);
 
 		/* The CPU cost is divided among all the workers. */
 		cpu_run_cost /= parallel_divisor;
@@ -3914,8 +3914,10 @@ calc_joinrel_size_estimate(PlannerInfo *root,
 						   double outer_rows,
 						   double inner_rows,
 						   SpecialJoinInfo *sjinfo,
-						   List *restrictlist)
+						   List *restrictlist_in)
 {
+	/* This apparently-useless variable dodges a compiler bug in VS2013: */
+	List	   *restrictlist = restrictlist_in;
 	JoinType	jointype = sjinfo->jointype;
 	Selectivity fkselec;
 	Selectivity jselec;

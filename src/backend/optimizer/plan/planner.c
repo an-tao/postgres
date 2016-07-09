@@ -108,16 +108,13 @@ static double get_number_of_groups(PlannerInfo *root,
 					 double path_rows,
 					 List *rollup_lists,
 					 List *rollup_groupclauses);
-static void set_grouped_rel_consider_parallel(PlannerInfo *root,
-								  RelOptInfo *grouped_rel,
-								  PathTarget *target,
-								  const AggClauseCosts *agg_costs);
 static Size estimate_hashagg_tablesize(Path *path,
 						   const AggClauseCosts *agg_costs,
 						   double dNumGroups);
 static RelOptInfo *create_grouping_paths(PlannerInfo *root,
 					  RelOptInfo *input_rel,
 					  PathTarget *target,
+					  const AggClauseCosts *agg_costs,
 					  List *rollup_lists,
 					  List *rollup_groupclauses);
 static RelOptInfo *create_window_paths(PlannerInfo *root,
@@ -255,29 +252,14 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	/*
 	 * glob->parallelModeNeeded should tell us whether it's necessary to
 	 * impose the parallel mode restrictions, but we don't actually want to
-	 * impose them unless we choose a parallel plan, so that people who
-	 * mislabel their functions but don't use parallelism anyway aren't
-	 * harmed. But when force_parallel_mode is set, we enable the restrictions
-	 * whenever possible for testing purposes.
-	 *
-	 * glob->wholePlanParallelSafe should tell us whether it's OK to stick a
-	 * Gather node on top of the entire plan.  However, it only needs to be
-	 * accurate when force_parallel_mode is 'on' or 'regress', so we don't
-	 * bother doing the work otherwise.  The value we set here is just a
-	 * preliminary guess; it may get changed from true to false later, but not
-	 * vice versa.
+	 * impose them unless we choose a parallel plan, so it is normally set
+	 * only if a parallel plan is chosen (see create_gather_plan).  That way,
+	 * people who mislabel their functions but don't use parallelism anyway
+	 * aren't harmed.  But when force_parallel_mode is set, we enable the
+	 * restrictions whenever possible for testing purposes.
 	 */
-	if (force_parallel_mode == FORCE_PARALLEL_OFF || !glob->parallelModeOK)
-	{
-		glob->parallelModeNeeded = false;
-		glob->wholePlanParallelSafe = false;	/* either false or don't care */
-	}
-	else
-	{
-		glob->parallelModeNeeded = true;
-		glob->wholePlanParallelSafe =
-			!has_parallel_hazard((Node *) parse, false);
-	}
+	glob->parallelModeNeeded = glob->parallelModeOK &&
+		(force_parallel_mode != FORCE_PARALLEL_OFF);
 
 	/* Determine what fraction of the plan is likely to be scanned */
 	if (cursorOptions & CURSOR_OPT_FAST_PLAN)
@@ -324,24 +306,33 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	if (cursorOptions & CURSOR_OPT_SCROLL)
 	{
 		if (!ExecSupportsBackwardScan(top_plan))
-			top_plan = materialize_finished_plan(top_plan);
+		{
+			Plan	   *sub_plan = top_plan;
+
+			top_plan = materialize_finished_plan(sub_plan);
+
+			/*
+			 * XXX horrid kluge: if there are any initPlans attached to the
+			 * formerly-top plan node, move them up to the Material node. This
+			 * prevents failure in SS_finalize_plan, which see for comments.
+			 * We don't bother adjusting the sub_plan's cost estimate for
+			 * this.
+			 */
+			top_plan->initPlan = sub_plan->initPlan;
+			sub_plan->initPlan = NIL;
+		}
 	}
 
 	/*
-	 * At present, we don't copy subplans to workers.  The presence of a
-	 * subplan in one part of the plan doesn't preclude the use of parallelism
-	 * in some other part of the plan, but it does preclude the possibility of
-	 * regarding the entire plan parallel-safe.
-	 */
-	if (glob->subplans != NULL)
-		glob->wholePlanParallelSafe = false;
-
-	/*
 	 * Optionally add a Gather node for testing purposes, provided this is
-	 * actually a safe thing to do.
+	 * actually a safe thing to do.  (Note: we assume adding a Material node
+	 * above did not change the parallel safety of the plan, so we can still
+	 * rely on best_path->parallel_safe.  However, that flag doesn't account
+	 * for initPlans, which render the plan parallel-unsafe.)
 	 */
-	if (glob->wholePlanParallelSafe &&
-		force_parallel_mode != FORCE_PARALLEL_OFF)
+	if (force_parallel_mode != FORCE_PARALLEL_OFF &&
+		best_path->parallel_safe &&
+		top_plan->initPlan == NIL)
 	{
 		Gather	   *gather = makeNode(Gather);
 
@@ -352,7 +343,22 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		gather->num_workers = 1;
 		gather->single_copy = true;
 		gather->invisible = (force_parallel_mode == FORCE_PARALLEL_REGRESS);
+
+		/*
+		 * Ideally we'd use cost_gather here, but setting up dummy path data
+		 * to satisfy it doesn't seem much cleaner than knowing what it does.
+		 */
+		gather->plan.startup_cost = top_plan->startup_cost +
+			parallel_setup_cost;
+		gather->plan.total_cost = top_plan->total_cost +
+			parallel_setup_cost + parallel_tuple_cost * top_plan->plan_rows;
+		gather->plan.plan_rows = top_plan->plan_rows;
+		gather->plan.plan_width = top_plan->plan_width;
+		gather->plan.parallel_aware = false;
+
+		/* use parallel mode for parallel plans. */
 		root->glob->parallelModeNeeded = true;
+
 		top_plan = &gather->plan;
 	}
 
@@ -1320,6 +1326,12 @@ inheritance_planner(PlannerInfo *root)
 	final_rel = fetch_upper_rel(root, UPPERREL_FINAL, NULL);
 
 	/*
+	 * We don't currently worry about setting final_rel's consider_parallel
+	 * flag in this case, nor about allowing FDWs or create_upper_paths_hook
+	 * to get control here.
+	 */
+
+	/*
 	 * If we managed to exclude every child rel, return a dummy plan; it
 	 * doesn't even need a ModifyTable node.
 	 */
@@ -1503,6 +1515,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 		PathTarget *grouping_target;
 		PathTarget *scanjoin_target;
 		bool		have_grouping;
+		AggClauseCosts agg_costs;
 		WindowFuncLists *wflists = NULL;
 		List	   *activeWindows = NIL;
 		List	   *rollup_lists = NIL;
@@ -1626,6 +1639,28 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 		 * tlist of the finished Plan.
 		 */
 		root->processed_tlist = tlist;
+
+		/*
+		 * Collect statistics about aggregates for estimating costs, and mark
+		 * all the aggregates with resolved aggtranstypes.  We must do this
+		 * before slicing and dicing the tlist into various pathtargets, else
+		 * some copies of the Aggref nodes might escape being marked with the
+		 * correct transtypes.
+		 *
+		 * Note: currently, we do not detect duplicate aggregates here.  This
+		 * may result in somewhat-overestimated cost, which is fine for our
+		 * purposes since all Paths will get charged the same.  But at some
+		 * point we might wish to do that detection in the planner, rather
+		 * than during executor startup.
+		 */
+		MemSet(&agg_costs, 0, sizeof(AggClauseCosts));
+		if (parse->hasAggs)
+		{
+			get_agg_clause_costs(root, (Node *) tlist, AGGSPLIT_SIMPLE,
+								 &agg_costs);
+			get_agg_clause_costs(root, parse->havingQual, AGGSPLIT_SIMPLE,
+								 &agg_costs);
+		}
 
 		/*
 		 * Locate any window functions in the tlist.  (We don't need to look
@@ -1817,21 +1852,6 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 		root->upper_targets[UPPERREL_GROUP_AGG] = grouping_target;
 
 		/*
-		 * If there is an FDW that's responsible for the final scan/join rel,
-		 * let it consider injecting extension Paths into the query's
-		 * upperrels, where they will compete with the Paths we create below.
-		 * We pass the final scan/join rel because that's not so easily
-		 * findable from the PlannerInfo struct; anything else the FDW wants
-		 * to know should be obtainable via "root".
-		 *
-		 * Note: CustomScan providers, as well as FDWs that don't want to use
-		 * this hook, can use the create_upper_paths_hook; see below.
-		 */
-		if (current_rel->fdwroutine &&
-			current_rel->fdwroutine->GetForeignUpperPaths)
-			current_rel->fdwroutine->GetForeignUpperPaths(root, current_rel);
-
-		/*
 		 * If we have grouping and/or aggregation, consider ways to implement
 		 * that.  We build a new upperrel representing the output of this
 		 * phase.
@@ -1841,6 +1861,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 			current_rel = create_grouping_paths(root,
 												current_rel,
 												grouping_target,
+												&agg_costs,
 												rollup_lists,
 												rollup_groupclauses);
 		}
@@ -1919,12 +1940,33 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 	}
 
 	/*
-	 * Now we are prepared to build the final-output upperrel.  Insert all
-	 * surviving paths, with LockRows, Limit, and/or ModifyTable steps added
-	 * if needed.
+	 * Now we are prepared to build the final-output upperrel.
 	 */
 	final_rel = fetch_upper_rel(root, UPPERREL_FINAL, NULL);
 
+	/*
+	 * If the input rel is marked consider_parallel and there's nothing that's
+	 * not parallel-safe in the LIMIT clause, then the final_rel can be marked
+	 * consider_parallel as well.  Note that if the query has rowMarks or is
+	 * not a SELECT, consider_parallel will be false for every relation in the
+	 * query.
+	 */
+	if (current_rel->consider_parallel &&
+		!has_parallel_hazard(parse->limitOffset, false) &&
+		!has_parallel_hazard(parse->limitCount, false))
+		final_rel->consider_parallel = true;
+
+	/*
+	 * If the current_rel belongs to a single FDW, so does the final_rel.
+	 */
+	final_rel->serverid = current_rel->serverid;
+	final_rel->umid = current_rel->umid;
+	final_rel->fdwroutine = current_rel->fdwroutine;
+
+	/*
+	 * Generate paths for the final_rel.  Insert all surviving paths, with
+	 * LockRows, Limit, and/or ModifyTable steps added if needed.
+	 */
 	foreach(lc, current_rel->pathlist)
 	{
 		Path	   *path = (Path *) lfirst(lc);
@@ -2006,6 +2048,15 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 		/* And shove it into final_rel */
 		add_path(final_rel, path);
 	}
+
+	/*
+	 * If there is an FDW that's responsible for all baserels of the query,
+	 * let it consider adding ForeignPaths.
+	 */
+	if (final_rel->fdwroutine &&
+		final_rel->fdwroutine->GetForeignUpperPaths)
+		final_rel->fdwroutine->GetForeignUpperPaths(root, UPPERREL_FINAL,
+													current_rel, final_rel);
 
 	/* Let extensions possibly add some more paths */
 	if (create_upper_paths_hook)
@@ -3204,56 +3255,6 @@ get_number_of_groups(PlannerInfo *root,
 }
 
 /*
- * set_grouped_rel_consider_parallel
- *	  Determine if it's safe to generate partial paths for grouping.
- */
-static void
-set_grouped_rel_consider_parallel(PlannerInfo *root, RelOptInfo *grouped_rel,
-								  PathTarget *target,
-								  const AggClauseCosts *agg_costs)
-{
-	Query	   *parse = root->parse;
-
-	Assert(grouped_rel->reloptkind == RELOPT_UPPER_REL);
-
-	/*
-	 * If there are no aggregates or GROUP BY clause, then no parallel
-	 * aggregation is possible.  At present, it doesn't matter whether
-	 * consider_parallel gets set in this case, because none of the upper rels
-	 * on top of this one try to set the flag or examine it, so we just bail
-	 * out as quickly as possible.  We might need to be more clever here in
-	 * the future.
-	 */
-	if (!parse->hasAggs && parse->groupClause == NIL)
-		return;
-
-	/*
-	 * Similarly, bail out quickly if GROUPING SETS are present; we can't
-	 * support those at present.
-	 */
-	if (parse->groupingSets)
-		return;
-
-	/*
-	 * If parallel-restricted functions are present in the target list or the
-	 * HAVING clause, we cannot safely go parallel.
-	 */
-	if (has_parallel_hazard((Node *) target->exprs, false) ||
-		has_parallel_hazard((Node *) parse->havingQual, false))
-		return;
-
-	/*
-	 * If we have any non-partial-capable aggregates, or if any of them can't
-	 * be serialized, we can't go parallel.
-	 */
-	if (agg_costs->hasNonPartial || agg_costs->hasNonSerial)
-		return;
-
-	/* OK, consider parallelization */
-	grouped_rel->consider_parallel = true;
-}
-
-/*
  * estimate_hashagg_tablesize
  *	  estimate the number of bytes that a hash aggregate hashtable will
  *	  require based on the agg_costs, path width and dNumGroups.
@@ -3283,6 +3284,7 @@ estimate_hashagg_tablesize(Path *path, const AggClauseCosts *agg_costs,
  *
  * input_rel: contains the source-data Paths
  * target: the pathtarget for the result Paths to compute
+ * agg_costs: cost info about all aggregates in query (in AGGSPLIT_SIMPLE mode)
  * rollup_lists: list of grouping sets, or NIL if not doing grouping sets
  * rollup_groupclauses: list of grouping clauses for grouping sets,
  *		or NIL if not doing grouping sets
@@ -3299,6 +3301,7 @@ static RelOptInfo *
 create_grouping_paths(PlannerInfo *root,
 					  RelOptInfo *input_rel,
 					  PathTarget *target,
+					  const AggClauseCosts *agg_costs,
 					  List *rollup_lists,
 					  List *rollup_groupclauses)
 {
@@ -3306,7 +3309,6 @@ create_grouping_paths(PlannerInfo *root,
 	Path	   *cheapest_path = input_rel->cheapest_total_path;
 	RelOptInfo *grouped_rel;
 	PathTarget *partial_grouping_target = NULL;
-	AggClauseCosts agg_costs;
 	AggClauseCosts agg_partial_costs;	/* parallel only */
 	AggClauseCosts agg_final_costs;		/* parallel only */
 	Size		hashaggtablesize;
@@ -3314,11 +3316,29 @@ create_grouping_paths(PlannerInfo *root,
 	double		dNumPartialGroups = 0;
 	bool		can_hash;
 	bool		can_sort;
+	bool		try_parallel_aggregation;
 
 	ListCell   *lc;
 
 	/* For now, do all work in the (GROUP_AGG, NULL) upperrel */
 	grouped_rel = fetch_upper_rel(root, UPPERREL_GROUP_AGG, NULL);
+
+	/*
+	 * If the input relation is not parallel-safe, then the grouped relation
+	 * can't be parallel-safe, either.  Otherwise, it's parallel-safe if the
+	 * target list and HAVING quals are parallel-safe.
+	 */
+	if (input_rel->consider_parallel &&
+		!has_parallel_hazard((Node *) target->exprs, false) &&
+		!has_parallel_hazard((Node *) parse->havingQual, false))
+		grouped_rel->consider_parallel = true;
+
+	/*
+	 * If the input rel belongs to a single FDW, so does the grouped rel.
+	 */
+	grouped_rel->serverid = input_rel->serverid;
+	grouped_rel->umid = input_rel->umid;
+	grouped_rel->fdwroutine = input_rel->fdwroutine;
 
 	/*
 	 * Check for degenerate grouping.
@@ -3386,35 +3406,12 @@ create_grouping_paths(PlannerInfo *root,
 	}
 
 	/*
-	 * Collect statistics about aggregates for estimating costs.  Note: we do
-	 * not detect duplicate aggregates here; a somewhat-overestimated cost is
-	 * okay for our purposes.
-	 */
-	MemSet(&agg_costs, 0, sizeof(AggClauseCosts));
-	if (parse->hasAggs)
-	{
-		get_agg_clause_costs(root, (Node *) target->exprs, AGGSPLIT_SIMPLE,
-							 &agg_costs);
-		get_agg_clause_costs(root, parse->havingQual, AGGSPLIT_SIMPLE,
-							 &agg_costs);
-	}
-
-	/*
 	 * Estimate number of groups.
 	 */
 	dNumGroups = get_number_of_groups(root,
 									  cheapest_path->rows,
 									  rollup_lists,
 									  rollup_groupclauses);
-
-	/*
-	 * Partial paths in the input rel could allow us to perform aggregation in
-	 * parallel. set_grouped_rel_consider_parallel() will determine if it's
-	 * going to be safe to do so.
-	 */
-	if (input_rel->partial_pathlist != NIL)
-		set_grouped_rel_consider_parallel(root, grouped_rel,
-										  target, &agg_costs);
 
 	/*
 	 * Determine whether it's possible to perform sort-based implementations
@@ -3444,8 +3441,48 @@ create_grouping_paths(PlannerInfo *root,
 	 */
 	can_hash = (parse->groupClause != NIL &&
 				parse->groupingSets == NIL &&
-				agg_costs.numOrderedAggs == 0 &&
+				agg_costs->numOrderedAggs == 0 &&
 				grouping_is_hashable(parse->groupClause));
+
+	/*
+	 * If grouped_rel->consider_parallel is true, then paths that we generate
+	 * for this grouping relation could be run inside of a worker, but that
+	 * doesn't mean we can actually use the PartialAggregate/FinalizeAggregate
+	 * execution strategy.  Figure that out.
+	 */
+	if (!grouped_rel->consider_parallel)
+	{
+		/* Not even parallel-safe. */
+		try_parallel_aggregation = false;
+	}
+	else if (input_rel->partial_pathlist == NIL)
+	{
+		/* Nothing to use as input for partial aggregate. */
+		try_parallel_aggregation = false;
+	}
+	else if (!parse->hasAggs && parse->groupClause == NIL)
+	{
+		/*
+		 * We don't know how to do parallel aggregation unless we have either
+		 * some aggregates or a grouping clause.
+		 */
+		try_parallel_aggregation = false;
+	}
+	else if (parse->groupingSets)
+	{
+		/* We don't know how to do grouping sets in parallel. */
+		try_parallel_aggregation = false;
+	}
+	else if (agg_costs->hasNonPartial || agg_costs->hasNonSerial)
+	{
+		/* Insufficient support for partial mode. */
+		try_parallel_aggregation = false;
+	}
+	else
+	{
+		/* Everything looks good. */
+		try_parallel_aggregation = true;
+	}
 
 	/*
 	 * Before generating paths for grouped_rel, we first generate any possible
@@ -3455,7 +3492,7 @@ create_grouping_paths(PlannerInfo *root,
 	 * Gather node on top is insufficient to create a final path, as would be
 	 * the case for a scan/join rel.
 	 */
-	if (grouped_rel->consider_parallel)
+	if (try_parallel_aggregation)
 	{
 		Path	   *cheapest_partial_path = linitial(input_rel->partial_pathlist);
 
@@ -3498,7 +3535,7 @@ create_grouping_paths(PlannerInfo *root,
 
 		if (can_sort)
 		{
-			/* Checked in set_grouped_rel_consider_parallel() */
+			/* This was checked before setting try_parallel_aggregation */
 			Assert(parse->hasAggs || parse->groupClause);
 
 			/*
@@ -3617,7 +3654,7 @@ create_grouping_paths(PlannerInfo *root,
 												  (List *) parse->havingQual,
 													  rollup_lists,
 													  rollup_groupclauses,
-													  &agg_costs,
+													  agg_costs,
 													  dNumGroups));
 				}
 				else if (parse->hasAggs)
@@ -3635,7 +3672,7 @@ create_grouping_paths(PlannerInfo *root,
 											 AGGSPLIT_SIMPLE,
 											 parse->groupClause,
 											 (List *) parse->havingQual,
-											 &agg_costs,
+											 agg_costs,
 											 dNumGroups));
 				}
 				else if (parse->groupClause)
@@ -3717,7 +3754,7 @@ create_grouping_paths(PlannerInfo *root,
 	if (can_hash)
 	{
 		hashaggtablesize = estimate_hashagg_tablesize(cheapest_path,
-													  &agg_costs,
+													  agg_costs,
 													  dNumGroups);
 
 		/*
@@ -3741,7 +3778,7 @@ create_grouping_paths(PlannerInfo *root,
 									 AGGSPLIT_SIMPLE,
 									 parse->groupClause,
 									 (List *) parse->havingQual,
-									 &agg_costs,
+									 agg_costs,
 									 dNumGroups));
 		}
 
@@ -3791,6 +3828,15 @@ create_grouping_paths(PlannerInfo *root,
 				 errmsg("could not implement GROUP BY"),
 				 errdetail("Some of the datatypes only support hashing, while others only support sorting.")));
 
+	/*
+	 * If there is an FDW that's responsible for all baserels of the query,
+	 * let it consider adding ForeignPaths.
+	 */
+	if (grouped_rel->fdwroutine &&
+		grouped_rel->fdwroutine->GetForeignUpperPaths)
+		grouped_rel->fdwroutine->GetForeignUpperPaths(root, UPPERREL_GROUP_AGG,
+													  input_rel, grouped_rel);
+
 	/* Let extensions possibly add some more paths */
 	if (create_upper_paths_hook)
 		(*create_upper_paths_hook) (root, UPPERREL_GROUP_AGG,
@@ -3832,6 +3878,23 @@ create_window_paths(PlannerInfo *root,
 	window_rel = fetch_upper_rel(root, UPPERREL_WINDOW, NULL);
 
 	/*
+	 * If the input relation is not parallel-safe, then the window relation
+	 * can't be parallel-safe, either.  Otherwise, we need to examine the
+	 * target list and active windows for non-parallel-safe constructs.
+	 */
+	if (input_rel->consider_parallel &&
+		!has_parallel_hazard((Node *) output_target->exprs, false) &&
+		!has_parallel_hazard((Node *) activeWindows, false))
+		window_rel->consider_parallel = true;
+
+	/*
+	 * If the input rel belongs to a single FDW, so does the window rel.
+	 */
+	window_rel->serverid = input_rel->serverid;
+	window_rel->umid = input_rel->umid;
+	window_rel->fdwroutine = input_rel->fdwroutine;
+
+	/*
 	 * Consider computing window functions starting from the existing
 	 * cheapest-total path (which will likely require a sort) as well as any
 	 * existing paths that satisfy root->window_pathkeys (which won't).
@@ -3851,6 +3914,15 @@ create_window_paths(PlannerInfo *root,
 								   wflists,
 								   activeWindows);
 	}
+
+	/*
+	 * If there is an FDW that's responsible for all baserels of the query,
+	 * let it consider adding ForeignPaths.
+	 */
+	if (window_rel->fdwroutine &&
+		window_rel->fdwroutine->GetForeignUpperPaths)
+		window_rel->fdwroutine->GetForeignUpperPaths(root, UPPERREL_WINDOW,
+													 input_rel, window_rel);
 
 	/* Let extensions possibly add some more paths */
 	if (create_upper_paths_hook)
@@ -3985,6 +4057,22 @@ create_distinct_paths(PlannerInfo *root,
 
 	/* For now, do all work in the (DISTINCT, NULL) upperrel */
 	distinct_rel = fetch_upper_rel(root, UPPERREL_DISTINCT, NULL);
+
+	/*
+	 * We don't compute anything at this level, so distinct_rel will be
+	 * parallel-safe if the input rel is parallel-safe.  In particular, if
+	 * there is a DISTINCT ON (...) clause, any path for the input_rel will
+	 * output those expressions, and will not be parallel-safe unless those
+	 * expressions are parallel-safe.
+	 */
+	distinct_rel->consider_parallel = input_rel->consider_parallel;
+
+	/*
+	 * If the input rel belongs to a single FDW, so does the distinct_rel.
+	 */
+	distinct_rel->serverid = input_rel->serverid;
+	distinct_rel->umid = input_rel->umid;
+	distinct_rel->fdwroutine = input_rel->fdwroutine;
 
 	/* Estimate number of distinct rows there will be */
 	if (parse->groupClause || parse->groupingSets || parse->hasAggs ||
@@ -4131,6 +4219,15 @@ create_distinct_paths(PlannerInfo *root,
 				 errmsg("could not implement DISTINCT"),
 				 errdetail("Some of the datatypes only support hashing, while others only support sorting.")));
 
+	/*
+	 * If there is an FDW that's responsible for all baserels of the query,
+	 * let it consider adding ForeignPaths.
+	 */
+	if (distinct_rel->fdwroutine &&
+		distinct_rel->fdwroutine->GetForeignUpperPaths)
+		distinct_rel->fdwroutine->GetForeignUpperPaths(root, UPPERREL_DISTINCT,
+													input_rel, distinct_rel);
+
 	/* Let extensions possibly add some more paths */
 	if (create_upper_paths_hook)
 		(*create_upper_paths_hook) (root, UPPERREL_DISTINCT,
@@ -4169,6 +4266,22 @@ create_ordered_paths(PlannerInfo *root,
 	/* For now, do all work in the (ORDERED, NULL) upperrel */
 	ordered_rel = fetch_upper_rel(root, UPPERREL_ORDERED, NULL);
 
+	/*
+	 * If the input relation is not parallel-safe, then the ordered relation
+	 * can't be parallel-safe, either.  Otherwise, it's parallel-safe if the
+	 * target list is parallel-safe.
+	 */
+	if (input_rel->consider_parallel &&
+		!has_parallel_hazard((Node *) target->exprs, false))
+		ordered_rel->consider_parallel = true;
+
+	/*
+	 * If the input rel belongs to a single FDW, so does the ordered_rel.
+	 */
+	ordered_rel->serverid = input_rel->serverid;
+	ordered_rel->umid = input_rel->umid;
+	ordered_rel->fdwroutine = input_rel->fdwroutine;
+
 	foreach(lc, input_rel->pathlist)
 	{
 		Path	   *path = (Path *) lfirst(lc);
@@ -4196,6 +4309,15 @@ create_ordered_paths(PlannerInfo *root,
 			add_path(ordered_rel, path);
 		}
 	}
+
+	/*
+	 * If there is an FDW that's responsible for all baserels of the query,
+	 * let it consider adding ForeignPaths.
+	 */
+	if (ordered_rel->fdwroutine &&
+		ordered_rel->fdwroutine->GetForeignUpperPaths)
+		ordered_rel->fdwroutine->GetForeignUpperPaths(root, UPPERREL_ORDERED,
+													  input_rel, ordered_rel);
 
 	/* Let extensions possibly add some more paths */
 	if (create_upper_paths_hook)
