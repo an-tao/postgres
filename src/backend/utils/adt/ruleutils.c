@@ -2238,11 +2238,11 @@ pg_get_function_arguments(PG_FUNCTION_ARGS)
 	StringInfoData buf;
 	HeapTuple	proctup;
 
-	initStringInfo(&buf);
-
 	proctup = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcid));
 	if (!HeapTupleIsValid(proctup))
-		elog(ERROR, "cache lookup failed for function %u", funcid);
+		PG_RETURN_NULL();
+
+	initStringInfo(&buf);
 
 	(void) print_function_arguments(&buf, proctup, false, true);
 
@@ -2264,11 +2264,11 @@ pg_get_function_identity_arguments(PG_FUNCTION_ARGS)
 	StringInfoData buf;
 	HeapTuple	proctup;
 
-	initStringInfo(&buf);
-
 	proctup = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcid));
 	if (!HeapTupleIsValid(proctup))
-		elog(ERROR, "cache lookup failed for function %u", funcid);
+		PG_RETURN_NULL();
+
+	initStringInfo(&buf);
 
 	(void) print_function_arguments(&buf, proctup, false, false);
 
@@ -2289,11 +2289,11 @@ pg_get_function_result(PG_FUNCTION_ARGS)
 	StringInfoData buf;
 	HeapTuple	proctup;
 
-	initStringInfo(&buf);
-
 	proctup = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcid));
 	if (!HeapTupleIsValid(proctup))
-		elog(ERROR, "cache lookup failed for function %u", funcid);
+		PG_RETURN_NULL();
+
+	initStringInfo(&buf);
 
 	print_function_rettype(&buf, proctup);
 
@@ -2547,7 +2547,7 @@ pg_get_function_arg_default(PG_FUNCTION_ARGS)
 
 	proctup = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcid));
 	if (!HeapTupleIsValid(proctup))
-		elog(ERROR, "cache lookup failed for function %u", funcid);
+		PG_RETURN_NULL();
 
 	numargs = get_func_arg_info(proctup, &argtypes, &argnames, &argmodes);
 	if (nth_arg < 1 || nth_arg > numargs || !is_input_argument(nth_arg - 1, argmodes))
@@ -8047,17 +8047,43 @@ get_rule_expr(Node *node, deparse_context *context,
 				if (!PRETTY_PAREN(context))
 					appendStringInfoChar(buf, '(');
 				get_rule_expr_paren((Node *) ntest->arg, context, true, node);
-				switch (ntest->nulltesttype)
+
+				/*
+				 * For scalar inputs, we prefer to print as IS [NOT] NULL,
+				 * which is shorter and traditional.  If it's a rowtype input
+				 * but we're applying a scalar test, must print IS [NOT]
+				 * DISTINCT FROM NULL to be semantically correct.
+				 */
+				if (ntest->argisrow ||
+					!type_is_rowtype(exprType((Node *) ntest->arg)))
 				{
-					case IS_NULL:
-						appendStringInfoString(buf, " IS NULL");
-						break;
-					case IS_NOT_NULL:
-						appendStringInfoString(buf, " IS NOT NULL");
-						break;
-					default:
-						elog(ERROR, "unrecognized nulltesttype: %d",
-							 (int) ntest->nulltesttype);
+					switch (ntest->nulltesttype)
+					{
+						case IS_NULL:
+							appendStringInfoString(buf, " IS NULL");
+							break;
+						case IS_NOT_NULL:
+							appendStringInfoString(buf, " IS NOT NULL");
+							break;
+						default:
+							elog(ERROR, "unrecognized nulltesttype: %d",
+								 (int) ntest->nulltesttype);
+					}
+				}
+				else
+				{
+					switch (ntest->nulltesttype)
+					{
+						case IS_NULL:
+							appendStringInfoString(buf, " IS NOT DISTINCT FROM NULL");
+							break;
+						case IS_NOT_NULL:
+							appendStringInfoString(buf, " IS DISTINCT FROM NULL");
+							break;
+						default:
+							elog(ERROR, "unrecognized nulltesttype: %d",
+								 (int) ntest->nulltesttype);
+					}
 				}
 				if (!PRETTY_PAREN(context))
 					appendStringInfoChar(buf, ')');
