@@ -1751,6 +1751,7 @@ BeginCopyTo(Relation rel,
 		{
 			mode_t		oumask; /* Pre-existing umask value */
 			struct stat st;
+			int			save_errno;
 
 			/*
 			 * Prevent write to relative path ... too easy to shoot oneself in
@@ -1759,16 +1760,21 @@ BeginCopyTo(Relation rel,
 			if (!is_absolute_path(filename))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_NAME),
-					  errmsg("relative path not allowed for COPY to file")));
+						 errmsg("relative path not allowed for COPY to file")));
 
 			oumask = umask(S_IWGRP | S_IWOTH);
 			cstate->copy_file = AllocateFile(cstate->filename, PG_BINARY_W);
+			save_errno = errno;
 			umask(oumask);
+
 			if (cstate->copy_file == NULL)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not open file \"%s\" for writing: %m",
-								cstate->filename)));
+								cstate->filename),
+						 ((save_errno == ENOENT || save_errno == EACCES) ?
+						  errhint("COPY copies to a file on the PostgreSQL server, not on the client. "
+								  "You may want a client-side facility such as psql's \\copy.") : 0)));
 
 			if (fstat(fileno(cstate->copy_file), &st))
 				ereport(ERROR,
@@ -2786,13 +2792,21 @@ BeginCopyFrom(Relation rel,
 		else
 		{
 			struct stat st;
+			int			save_errno;
 
 			cstate->copy_file = AllocateFile(cstate->filename, PG_BINARY_R);
+
+			/* in case something in ereport changes errno: */
+			save_errno = errno;
+
 			if (cstate->copy_file == NULL)
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not open file \"%s\" for reading: %m",
-								cstate->filename)));
+								cstate->filename),
+						 ((save_errno == ENOENT || save_errno == EACCES) ?
+						  errhint("COPY copies from a file on the PostgreSQL server, not on the client. "
+								  "You may want a client-side facility such as psql's \\copy.") : 0)));
 
 			if (fstat(fileno(cstate->copy_file), &st))
 				ereport(ERROR,
