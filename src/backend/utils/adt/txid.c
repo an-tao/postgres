@@ -721,6 +721,22 @@ txid_snapshot_xip(PG_FUNCTION_ARGS)
 	}
 }
 
+Datum
+txid_convert_if_recent(PG_FUNCTION_ARGS)
+{
+	TransactionId xid;
+	bool is_valid;
+
+	LWLockAcquire(XidGenLock, LW_SHARED);
+	is_valid = TransactionIdInRecentPast(PG_GETARG_INT64(0), &xid);
+	LWLockRelease(XidGenLock);
+
+	if (is_valid)
+		return TransactionIdGetDatum(xid);
+	else
+		PG_RETURN_NULL();
+}
+
 /*
  * Report the status of a recent transaction ID, or null for wrapped,
  * truncated away or otherwise too old XIDs.
