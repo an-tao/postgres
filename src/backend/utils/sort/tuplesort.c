@@ -654,9 +654,7 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 	 */
 	sortcontext = AllocSetContextCreate(CurrentMemoryContext,
 										"TupleSort main",
-										ALLOCSET_DEFAULT_MINSIZE,
-										ALLOCSET_DEFAULT_INITSIZE,
-										ALLOCSET_DEFAULT_MAXSIZE);
+										ALLOCSET_DEFAULT_SIZES);
 
 	/*
 	 * Caller tuple (e.g. IndexTuple) memory context.
@@ -669,9 +667,7 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 	 */
 	tuplecontext = AllocSetContextCreate(sortcontext,
 										 "Caller tuples",
-										 ALLOCSET_DEFAULT_MINSIZE,
-										 ALLOCSET_DEFAULT_INITSIZE,
-										 ALLOCSET_DEFAULT_MAXSIZE);
+										 ALLOCSET_DEFAULT_SIZES);
 
 	/*
 	 * Make the Tuplesortstate within the per-sort context.  This way, we
@@ -1443,7 +1439,7 @@ tuplesort_putindextuplevalues(Tuplesortstate *state, Relation rel,
 			mtup->datum1 = index_getattr(tuple,
 										 1,
 										 RelationGetDescr(state->indexRel),
-										 &stup.isnull1);
+										 &mtup->isnull1);
 		}
 	}
 
@@ -4271,7 +4267,7 @@ copytup_cluster(Tuplesortstate *state, SortTuple *stup, void *tup)
 			mtup->datum1 = heap_getattr(tuple,
 									  state->indexInfo->ii_KeyAttrNumbers[0],
 										state->tupDesc,
-										&stup->isnull1);
+										&mtup->isnull1);
 		}
 	}
 }
@@ -4588,7 +4584,7 @@ copytup_index(Tuplesortstate *state, SortTuple *stup, void *tup)
 			mtup->datum1 = index_getattr(tuple,
 										 1,
 										 RelationGetDescr(state->indexRel),
-										 &stup->isnull1);
+										 &mtup->isnull1);
 		}
 	}
 }
