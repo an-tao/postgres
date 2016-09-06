@@ -135,6 +135,7 @@ static const char *default_text_search_config = "";
 static char *username = "";
 static bool pwprompt = false;
 static char *pwfilename = NULL;
+static char *superuser_password = NULL;
 static const char *authmethodhost = "";
 static const char *authmethodlocal = "";
 static bool debug = false;
@@ -255,7 +256,7 @@ static void test_config_settings(void);
 static void setup_config(void);
 static void bootstrap_template1(void);
 static void setup_auth(FILE *cmdfd);
-static void get_set_pwd(FILE *cmdfd);
+static void get_su_pwd(void);
 static void setup_depend(FILE *cmdfd);
 static void setup_sysviews(FILE *cmdfd);
 static void setup_description(FILE *cmdfd);
@@ -1544,30 +1545,35 @@ setup_auth(FILE *cmdfd)
 
 	for (line = pg_authid_setup; *line != NULL; line++)
 		PG_CMD_PUTS(*line);
+
+	if (superuser_password)
+		PG_CMD_PRINTF2("ALTER USER \"%s\" WITH PASSWORD E'%s';\n\n",
+					   username, escape_quotes(superuser_password));
 }
 
 /*
- * get the superuser password if required, and call postgres to set it
+ * get the superuser password if required
  */
 static void
-get_set_pwd(FILE *cmdfd)
+get_su_pwd(void)
 {
-	char	   *pwd1,
-			   *pwd2;
+	char		pwd1[100];
+	char		pwd2[100];
 
 	if (pwprompt)
 	{
 		/*
 		 * Read password from terminal
 		 */
-		pwd1 = simple_prompt("Enter new superuser password: ", 100, false);
-		pwd2 = simple_prompt("Enter it again: ", 100, false);
+		printf("\n");
+		fflush(stdout);
+		simple_prompt("Enter new superuser password: ", pwd1, sizeof(pwd1), false);
+		simple_prompt("Enter it again: ", pwd2, sizeof(pwd2), false);
 		if (strcmp(pwd1, pwd2) != 0)
 		{
 			fprintf(stderr, _("Passwords didn't match.\n"));
 			exit_nicely();
 		}
-		free(pwd2);
 	}
 	else
 	{
@@ -1580,7 +1586,6 @@ get_set_pwd(FILE *cmdfd)
 		 * for now.
 		 */
 		FILE	   *pwf = fopen(pwfilename, "r");
-		char		pwdbuf[MAXPGPATH];
 		int			i;
 
 		if (!pwf)
@@ -1589,7 +1594,7 @@ get_set_pwd(FILE *cmdfd)
 					progname, pwfilename, strerror(errno));
 			exit_nicely();
 		}
-		if (!fgets(pwdbuf, sizeof(pwdbuf), pwf))
+		if (!fgets(pwd1, sizeof(pwd1), pwf))
 		{
 			if (ferror(pwf))
 				fprintf(stderr, _("%s: could not read password from file \"%s\": %s\n"),
@@ -1601,18 +1606,12 @@ get_set_pwd(FILE *cmdfd)
 		}
 		fclose(pwf);
 
-		i = strlen(pwdbuf);
-		while (i > 0 && (pwdbuf[i - 1] == '\r' || pwdbuf[i - 1] == '\n'))
-			pwdbuf[--i] = '\0';
-
-		pwd1 = pg_strdup(pwdbuf);
-
+		i = strlen(pwd1);
+		while (i > 0 && (pwd1[i - 1] == '\r' || pwd1[i - 1] == '\n'))
+			pwd1[--i] = '\0';
 	}
 
-	PG_CMD_PRINTF2("ALTER USER \"%s\" WITH PASSWORD E'%s';\n\n",
-				   username, escape_quotes(pwd1));
-
-	free(pwd1);
+	superuser_password = pg_strdup(pwd1);
 }
 
 /*
@@ -3279,8 +3278,6 @@ initialize_data_directory(void)
 	PG_CMD_OPEN;
 
 	setup_auth(cmdfd);
-	if (pwprompt || pwfilename)
-		get_set_pwd(cmdfd);
 
 	setup_depend(cmdfd);
 
@@ -3569,6 +3566,9 @@ main(int argc, char *argv[])
 	else
 		printf(_("Data page checksums are disabled.\n"));
 
+	if (pwprompt || pwfilename)
+		get_su_pwd();
+
 	printf("\n");
 
 	initialize_data_directory();
@@ -3604,7 +3604,7 @@ main(int argc, char *argv[])
 	appendPQExpBufferStr(start_db_cmd, " -l logfile start");
 
 	printf(_("\nSuccess. You can now start the database server using:\n\n"
-			 "	  %s\n\n"),
+			 "    %s\n\n"),
 		   start_db_cmd->data);
 
 	destroyPQExpBuffer(start_db_cmd);
