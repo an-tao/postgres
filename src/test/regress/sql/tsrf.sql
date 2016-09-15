@@ -47,6 +47,9 @@ SELECT few.dataa, count(*) FROM few WHERE dataa = 'a' GROUP BY few.dataa, unnest
 -- SRFs are not allowed in aggregate arguments
 SELECT min(generate_series(1, 3)) FROM few;
 
+-- SRFs are not allowed in window function arguments, either
+SELECT min(generate_series(1, 3)) OVER() FROM few;
+
 -- SRFs are normally computed after window functions
 SELECT id,lag(id) OVER(), count(*) OVER(), generate_series(1,3) FROM few;
 -- unless referencing SRFs
@@ -68,15 +71,20 @@ CREATE TABLE fewmore AS SELECT generate_series(1,3) AS data;
 INSERT INTO fewmore VALUES(generate_series(4,5));
 SELECT * FROM fewmore;
 
--- nonsense that seems to be allowed
+-- SRFs are not allowed in UPDATE (they once were, but it was nonsense)
 UPDATE fewmore SET data = generate_series(4,9);
 
 -- SRFs are not allowed in RETURNING
 INSERT INTO fewmore VALUES(1) RETURNING generate_series(1,3);
--- nor aggregate arguments
-SELECT count(generate_series(1,3)) FROM few;
--- nor proper VALUES
+
+-- nor standalone VALUES (but surely this is a bug?)
 VALUES(1, generate_series(1,2));
+
+-- We allow tSRFs that are not at top level
+SELECT int4mul(generate_series(1,2), 10);
+
+-- but SRFs in function RTEs must be at top level (annoying restriction)
+SELECT * FROM int4mul(generate_series(1,2), 10);
 
 -- DISTINCT ON is evaluated before tSRF evaluation if SRF is not
 -- referenced either in ORDER BY or in the DISTINCT ON list. The ORDER
