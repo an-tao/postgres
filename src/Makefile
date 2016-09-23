@@ -25,6 +25,7 @@ SUBDIRS = \
 	bin \
 	pl \
 	makefiles \
+	test/perl \
 	test/regress
 
 # There are too many interdependencies between the subdirectories, so
