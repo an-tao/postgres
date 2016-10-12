@@ -242,7 +242,7 @@ $node_master->append_conf('postgresql.conf', "max_connections = 20\n");
 $node_master->dump_info;
 $node_master->start;
 
-my $node_master->safe_psql('postgres', 'CREATE EXTENSION failover_slots;');
+$node_master->safe_psql('postgres', 'CREATE EXTENSION failover_slots;');
 
 my $master_beforecreate_bb_lsn = $node_master->safe_psql('postgres',
 	"SELECT pg_current_xlog_insert_location()");
