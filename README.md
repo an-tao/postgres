@@ -22,3 +22,9 @@ Branches and tags in this repository are linked to from:
 
 and are used for collaborative development on features for submission
 to core postgres.
+
+Most people using this tree will want to clone upstream postgres, then
+add this as a second remote, e.g.
+
+    git remote add 2ndq https://github.com/2ndQuadrant/postgres.git
+    git fetch 2ndq
