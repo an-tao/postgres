@@ -66,3 +66,6 @@ RETURNS TABLE (
     FROM pg_get_replication_slots_failover() AS L
             LEFT JOIN pg_database D ON (L.datoid = D.oid);
 $$ LANGUAGE sql;
+
+CREATE FUNCTION pg_replication_slot_set_failover(slot_name name, failover bool)
+RETURNS void STRICT LANGUAGE c AS 'MODULE_PATHNAME','slot_set_failover';

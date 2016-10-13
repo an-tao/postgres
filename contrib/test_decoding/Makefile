@@ -1,6 +1,6 @@
 # contrib/test_decoding/Makefile
 
-MODULES = test_decoding
+MODULES = test_decoding failover_slots
 PGFILEDESC = "test_decoding - example of a logical decoding output plugin"
 
 EXTENSION = failover_slots

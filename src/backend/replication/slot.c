@@ -461,6 +461,53 @@ ReplicationSlotDrop(const char *name)
 	ReplicationSlotDropAcquired();
 }
 
+static void
+ReplicationSlotXLOGDelete(ReplicationSlot *slot)
+{
+	xl_replslot_drop xlrec;
+
+	memcpy(&(xlrec.name), NameStr(slot->data.name), NAMEDATALEN);
+
+	XLogBeginInsert();
+	XLogRegisterData((char *) (&xlrec), sizeof(xlrec));
+	(void) XLogInsert(RM_REPLSLOT_ID, XLOG_REPLSLOT_DROP);
+}
+
+/*
+ * Set/clear the failover status for the current slot.
+ *
+ * If setting failover, force a flush of the slot so it is replicated
+ * promptly.
+ *
+ * If clearing failover, write a slot delete message to WAL so the
+ * slot is removed from the replica.
+ *
+ * We don't make sure the replica has actually retained all the WAL
+ * the failover slot needs. That's the user's responsibility.
+ */
+void
+ReplicationSlotAcquiredSetFailover(bool failover)
+{
+	ReplicationSlot *slot = MyReplicationSlot;
+
+	Assert(MyReplicationSlot != NULL);
+
+	if (failover == slot->failover)
+		return;
+
+	slot->failover = failover;
+
+	if (slot->failover)
+	{
+		ReplicationSlotMarkDirty();
+		ReplicationSlotSave();
+	}
+	else
+	{
+		ReplicationSlotXLOGDelete(slot);
+	}
+}
+
 /*
  * Permanently drop the currently acquired replication slot which will be
  * released by the point this function returns.
@@ -502,13 +549,7 @@ ReplicationSlotDropAcquired(void)
 	/* Record the drop in XLOG if we aren't replaying WAL */
 	if (XLogInsertAllowed() && slot_is_failover)
 	{
-		xl_replslot_drop xlrec;
-
-		memcpy(&(xlrec.name), NameStr(slot->data.name), NAMEDATALEN);
-
-		XLogBeginInsert();
-		XLogRegisterData((char *) (&xlrec), sizeof(xlrec));
-		(void) XLogInsert(RM_REPLSLOT_ID, XLOG_REPLSLOT_DROP);
+		ReplicationSlotXLOGDelete(slot);
 	}
 
 	/* Generate pathnames. */

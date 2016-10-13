@@ -34,6 +34,13 @@ SELECT data FROM pg_logical_slot_get_changes('nonfailover', NULL, NULL, 'include
 
 SELECT * FROM stable_replslots_cols;
 
+SELECT pg_replication_slot_set_failover('nonfailover', true);
+SELECT pg_replication_slot_set_failover('nonfailover_p', true);
+SELECT pg_replication_slot_set_failover('failover', false);
+SELECT pg_replication_slot_set_failover('failover_p', false);
+
+SELECT * FROM stable_replslots_cols;
+
 SELECT pg_drop_replication_slot('default');
 SELECT pg_drop_replication_slot('default_p');
 SELECT pg_drop_replication_slot('nonfailover');
