@@ -300,11 +300,11 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 	StrNCpy(NameStr(slot->data.name), name, NAMEDATALEN);
 	slot->data.database = db_specific ? MyDatabaseId : InvalidOid;
 	slot->data.persistency = persistency;
-	slot->data.failover = failover;
 
 	/* and then data only present in shared memory */
 	slot->just_dirtied = false;
 	slot->dirty = false;
+	slot->failover = failover;
 	slot->effective_xmin = InvalidTransactionId;
 	slot->effective_catalog_xmin = InvalidTransactionId;
 	slot->candidate_catalog_xmin = InvalidTransactionId;
@@ -376,7 +376,7 @@ ReplicationSlotAcquire(const char *name)
 			 * We can only claim a slot for our use if it's not claimed
 			 * by someone else AND it isn't a failover slot on a standby.
 			 */
-			if (active_pid == 0 && !(RecoveryInProgress() && s->data.failover))
+			if (active_pid == 0 && !(RecoveryInProgress() && s->failover))
 				s->active_pid = MyProcPid;
 			SpinLockRelease(&s->mutex);
 			slot = s;
@@ -402,7 +402,7 @@ ReplicationSlotAcquire(const char *name)
 	 * we can't write WAL from a standby and there's no sensible way
 	 * to advance slot position from both replica and master anyway.
 	 */
-	if (RecoveryInProgress() && slot->data.failover)
+	if (RecoveryInProgress() && slot->failover)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_IN_USE),
 				 errmsg("replication slot \"%s\" is reserved for use after failover",
@@ -480,7 +480,7 @@ ReplicationSlotDropAcquired(void)
 
 	Assert(MyReplicationSlot != NULL);
 
-	slot_is_failover = slot->data.failover;
+	slot_is_failover = slot->failover;
 
 	/* slot isn't acquired anymore */
 	MyReplicationSlot = NULL;
@@ -740,7 +740,7 @@ ReplicationSlotsComputeRequiredLSN(bool failover_only)
 
 		SpinLockAcquire(&s->mutex);
 		restart_lsn = s->data.restart_lsn;
-		failover = s->data.failover;
+		failover = s->failover;
 		SpinLockRelease(&s->mutex);
 
 		if (failover_only && !failover)
@@ -1156,6 +1156,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 {
 	char		tmppath[MAXPGPATH];
 	char		path[MAXPGPATH];
+	char		failoverpath[MAXPGPATH];
 	int			fd;
 	ReplicationSlotOnDisk cp;
 	bool		was_dirty;
@@ -1180,6 +1181,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 
 	sprintf(tmppath, "%s/state.tmp", dir);
 	sprintf(path, "%s/state", dir);
+	sprintf(failoverpath, "%s/isfailover", dir);
 
 	fd = OpenTransientFile(tmppath,
 						   O_CREAT | O_EXCL | O_WRONLY | PG_BINARY,
@@ -1207,7 +1209,7 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 	/*
 	 * If needed, record this action in WAL
 	 */
-	if (slot->data.failover &&
+	if (slot->failover &&
 		slot->data.persistency == RS_PERSISTENT &&
 		!RecoveryInProgress())
 	{
@@ -1257,6 +1259,58 @@ SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel)
 
 	CloseTransientFile(fd);
 
+	/*
+	 * Make sure the state of the on-disk failover slot marker
+	 * file is the same as what we have in shmem.
+	 *
+	 * Since we don't support converting normal slots to failover
+	 * slots all this is actually going to do is write the file
+	 * on first slot sync if it's a failover slot. But we might as
+	 * well do it properly.
+	 *
+	 * This is not perfectly crashsafe; if the slot file is written
+	 * out, then we crash before writing out the marker file/fsync'ing the
+	 * directory, we will accidentally create a non-failover slot. There's
+	 * really no way around this while remaining backward compatible, and it'll
+	 * at least be visible that the slot status is !failover when querying it
+	 * later.
+	 */
+	if (slot->failover)
+	{
+		/*
+		 * Touch the file by opening and immediately closing it. No need to
+		 * write anything to it, the exitence of the file is what we use.
+		 */
+		fd = OpenTransientFile(failoverpath,
+							   O_CREAT | O_WRONLY | PG_BINARY,
+							   S_IRUSR | S_IWUSR);
+		if (fd < 0)
+		{
+			ereport(elevel,
+					(errcode_for_file_access(),
+					 errmsg("could not create file \"%s\": %m",
+							tmppath)));
+			return;
+		}
+
+		CloseTransientFile(fd);
+	}
+	else
+	{
+		/*
+		 * Try to unlink the file. If it fails we expect that the
+		 * file was already missing. Anything else is an error.
+		 */
+		if (unlink(failoverpath))
+		{
+			if (errno != ENOENT)
+			ereport(elevel,
+					(errcode_for_file_access(),
+					 errmsg("could not unlink file \"%s\": %m",
+							tmppath)));
+		}
+	}
+
 	/* rename to permanent file, fsync file and directory */
 	if (rename(tmppath, path) != 0)
 	{
@@ -1301,6 +1355,7 @@ RestoreSlotFromDisk(const char *name, bool drop_nonfailover_slots)
 	bool		restored = false;
 	int			readBytes;
 	pg_crc32c	checksum;
+	bool		is_failover;
 
 	/* no need to lock here, no concurrent access allowed yet */
 
@@ -1411,6 +1466,36 @@ RestoreSlotFromDisk(const char *name, bool drop_nonfailover_slots)
 						path, checksum, cp.checksum)));
 
 	/*
+ 	 * Stat the failover slot marker file to determine whether we're
+	 * restoring a failover slot or not.
+	 */
+	if (cp.slotdata.persistency == RS_PERSISTENT)
+	{
+		char		failoverpath[MAXPGPATH];
+		struct stat statbuf;
+		sprintf(failoverpath, "pg_replslot/%s/isfailover", name);
+
+		if (stat(failoverpath, &statbuf))
+		{
+			if (errno == ENOENT)
+			{
+				is_failover = false;
+			}
+			else
+			{
+				ereport(WARNING,
+						(errcode_for_file_access(),
+						 errmsg("could not stat \"%s\": %m", failoverpath)));
+			}
+		}
+		else
+		{
+			/* It's a failover slot */
+			is_failover = true;
+		}
+	}
+
+	/*
 	 * If we crashed with an ephemeral slot active, don't restore but
 	 * delete it.
 	 *
@@ -1424,8 +1509,7 @@ RestoreSlotFromDisk(const char *name, bool drop_nonfailover_slots)
 	 * Failover slots are safe since they're WAL-logged and follow the
 	 * master's slot position.
 	 */
-	if (cp.slotdata.persistency != RS_PERSISTENT
-			|| (drop_nonfailover_slots && !cp.slotdata.failover))
+	if (cp.slotdata.persistency != RS_PERSISTENT || (drop_nonfailover_slots && !is_failover))
 	{
 		sprintf(path, "pg_replslot/%s", name);
 
@@ -1469,6 +1553,8 @@ RestoreSlotFromDisk(const char *name, bool drop_nonfailover_slots)
 		slot->candidate_xmin_lsn = InvalidXLogRecPtr;
 		slot->candidate_restart_lsn = InvalidXLogRecPtr;
 		slot->candidate_restart_valid = InvalidXLogRecPtr;
+
+		slot->failover = is_failover;
 
 		slot->in_use = true;
 		slot->active_pid = 0;
@@ -1534,7 +1620,7 @@ ReplicationSlotRedoCreateOrUpdate(ReplicationSlotInWAL xlrec)
 		}
 	}
 
-	if (found_duplicate && !slot->data.failover)
+	if (found_duplicate && !slot->failover)
 	{
 		/*
 		 * A local non-failover slot exists with the same name as
@@ -1659,7 +1745,12 @@ ReplicationSlotRedoCreateOrUpdate(ReplicationSlotInWAL xlrec)
 			   sizeof(ReplicationSlotPersistentData));
 
 		Assert(strcmp(NameStr(xlrec->name), NameStr(slot->data.name)) == 0);
-		Assert(slot->data.failover && slot->data.persistency == RS_PERSISTENT);
+		Assert(slot->data.persistency == RS_PERSISTENT);
+		/*
+		 * It came in via WAL so it must be a failover slot. Mark it so that
+		 * we create the slot marker file when we write it out.
+		 */
+		slot->failover = true;
 
 		/* Update the non-persistent in-memory state */
 		slot->effective_xmin = xlrec->xmin;
@@ -1744,13 +1835,6 @@ ReplicationSlotRedoDrop(const char * slotname)
 			{
 				/* shouldn't happen */
 				elog(WARNING, "found conflicting non-persistent slot during failover slot drop");
-				break;
-			}
-
-			if (!s->data.failover)
-			{
-				/* shouldn't happen */
-				elog(WARNING, "found non-failover slot during redo of slot drop");
 				break;
 			}
 

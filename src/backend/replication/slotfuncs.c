@@ -266,7 +266,7 @@ pg_get_replication_slots(PG_FUNCTION_ARGS)
 			namecpy(&plugin, &slot->data.plugin);
 
 			active_pid = slot->active_pid;
-			failover = slot->data.failover;
+			failover = slot->failover;
 		}
 		SpinLockRelease(&slot->mutex);
 
