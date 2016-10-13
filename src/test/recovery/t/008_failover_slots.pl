@@ -238,6 +238,7 @@ $node_master->append_conf('postgresql.conf', "wal_level = 'logical'\n");
 $node_master->append_conf('postgresql.conf', "max_replication_slots = 12\n");
 $node_master->append_conf('postgresql.conf', "max_wal_senders = 12\n");
 $node_master->append_conf('postgresql.conf', "max_connections = 20\n");
+$node_master->append_conf('postgresql.conf', "log_line_prefix = '%t %p '\n");
 #$node_master->append_conf('postgresql.conf', "log_min_messages = 'debug2'\n");
 $node_master->dump_info;
 $node_master->start;
@@ -578,6 +579,71 @@ like($$stderr, qr/due to administrator command/, 'pg_receivexlog exited with adm
 # The slot is now a failover slot
 $si = get_slot_info($node_replica, 'replace_me');
 is($si->{failover}, 't', 'failover slot successfully replaces local slot');
+
+sub set_failover_status
+{
+	my %slots = %{$_[0]};
+	while (my ($slotname, $isfailover) = each(%slots))
+	{
+		my $failoverbool = $isfailover ? 'true' : 'false';
+		$node_master->safe_psql("postgres", "SELECT pg_replication_slot_set_failover('$slotname',$failoverbool);");
+	}
+}
+
+sub toggle_failover_status
+{
+	my $slots = $_[0];
+	foreach my $slotname (keys %{$slots})
+	{
+		$slots->{$slotname} = !$slots->{$slotname};
+	}
+}
+
+sub check_failover_status
+{
+	my %slots = %{$_[0]};
+	foreach my $slotname (sort keys %slots)
+	{
+		my $expected = "$slotname|" . ($slots{$slotname} ? 't' : 'f');
+		is($node_master->safe_psql("postgres", "SELECT slot_name, failover FROM pg_replication_slots_failover() WHERE slot_name = '$slotname'"), $expected, "slot '$slotname' failover state on master is " . (${slots{$slotname}} ? 'true' : 'false'));
+	}
+	wait_for_catchup($node_master, $node_replica);
+	foreach my $slotname (sort keys %slots)
+	{
+		my $expected = $slots{$slotname} ? "$slotname|t" : '';
+		is($node_replica->safe_psql("postgres", "SELECT slot_name, failover FROM pg_replication_slots_failover() WHERE slot_name = '$slotname'"), $expected, "slot '$slotname' failover on replica is " . (${slots{$slotname}} ? 'true' : 'absent'));
+	}
+}
+
+# Initial slot failover states
+my (%slots) = (
+'bb' => 0,
+'bb_failover' => 1,
+'ab' => 0,
+'ab_failover' => 1,
+'bb_phys_failover' => 1,
+'bb_phys' => 0,
+'ab_phys_failover' => 1,
+'ab_phys' => 0,
+'replace_me' => 1
+);
+
+diag "Checking initial slot state matches expectations...";
+check_failover_status(\%slots);
+
+diag "Toggling failover on all slots...";
+toggle_failover_status(\%slots);
+set_failover_status(\%slots);
+
+diag "Checking slots after toggle...";
+check_failover_status(\%slots);
+
+diag "Toggling them back and re-checking...";
+toggle_failover_status(\%slots);
+set_failover_status(\%slots);
+check_failover_status(\%slots);
+
+diag "Toggle tests done";
 
 # OK, make sure slot drops replay correctly
 
