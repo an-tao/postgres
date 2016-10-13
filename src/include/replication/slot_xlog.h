@@ -75,12 +75,6 @@ typedef struct ReplicationSlotPersistentData
 
 	/* plugin name */
 	NameData	plugin;
-
-	/*
-	 * Slots created on master become failover-slots and are maintained
-	 * on all standbys, but are only assignable after failover.
-	 */
-	bool		failover;
 } ReplicationSlotPersistentData;
 
 typedef ReplicationSlotPersistentData *ReplicationSlotInWAL;
