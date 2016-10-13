@@ -66,6 +66,14 @@ typedef struct ReplicationSlot
 	XLogRecPtr	candidate_xmin_lsn;
 	XLogRecPtr	candidate_restart_valid;
 	XLogRecPtr	candidate_restart_lsn;
+
+	/*
+	 * Failover slots needs to keep track whether a slot is a failover
+	 * slot. We use an on-disk marker file in the slot directory for this,
+	 * but to avoid checking it all the time that knowledge is cached
+	 * in shmem.
+	 */
+	bool		failover;
 } ReplicationSlot;
 
 #define SlotIsPhysical(slot) (slot->data.database == InvalidOid)
