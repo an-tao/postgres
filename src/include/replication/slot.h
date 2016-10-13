@@ -114,6 +114,7 @@ extern void ReplicationSlotAcquire(const char *name);
 extern void ReplicationSlotRelease(void);
 extern void ReplicationSlotSave(void);
 extern void ReplicationSlotMarkDirty(void);
+extern void ReplicationSlotAcquiredSetFailover(bool failover);
 
 /* misc stuff */
 extern bool ReplicationSlotValidateName(const char *name, int elevel);
@@ -135,5 +136,6 @@ extern Datum pg_create_physical_replication_slot(PG_FUNCTION_ARGS);
 extern Datum pg_create_logical_replication_slot(PG_FUNCTION_ARGS);
 extern Datum pg_drop_replication_slot(PG_FUNCTION_ARGS);
 extern Datum pg_get_replication_slots(PG_FUNCTION_ARGS);
+extern Datum slot_set_failover(PG_FUNCTION_ARGS);
 
 #endif   /* SLOT_H */
