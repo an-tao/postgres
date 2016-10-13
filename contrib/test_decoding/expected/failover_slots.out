@@ -118,6 +118,41 @@ SELECT * FROM stable_replslots_cols;
  nonfailover_p |               | physical  |            | f      | f
 (6 rows)
 
+SELECT pg_replication_slot_set_failover('nonfailover', true);
+ pg_replication_slot_set_failover 
+----------------------------------
+ 
+(1 row)
+
+SELECT pg_replication_slot_set_failover('nonfailover_p', true);
+ pg_replication_slot_set_failover 
+----------------------------------
+ 
+(1 row)
+
+SELECT pg_replication_slot_set_failover('failover', false);
+ pg_replication_slot_set_failover 
+----------------------------------
+ 
+(1 row)
+
+SELECT pg_replication_slot_set_failover('failover_p', false);
+ pg_replication_slot_set_failover 
+----------------------------------
+ 
+(1 row)
+
+SELECT * FROM stable_replslots_cols;
+   slot_name   |    plugin     | slot_type |  database  | active | failover 
+---------------+---------------+-----------+------------+--------+----------
+ default       | test_decoding | logical   | regression | f      | f
+ default_p     |               | physical  |            | f      | f
+ failover      | test_decoding | logical   | regression | f      | f
+ failover_p    |               | physical  |            | f      | f
+ nonfailover   | test_decoding | logical   | regression | f      | t
+ nonfailover_p |               | physical  |            | f      | t
+(6 rows)
+
 SELECT pg_drop_replication_slot('default');
  pg_drop_replication_slot 
 --------------------------
