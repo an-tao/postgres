@@ -126,6 +126,7 @@
 #include "parser/parse_clause.h"
 #include "parser/parse_coerce.h"
 #include "parser/parsetree.h"
+#include "statistics/stats.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
 #include "utils/date.h"
@@ -164,6 +165,8 @@ static double eqjoinsel_inner(Oid operator,
 static double eqjoinsel_semi(Oid operator,
 			   VariableStatData *vardata1, VariableStatData *vardata2,
 			   RelOptInfo *inner_rel);
+static double find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos,
+			   bool *found);
 static bool convert_to_scalar(Datum value, Oid valuetypid, double *scaledvalue,
 				  Datum lobound, Datum hibound, Oid boundstypid,
 				  double *scaledlobound, double *scaledhibound);
@@ -207,7 +210,6 @@ static Datum string_to_datum(const char *str, Oid datatype);
 static Const *string_to_const(const char *str, Oid datatype);
 static Const *string_to_bytea_const(const char *str, size_t str_len);
 static List *add_predicate_to_quals(IndexOptInfo *index, List *indexQuals);
-
 
 /*
  *		eqsel			- Selectivity of "=" for any data types.
@@ -3437,12 +3439,26 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 			 * don't know by how much.  We should never clamp to less than the
 			 * largest ndistinct value for any of the Vars, though, since
 			 * there will surely be at least that many groups.
+			 *
+			 * However we don't need to do this if we have ndistinct stats on
+			 * the columns - in that case we can simply use the coefficient to
+			 * get the (probably way more accurate) estimate.
+			 *
+			 * XXX Might benefit from some refactoring, mixing the ndistinct
+			 * coefficients and clamp seems a bit unfortunate.
 			 */
 			double		clamp = rel->tuples;
 
 			if (relvarcount > 1)
 			{
-				clamp *= 0.1;
+				bool		found;
+				double		ndist = find_ndistinct(root, rel, varinfos, &found);
+
+				if (found)
+					reldistinct = ndist;
+				else
+					clamp *= 0.1;
+
 				if (clamp < relmaxndistinct)
 				{
 					clamp = relmaxndistinct;
@@ -3506,7 +3522,6 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 			 */
 			numdistinct *= reldistinct;
 		}
-
 		varinfos = newvarinfos;
 	} while (varinfos != NIL);
 
@@ -3666,6 +3681,159 @@ estimate_hash_bucketsize(PlannerInfo *root, Node *hashkey, double nbuckets)
  *
  *-------------------------------------------------------------------------
  */
+
+/*
+ * Find applicable ndistinct statistics and compute the coefficient to
+ * correct the estimate (simply a product of per-column ndistincts).
+ *
+ * XXX Currently we only look for a perfect match, i.e. a single ndistinct
+ * estimate exactly matching all the columns of the statistics. This may be
+ * a bit problematic as adding a column (not covered by the ndistinct stats)
+ * will prevent us from using the stats entirely. So instead this needs to
+ * estimate the covered attributes, and then combine that with the extra
+ * attributes somehow (probably the old way).
+ */
+static double
+find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
+{
+	ListCell   *lc;
+	Bitmapset  *attnums = NULL;
+	int			nattnums;
+	VariableStatData vardata;
+
+	/* assume we haven't found any suitable ndistinct statistics */
+	*found = false;
+
+	/* bail out immediately if the table has no extended statistics */
+	if (!rel->statlist)
+		return 0.0;
+
+	foreach(lc, varinfos)
+	{
+		GroupVarInfo *varinfo = (GroupVarInfo *) lfirst(lc);
+
+		if (varinfo->rel != rel)
+			continue;
+
+		/* FIXME handle expressions in general only */
+
+		/*
+		 * examine the variable (or expression) so that we know which
+		 * attribute we're dealing with - we need this for matching the
+		 * ndistinct coefficient
+		 *
+		 * FIXME probably might remember this from estimate_num_groups
+		 */
+		examine_variable(root, varinfo->var, 0, &vardata);
+
+		if (HeapTupleIsValid(vardata.statsTuple))
+		{
+			Form_pg_statistic stats;
+
+			stats = (Form_pg_statistic) GETSTRUCT(vardata.statsTuple);
+			attnums = bms_add_member(attnums, stats->staattnum);
+
+			ReleaseVariableStats(vardata);
+		}
+	}
+	nattnums = bms_num_members(attnums);
+
+	/* look for a matching ndistinct statistics */
+	foreach(lc, rel->statlist)
+	{
+		int			i,
+					k;
+		bool		matches;
+		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
+		int			j;
+		MVNDistinct stat;
+
+		/* skip statistics without ndistinct coefficient built */
+		if (!info->ndist_built)
+			continue;
+
+		/*
+		 * Only ndistinct stats covering all Vars are acceptable, which can't
+		 * happen if the statistics has fewer attributes than we have Vars.
+		 */
+		if (nattnums > info->stakeys->dim1)
+			continue;
+
+		/* check that all Vars are covered by the statistic */
+		matches = true;			/* assume match until we find unmatched
+								 * attribute */
+		k = -1;
+		while ((k = bms_next_member(attnums, k)) >= 0)
+		{
+			bool		attr_found = false;
+
+			for (i = 0; i < info->stakeys->dim1; i++)
+			{
+				if (info->stakeys->values[i] == k)
+				{
+					attr_found = true;
+					break;
+				}
+			}
+
+			/* found attribute not covered by this ndistinct stats, skip */
+			if (!attr_found)
+			{
+				matches = false;
+				break;
+			}
+		}
+
+		if (!matches)
+			continue;
+
+		/* hey, this statistics matches! great, let's extract the value */
+		*found = true;
+
+		stat = load_ext_ndistinct(info->statOid);
+
+		for (j = 0; j < stat->nitems; j++)
+		{
+			bool		item_matches = true;
+			MVNDistinctItem *item = &stat->items[j];
+
+			/* not the right item (different number of attributes) */
+			if (item->nattrs != nattnums)
+				continue;
+
+			/* check the attribute numbers */
+			k = -1;
+			while ((k = bms_next_member(attnums, k)) >= 0)
+			{
+				bool		attr_found = false;
+
+				for (i = 0; i < item->nattrs; i++)
+				{
+					if (info->stakeys->values[item->attrs[i]] == k)
+					{
+						attr_found = true;
+						break;
+					}
+				}
+
+				if (!attr_found)
+				{
+					item_matches = false;
+					break;
+				}
+			}
+
+			if (!item_matches)
+				continue;
+
+			return item->ndistinct;
+		}
+	}
+
+	/* Nothing usable :-( */
+	Assert(!(*found));
+	return 0.0;
+}
 
 /*
  * convert_to_scalar
