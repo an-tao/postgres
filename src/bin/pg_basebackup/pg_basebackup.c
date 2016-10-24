@@ -55,6 +55,12 @@ typedef struct TablespaceList
 	TablespaceListCell *tail;
 } TablespaceList;
 
+/*
+ * pg_xlog has been renamed to pg_wal in version 10.  This version number
+ * should be compared with PQserverVersion().
+ */
+#define MINIMUM_VERSION_FOR_PG_WAL	100000
+
 /* Global options */
 static char *basedir = NULL;
 static TablespaceList tablespace_dirs = {NULL, NULL};
@@ -329,8 +335,8 @@ usage(void)
 	printf(_("  -c, --checkpoint=fast|spread\n"
 			 "                         set fast or spread checkpointing\n"));
 	printf(_("  -l, --label=LABEL      set backup label\n"));
-	printf(_("  -n, --noclean          do not clean up after errors\n"));
-	printf(_("  -N, --nosync           do not wait for changes to be written safely to disk\n"));
+	printf(_("  -n, --no-clean         do not clean up after errors\n"));
+	printf(_("  -N, --no-sync          do not wait for changes to be written safely to disk\n"));
 	printf(_("  -P, --progress         show progress information\n"));
 	printf(_("  -v, --verbose          output verbose messages\n"));
 	printf(_("  -V, --version          output version information, then exit\n"));
@@ -443,7 +449,7 @@ typedef struct
 {
 	PGconn	   *bgconn;
 	XLogRecPtr	startptr;
-	char		xlogdir[MAXPGPATH];
+	char		xlog[MAXPGPATH];	/* directory or tarfile depending on mode */
 	char	   *sysidentifier;
 	int			timeline;
 } logstreamer_param;
@@ -464,8 +470,12 @@ LogStreamerMain(logstreamer_param *param)
 	stream.synchronous = false;
 	stream.do_sync = do_sync;
 	stream.mark_done = true;
-	stream.basedir = param->xlogdir;
 	stream.partial_suffix = NULL;
+
+	if (format == 'p')
+		stream.walmethod = CreateWalDirectoryMethod(param->xlog, do_sync);
+	else
+		stream.walmethod = CreateWalTarMethod(param->xlog, compresslevel, do_sync);
 
 	if (!ReceiveXlogStream(param->bgconn, &stream))
 
@@ -475,6 +485,14 @@ LogStreamerMain(logstreamer_param *param)
 		 * way.
 		 */
 		return 1;
+
+	if (!stream.walmethod->finish())
+	{
+		fprintf(stderr,
+				_("%s: could not finish writing WAL files: %s\n"),
+				progname, strerror(errno));
+		return 1;
+	}
 
 	PQfinish(param->bgconn);
 	return 0;
@@ -526,22 +544,33 @@ StartLogStreamer(char *startpos, uint32 timeline, char *sysidentifier)
 		/* Error message already written in GetConnection() */
 		exit(1);
 
-	snprintf(param->xlogdir, sizeof(param->xlogdir), "%s/pg_xlog", basedir);
+	/* In post-10 cluster, pg_xlog has been renamed to pg_wal */
+	snprintf(param->xlog, sizeof(param->xlog), "%s/%s",
+			 basedir,
+			 PQserverVersion(conn) < MINIMUM_VERSION_FOR_PG_WAL ?
+				"pg_xlog" : "pg_wal");
 
-	/*
-	 * Create pg_xlog/archive_status (and thus pg_xlog) so we can write to
-	 * basedir/pg_xlog as the directory entry in the tar file may arrive
-	 * later.
-	 */
-	snprintf(statusdir, sizeof(statusdir), "%s/pg_xlog/archive_status",
-			 basedir);
 
-	if (pg_mkdir_p(statusdir, S_IRWXU) != 0 && errno != EEXIST)
+	if (format == 'p')
 	{
-		fprintf(stderr,
-				_("%s: could not create directory \"%s\": %s\n"),
-				progname, statusdir, strerror(errno));
-		disconnect_and_exit(1);
+		/*
+		 * Create pg_wal/archive_status or pg_xlog/archive_status (and thus
+		 * pg_wal or pg_xlog) depending on the target server so we can write to
+		 * basedir/pg_wal or basedir/pg_xlog as the directory entry in the tar
+		 * file may arrive later.
+		 */
+		snprintf(statusdir, sizeof(statusdir), "%s/%s/archive_status",
+				 basedir,
+				 PQserverVersion(conn) < MINIMUM_VERSION_FOR_PG_WAL ?
+				 "pg_xlog" : "pg_wal");
+
+		if (pg_mkdir_p(statusdir, S_IRWXU) != 0 && errno != EEXIST)
+		{
+			fprintf(stderr,
+					_("%s: could not create directory \"%s\": %s\n"),
+					progname, statusdir, strerror(errno));
+			disconnect_and_exit(1);
+		}
 	}
 
 	/*
@@ -1338,15 +1367,17 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 					if (mkdir(filename, S_IRWXU) != 0)
 					{
 						/*
-						 * When streaming WAL, pg_xlog will have been created
-						 * by the wal receiver process. Also, when transaction
-						 * log directory location was specified, pg_xlog has
-						 * already been created as a symbolic link before
-						 * starting the actual backup. So just ignore creation
-						 * failures on related directories.
+						 * When streaming WAL, pg_wal (or pg_xlog for pre-9.6
+						 * clusters) will have been created by the wal receiver
+						 * process. Also, when transaction log directory location
+						 * was specified, pg_wal (or pg_xlog) has already been
+						 * created as a symbolic link before starting the actual
+						 * backup. So just ignore creation failures on related
+						 * directories.
 						 */
-						if (!((pg_str_endswith(filename, "/pg_xlog") ||
-							 pg_str_endswith(filename, "/archive_status")) &&
+						if (!((pg_str_endswith(filename, "/pg_wal") ||
+							   pg_str_endswith(filename, "/pg_xlog")||
+							   pg_str_endswith(filename, "/archive_status")) &&
 							  errno == EEXIST))
 						{
 							fprintf(stderr,
@@ -1634,15 +1665,10 @@ BaseBackup(void)
 	char		xlogend[64];
 	int			minServerMajor,
 				maxServerMajor;
-	int			serverMajor;
+	int			serverVersion,
+				serverMajor;
 
-	/*
-	 * Connect in replication mode to the server
-	 */
-	conn = GetConnection();
-	if (!conn)
-		/* Error message already written in GetConnection() */
-		exit(1);
+	Assert(conn != NULL);
 
 	/*
 	 * Check server version. BASE_BACKUP command was introduced in 9.1, so we
@@ -1650,7 +1676,8 @@ BaseBackup(void)
 	 */
 	minServerMajor = 901;
 	maxServerMajor = PG_VERSION_NUM / 100;
-	serverMajor = PQserverVersion(conn) / 100;
+	serverVersion = PQserverVersion(conn);
+	serverMajor = serverVersion / 100;
 	if (serverMajor < minServerMajor || serverMajor > maxServerMajor)
 	{
 		const char *serverver = PQparameterStatus(conn, "server_version");
@@ -1979,7 +2006,7 @@ BaseBackup(void)
 		}
 		else
 		{
-			(void) fsync_pgdata(basedir, progname);
+			(void) fsync_pgdata(basedir, progname, serverVersion);
 		}
 	}
 
@@ -2006,8 +2033,8 @@ main(int argc, char **argv)
 		{"gzip", no_argument, NULL, 'z'},
 		{"compress", required_argument, NULL, 'Z'},
 		{"label", required_argument, NULL, 'l'},
-		{"noclean", no_argument, NULL, 'n'},
-		{"nosync", no_argument, NULL, 'N'},
+		{"no-clean", no_argument, NULL, 'n'},
+		{"no-sync", no_argument, NULL, 'N'},
 		{"dbname", required_argument, NULL, 'd'},
 		{"host", required_argument, NULL, 'h'},
 		{"port", required_argument, NULL, 'p'},
@@ -2234,16 +2261,6 @@ main(int argc, char **argv)
 		exit(1);
 	}
 
-	if (format != 'p' && streamwal)
-	{
-		fprintf(stderr,
-				_("%s: WAL streaming can only be used in plain mode\n"),
-				progname);
-		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
-				progname);
-		exit(1);
-	}
-
 	if (replication_slot && !streamwal)
 	{
 		fprintf(stderr,
@@ -2296,6 +2313,14 @@ main(int argc, char **argv)
 	if (format == 'p' || strcmp(basedir, "-") != 0)
 		verify_dir_is_empty_or_create(basedir, &made_new_pgdata, &found_existing_pgdata);
 
+	/* connection in replication mode to server */
+	conn = GetConnection();
+	if (!conn)
+	{
+		/* Error message already written in GetConnection() */
+		exit(1);
+	}
+
 	/* Create transaction log symlink, if required */
 	if (strcmp(xlog_dir, "") != 0)
 	{
@@ -2303,19 +2328,24 @@ main(int argc, char **argv)
 
 		verify_dir_is_empty_or_create(xlog_dir, &made_new_xlogdir, &found_existing_xlogdir);
 
-		/* form name of the place where the symlink must go */
-		linkloc = psprintf("%s/pg_xlog", basedir);
+		/*
+		 * Form name of the place where the symlink must go. pg_xlog has
+		 * been renamed to pg_wal in post-10 clusters.
+		 */
+		linkloc = psprintf("%s/%s", basedir,
+						   PQserverVersion(conn) < MINIMUM_VERSION_FOR_PG_WAL ?
+								"pg_xlog" : "pg_wal");
 
 #ifdef HAVE_SYMLINK
 		if (symlink(xlog_dir, linkloc) != 0)
 		{
 			fprintf(stderr, _("%s: could not create symbolic link \"%s\": %s\n"),
 					progname, linkloc, strerror(errno));
-			exit(1);
+			disconnect_and_exit(1);
 		}
 #else
 		fprintf(stderr, _("%s: symlinks are not supported on this platform\n"));
-		exit(1);
+		disconnect_and_exit(1);
 #endif
 		free(linkloc);
 	}

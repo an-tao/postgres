@@ -484,7 +484,7 @@ sub backup
 
 	print "# Taking pg_basebackup $backup_name from node \"$name\"\n";
 	TestLib::system_or_bail('pg_basebackup', '-D', $backup_path, '-p', $port,
-		'-x', '--nosync');
+		'-x', '--no-sync');
 	print "# Backup finished\n";
 }
 
@@ -723,7 +723,7 @@ sub restart
 
 =item $node->promote()
 
-Wrapper for pg_ctl promote
+Wrapper for pg_ctl promote -w
 
 =cut
 
@@ -735,7 +735,8 @@ sub promote
 	my $logfile = $self->logfile;
 	my $name    = $self->name;
 	print "### Promoting node \"$name\"\n";
-	TestLib::system_log('pg_ctl', '-D', $pgdata, '-l', $logfile, 'promote');
+	TestLib::system_log('pg_ctl', '-D', $pgdata, '-w', '-l', $logfile,
+		'promote');
 }
 
 # Internal routine to enable streaming replication on a standby node.

@@ -1959,8 +1959,8 @@ do_help(void)
 	printf(_("  -s, --silent           only print errors, no informational messages\n"));
 	printf(_("  -t, --timeout=SECS     seconds to wait when using -w option\n"));
 	printf(_("  -V, --version          output version information, then exit\n"));
-	printf(_("  -w                     wait until operation completes\n"));
-	printf(_("  -W                     do not wait until operation completes\n"));
+	printf(_("  -w, --wait             wait until operation completes\n"));
+	printf(_("  -W, --no-wait          do not wait until operation completes\n"));
 	printf(_("  -?, --help             show this help, then exit\n"));
 	printf(_("(The default is to wait for shutdown, but not for start or restart.)\n\n"));
 	printf(_("If the -D option is omitted, the environment variable PGDATA is used.\n"));
@@ -1972,7 +1972,7 @@ do_help(void)
 	printf(_("  -c, --core-files       not applicable on this platform\n"));
 #endif
 	printf(_("  -l, --log=FILENAME     write (or append) server log to FILENAME\n"));
-	printf(_("  -o OPTIONS             command line options to pass to postgres\n"
+	printf(_("  -o, --options=OPTIONS  command line options to pass to postgres\n"
 	 "                         (PostgreSQL server executable) or initdb\n"));
 	printf(_("  -p PATH-TO-POSTGRES    normally not necessary\n"));
 	printf(_("\nOptions for stop or restart:\n"));
@@ -2171,9 +2171,12 @@ main(int argc, char **argv)
 		{"log", required_argument, NULL, 'l'},
 		{"mode", required_argument, NULL, 'm'},
 		{"pgdata", required_argument, NULL, 'D'},
+		{"options", required_argument, NULL, 'o'},
 		{"silent", no_argument, NULL, 's'},
 		{"timeout", required_argument, NULL, 't'},
 		{"core-files", no_argument, NULL, 'c'},
+		{"wait", no_argument, NULL, 'w'},
+		{"no-wait", no_argument, NULL, 'W'},
 		{NULL, 0, NULL, 0}
 	};
 

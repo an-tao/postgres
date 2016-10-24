@@ -195,7 +195,7 @@ static const char *backend_options = "--single -F -O -j -c search_path=pg_catalo
 
 static const char *const subdirs[] = {
 	"global",
-	"pg_xlog/archive_status",
+	"pg_wal/archive_status",
 	"pg_clog",
 	"pg_commit_ts",
 	"pg_dynshmem",
@@ -2091,8 +2091,6 @@ make_postgres(FILE *cmdfd)
 		PG_CMD_PUTS(*line);
 }
 
-
-
 /*
  * signal handler in case we are interrupted.
  *
@@ -2402,8 +2400,8 @@ usage(const char *progname)
 	printf(_("  -d, --debug               generate lots of debugging output\n"));
 	printf(_("  -k, --data-checksums      use data page checksums\n"));
 	printf(_("  -L DIRECTORY              where to find the input files\n"));
-	printf(_("  -n, --noclean             do not clean up after errors\n"));
-	printf(_("  -N, --nosync              do not wait for changes to be written safely to disk\n"));
+	printf(_("  -n, --no-clean            do not clean up after errors\n"));
+	printf(_("  -N, --no-sync             do not wait for changes to be written safely to disk\n"));
 	printf(_("  -s, --show                show internal settings\n"));
 	printf(_("  -S, --sync-only           only sync data directory\n"));
 	printf(_("\nOther options:\n"));
@@ -2830,7 +2828,7 @@ create_xlog_or_symlink(void)
 	char	   *subdirloc;
 
 	/* form name of the place for the subdirectory or symlink */
-	subdirloc = psprintf("%s/pg_xlog", pg_data);
+	subdirloc = psprintf("%s/pg_wal", pg_data);
 
 	if (strcmp(xlog_dir, "") != 0)
 	{
@@ -2963,7 +2961,7 @@ initialize_data_directory(void)
 
 	create_xlog_or_symlink();
 
-	/* Create required subdirectories (other than pg_xlog) */
+	/* Create required subdirectories (other than pg_wal) */
 	printf(_("creating subdirectories ... "));
 	fflush(stdout);
 
@@ -3078,8 +3076,10 @@ main(int argc, char *argv[])
 		{"version", no_argument, NULL, 'V'},
 		{"debug", no_argument, NULL, 'd'},
 		{"show", no_argument, NULL, 's'},
-		{"noclean", no_argument, NULL, 'n'},
-		{"nosync", no_argument, NULL, 'N'},
+		{"noclean", no_argument, NULL, 'n'}, /* for backwards compatibility */
+		{"no-clean", no_argument, NULL, 'n'},
+		{"nosync", no_argument, NULL, 'N'},  /* for backwards compatibility */
+		{"no-sync", no_argument, NULL, 'N'},
 		{"sync-only", no_argument, NULL, 'S'},
 		{"xlogdir", required_argument, NULL, 'X'},
 		{"data-checksums", no_argument, NULL, 'k'},
@@ -3165,7 +3165,7 @@ main(int argc, char *argv[])
 				break;
 			case 'n':
 				noclean = true;
-				printf(_("Running in noclean mode.  Mistakes will not be cleaned up.\n"));
+				printf(_("Running in no-clean mode.  Mistakes will not be cleaned up.\n"));
 				break;
 			case 'N':
 				do_sync = false;
@@ -3258,7 +3258,7 @@ main(int argc, char *argv[])
 
 		fputs(_("syncing data to disk ... "), stdout);
 		fflush(stdout);
-		fsync_pgdata(pg_data, progname);
+		fsync_pgdata(pg_data, progname, PG_VERSION_NUM);
 		check_ok();
 		return 0;
 	}
@@ -3324,7 +3324,7 @@ main(int argc, char *argv[])
 	{
 		fputs(_("syncing data to disk ... "), stdout);
 		fflush(stdout);
-		fsync_pgdata(pg_data, progname);
+		fsync_pgdata(pg_data, progname, PG_VERSION_NUM);
 		check_ok();
 	}
 	else
