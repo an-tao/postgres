@@ -46,7 +46,7 @@ my $walsender_pid = $node_master->safe_psql('postgres', 'SELECT pid FROM pg_stat
 diag "walsender PID is $walsender_pid";
 
 diag "starting perf on the walsender";
-my $perf_handle  = IPC::Run::start(['perf', 'record', '-p', $walsender_pid]);
+my $perf_handle  = IPC::Run::start(['perf', 'record', '-p', $walsender_pid, '-g']);
 
 # Hammer pgbench again after we start slot creation
 diag "running pgbench for $benchtime seconds";
