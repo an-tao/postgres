@@ -88,34 +88,32 @@ CheckLogicalDecodingRequirements(void)
 				 errmsg("logical decoding requires a database connection")));
 
 	/* ----
-	 * To allow logical decoding on a standby we must ensure that:
+	 * Logical decoding from a standby is only safe if:
 	 *
-	 * 1) We need to be able to correctly and quickly identify the timeline a
-	 *	  LSN belongs to so we can follow timeline switches
+	 * 1) hot_standby_feedback is enabled, so catalog tuples still needed
+	 *    by the replica are not removed by the master. We already include
+	 *    slots' required xmin in the oldest global xmin up to the master;
 	 *
-	 * 2) We need to force hot_standby_feedback to be enabled at all times so
-	 *	  the primary cannot remove rows we need.
+	 * 2) A physical replication slot is used to connect the standby
+	 *    to the master, so we can store the xmin (and catalog_xmin,
+	 *    once we send it separately) on the slot and we don't lose
+	 *    needed tuples to vacuum if we lose our connection;
 	 *
-	 * 3) ensure a replication slot is used to connect to the upstream so
-	 *    we know the catalog_xmin is persistent even over connection loss.
+	 * 3) We drop replication slots referring to a database in dbase_redo
+	 *    when the database is dropped on the master.
 	 *
-	 * 4) support dropping replication slots referring to a database, in
-	 *	  dbase_redo. There can't be any active ones due to HS recovery
-	 *	  conflicts, so that should be relatively easy.
+	 * We should really send the xmin and catalog_xmin separately in hot standby
+	 * feedback, so we don't hold down vacuum of all tables to the level we only
+	 * really need for the catalogs.
 	 *
-	 * This means we can't allow logical decoding from a standby that's only
-	 * configured for archive recovery. It would be OK to run temporarily in
-	 * archive recovery during connectivity drops so long as we have a slot
-	 * with a catalog_xmin set; it'd cause extra bloat on the master until we
-	 * can reconnect, but that's unavoidable. We don't currently have any
-	 * book-keeping about whether we have a slot unless it's in active use,
-	 * though, so we have to assume there's no slot.
+	 * In this first draft approach all three requirements are asserted by
+	 * telling the user "don't do that", so emit a warning.
 	 * ----
 	 */
 	if (RecoveryInProgress())
-		ereport(ERROR,
+		ereport(WARNING,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			   errmsg("logical decoding cannot be used while in recovery")));
+				 errmsg("logical decoding during recovery is experimental")));
 }
 
 /*
