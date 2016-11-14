@@ -15,6 +15,9 @@ include $(top_builddir)/src/Makefile.global
 
 ifeq ($(enable_tap_tests),yes)
 
+check:
+	$(prove_check)
+
 installdirs:
 	$(MKDIR_P) '$(DESTDIR)$(pgxsdir)/$(subdir)'
 
