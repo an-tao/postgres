@@ -758,6 +758,78 @@ ReplicationSlotsCountDBSlots(Oid dboid, int *nslots, int *nactive)
 	return false;
 }
 
+/*
+ * ReplicationSlotsDropDBSlots -- Drop all db-specific slots relating to the
+ * passed database oid. The caller should hold an exclusive lock on the database
+ * to ensure no replication slots on the database are in use.
+ */
+void
+ReplicationSlotsDropDBSlots(Oid dboid)
+{
+	int			i;
+	char		path[MAXPGPATH];
+
+	if (max_replication_slots <= 0)
+		return;
+
+	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+	for (i = 0; i < max_replication_slots; i++)
+	{
+		ReplicationSlot *s;
+		NameData slotname;
+		int active_pid;
+
+		s = &ReplicationSlotCtl->replication_slots[i];
+
+		/* cannot change while ReplicationSlotCtlLock is held */
+		if (!s->in_use)
+			continue;
+
+		/* only logical slots are database specific, skip */
+		if (!SlotIsLogical(s))
+			continue;
+
+		/* not our database, skip */
+		if (s->data.database != dboid)
+			continue;
+
+		/* Deactivate the slot in memory */
+		SpinLockAcquire(&s->mutex);
+		strncpy(NameStr(slotname), NameStr(s->data.name), NAMEDATALEN);
+		NameStr(slotname)[NAMEDATALEN-1] = '\0';
+		active_pid = s->active_pid;
+		if (active_pid == 0)
+		{
+			s->active_pid = 0;
+			s->in_use = false;
+		}
+		SpinLockRelease(&s->mutex);
+
+		/*
+		 * The caller should have an exclusive lock on the database so
+		 * we'll never have any in-use slots.
+		 */
+		if (active_pid)
+			elog(PANIC, "replication slot %s is in use by pid %d",
+				 NameStr(slotname), active_pid);
+
+		/* and purge it from disk */
+		sprintf(path, "pg_replslot/%s", NameStr(slotname));
+
+		/* if deletion fails we want to bail out and force retry of recovery */
+		if (!rmtree(path, true))
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not remove directory \"%s\" for slot \"%s\"",
+					 		path, NameStr(slotname))));
+	}
+	LWLockRelease(ReplicationSlotControlLock);
+
+	/* recompute limits once after all slots are dropped */
+	ReplicationSlotsComputeRequiredXmin(false);
+	ReplicationSlotsComputeRequiredLSN();
+}
+
 
 /*
  * Check whether the server's configuration supports using replication
