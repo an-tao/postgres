@@ -7,7 +7,7 @@ use warnings;
 
 use PostgresNode;
 use TestLib;
-use Test::More tests => 43;
+use Test::More tests => 44;
 use RecursiveCopy;
 use File::Copy;
 
@@ -25,6 +25,8 @@ $node_master->append_conf('postgresql.conf', "log_error_verbosity = verbose\n");
 $node_master->append_conf('postgresql.conf', "hot_standby_feedback = on\n");
 # send status rapidly so we promptly advance xmin on master
 $node_master->append_conf('postgresql.conf', "wal_receiver_status_interval = 1\n");
+# very promptly terminate conflicting backends
+$node_master->append_conf('postgresql.conf', "max_standby_streaming_delay = '2s'\n");
 $node_master->dump_info;
 $node_master->start;
 
@@ -205,7 +207,7 @@ is($node_replica->slot('dodropslot2')->{'slot_type'}, 'logical', 'slot dodropslo
 
 # make sure the slot is in use
 diag "starting pg_recvlogical";
-my $handle = IPC::Run::start(['pg_recvlogical', '-d', $node_replica->connstr('testdb2'), '-S', 'dodropslot2', '-f', '-', '--start'], '>', \$stdout, '2>', \$stderr);
+my $handle = IPC::Run::start(['pg_recvlogical', '-d', $node_replica->connstr('testdb2'), '-S', 'dodropslot2', '-f', '-', '--no-loop', '--start'], '>', \$stdout, '2>', \$stderr);
 sleep(1);
 $handle->reap_nb;
 $handle->pump;
@@ -225,30 +227,30 @@ diag "pg_recvlogical backend pid is " . $node_replica->slot('dodropslot2')->{'ac
 $node_master->safe_psql('postgres', q[DROP DATABASE testdb2]);
 ok(1, 'dropdb finished');
 
+while ($node_replica->slot('dodropslot2')->{'active_pid'})
+{
+	sleep(1);
+	diag "waiting for walsender to exit";
+}
+
+diag "walsender exited, waiting for pg_recvlogical to exit";
+
+# our client should've terminated in response to the walsender error
+eval {
+	$handle->finish;
+};
+my $return = $?;
+if ($return) {
+	diag "pg_recvlogical terminated with $return and stderr '$stderr'";
+	is($return, 256, "pg_recvlogical terminated by server");
+}
+
+is($node_replica->slot('dodropslot2')->{'active_pid'}, '', 'walsender backend exited');
+
 # replication won't catch up, we'll error on apply while the slot is in use
 # TODO check for error
 
 $node_master->wait_for_catchup($node_replica);
-
-sleep(1);
-
-# our client should've terminated
-do {
-	local $@;
-	eval {
-		$handle->finish;
-	};
-	my $return = $?;
-	my $save_exc = $@;
-	if ($@) {
-		diag "pg_recvlogical terminated with $? and stderr '$stderr'";	
-		is($return, 1, "pg_recvlogical terminated by server");
-	}
-	else
-	{
-		fail("pg_recvlogical not terminated? $save_exc");
-	}
-};
 
 is($node_replica->safe_psql('postgres', q[SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = 'testdb2')]), 'f',
   'database dropped on standby');
