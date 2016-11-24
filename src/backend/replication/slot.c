@@ -1648,6 +1648,9 @@ ReplicationSlotRedoCreateOrUpdate(ReplicationSlotInWAL xlrec)
 			found_available = true;
 		}
 
+		if (!slot->in_use)
+			continue;
+
 		/*
 		 * Existing slot with same name? It could be our failover slot
 		 * to update or a non-failover slot with a conflicting name.
