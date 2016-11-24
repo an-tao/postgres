@@ -4931,7 +4931,7 @@ conninfo_uri_parse_options(PQconninfoOption *options, const char *uri,
 {
 	int			prefix_len;
 	char	   *p;
-	char	   *buf;
+	char	   *buf = NULL;
 	char	   *start;
 	char		prevchar = '\0';
 	char	   *user = NULL;
@@ -4946,7 +4946,7 @@ conninfo_uri_parse_options(PQconninfoOption *options, const char *uri,
 	{
 		printfPQExpBuffer(errorMessage,
 						  libpq_gettext("out of memory\n"));
-		return false;
+		goto cleanup;
 	}
 
 	/* need a modifiable copy of the input URI */
@@ -4955,7 +4955,7 @@ conninfo_uri_parse_options(PQconninfoOption *options, const char *uri,
 	{
 		printfPQExpBuffer(errorMessage,
 						  libpq_gettext("out of memory\n"));
-		return false;
+		goto cleanup;
 	}
 	start = buf;
 
@@ -5156,7 +5156,8 @@ conninfo_uri_parse_options(PQconninfoOption *options, const char *uri,
 cleanup:
 	termPQExpBuffer(&hostbuf);
 	termPQExpBuffer(&portbuf);
-	free(buf);
+	if (buf)
+		free(buf);
 	return retval;
 }
 
@@ -6026,18 +6027,26 @@ PasswordFromFile(char *hostname, char *port, char *dbname, char *username)
 			break;
 
 		len = strlen(buf);
-		if (len == 0)
-			continue;
 
 		/* Remove trailing newline */
-		if (buf[len - 1] == '\n')
-			buf[len - 1] = 0;
+		if (len > 0 && buf[len - 1] == '\n')
+		{
+			buf[--len] = '\0';
+			/* Handle DOS-style line endings, too, even when not on Windows */
+			if (len > 0 && buf[len - 1] == '\r')
+				buf[--len] = '\0';
+		}
+
+		if (len == 0)
+			continue;
 
 		if ((t = pwdfMatchesString(t, hostname)) == NULL ||
 			(t = pwdfMatchesString(t, port)) == NULL ||
 			(t = pwdfMatchesString(t, dbname)) == NULL ||
 			(t = pwdfMatchesString(t, username)) == NULL)
 			continue;
+
+		/* Found a match. */
 		ret = strdup(t);
 		fclose(fp);
 
