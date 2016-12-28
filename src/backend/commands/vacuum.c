@@ -1152,6 +1152,8 @@ vac_truncate_clog(TransactionId frozenXID,
 	if (bogus)
 		return;
 
+	AdvanceOldestCommitTsXid(frozenXID);
+
 	/*
 	 * Truncate CLOG, multixact and CommitTs to the oldest computed value.
 	 */
@@ -1167,7 +1169,6 @@ vac_truncate_clog(TransactionId frozenXID,
 	 */
 	SetTransactionIdLimit(frozenXID, oldestxid_datoid);
 	SetMultiXactIdLimit(minMulti, minmulti_datoid);
-	AdvanceOldestCommitTsXid(frozenXID);
 }
 
 

@@ -33,10 +33,12 @@ commit_ts_desc(StringInfo buf, XLogReaderState *record)
 	}
 	else if (info == COMMIT_TS_TRUNCATE)
 	{
-		int			pageno;
+		xl_commit_ts_truncate trunc;
 
-		memcpy(&pageno, rec, sizeof(int));
-		appendStringInfo(buf, "%d", pageno);
+		memcpy(&trunc, rec, SizeOfCommitTsTruncate);
+
+		appendStringInfo(buf, "pageno %d, xid %u",
+			trunc.pageno, trunc.oldestXid);
 	}
 	else if (info == COMMIT_TS_SETTS)
 	{
