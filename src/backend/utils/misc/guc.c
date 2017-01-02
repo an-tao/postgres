@@ -440,7 +440,6 @@ char	   *event_source;
 bool		row_security;
 bool		check_function_bodies = true;
 bool		default_with_oids = false;
-bool		SQL_inheritance = true;
 
 int			log_min_error_statement = ERROR;
 int			log_min_messages = WARNING;
@@ -1319,15 +1318,6 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&log_hostname,
 		false,
-		NULL, NULL, NULL
-	},
-	{
-		{"sql_inheritance", PGC_USERSET, COMPAT_OPTIONS_PREVIOUS,
-			gettext_noop("Causes subtables to be included by default in various commands."),
-			NULL
-		},
-		&SQL_inheritance,
-		true,
 		NULL, NULL, NULL
 	},
 	{
@@ -2281,7 +2271,6 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_BLOCKS
 		},
 		&checkpoint_flush_after,
-		/* see bufmgr.h: OS dependent default */
 		DEFAULT_CHECKPOINT_FLUSH_AFTER, 0, WRITEBACK_MAX_PENDING_FLUSHES,
 		NULL, NULL, NULL
 	},
@@ -2310,12 +2299,12 @@ static struct config_int ConfigureNamesInt[] =
 
 	{
 		{"wal_writer_flush_after", PGC_SIGHUP, WAL_SETTINGS,
-			gettext_noop("Amount of WAL written out by WAL writer triggering a flush."),
+			gettext_noop("Amount of WAL written out by WAL writer that triggers a flush."),
 			NULL,
 			GUC_UNIT_XBLOCKS
 		},
 		&WalWriterFlushAfter,
-		128, 0, INT_MAX,
+		(1024*1024) / XLOG_BLCKSZ, 0, INT_MAX,
 		NULL, NULL, NULL
 	},
 
@@ -2439,7 +2428,6 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_BLOCKS
 		},
 		&bgwriter_flush_after,
-		/* see bufmgr.h: OS dependent default */
 		DEFAULT_BGWRITER_FLUSH_AFTER, 0, WRITEBACK_MAX_PENDING_FLUSHES,
 		NULL, NULL, NULL
 	},
@@ -2467,7 +2455,7 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_BLOCKS
 		},
 		&backend_flush_after,
-		0, 0, WRITEBACK_MAX_PENDING_FLUSHES,
+		DEFAULT_BACKEND_FLUSH_AFTER, 0, WRITEBACK_MAX_PENDING_FLUSHES,
 		NULL, NULL, NULL
 	},
 
@@ -2663,6 +2651,16 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&max_parallel_workers_per_gather,
 		2, 0, 1024,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"max_parallel_workers", PGC_USERSET, RESOURCES_ASYNCHRONOUS,
+			gettext_noop("Sets the maximum number of parallel workers than can be active at one time."),
+			NULL
+		},
+		&max_parallel_workers,
+		8, 0, 1024,
 		NULL, NULL, NULL
 	},
 

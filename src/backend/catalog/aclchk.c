@@ -423,7 +423,7 @@ ExecuteGrantStmt(GrantStmt *stmt)
 				grantee_uid = ACL_ID_PUBLIC;
 				break;
 			default:
-				grantee_uid = get_rolespec_oid((Node *) grantee, false);
+				grantee_uid = get_rolespec_oid(grantee, false);
 				break;
 		}
 		istmt.grantees = lappend_oid(istmt.grantees, grantee_uid);
@@ -768,6 +768,8 @@ objectsInSchemaToOids(GrantObjectType objtype, List *nspnames)
 				objects = list_concat(objects, objs);
 				objs = getRelationsInNamespace(namespaceId, RELKIND_FOREIGN_TABLE);
 				objects = list_concat(objects, objs);
+				objs = getRelationsInNamespace(namespaceId, RELKIND_PARTITIONED_TABLE);
+				objects = list_concat(objects, objs);
 				break;
 			case ACL_OBJECT_SEQUENCE:
 				objs = getRelationsInNamespace(namespaceId, RELKIND_SEQUENCE);
@@ -920,7 +922,7 @@ ExecAlterDefaultPrivilegesStmt(ParseState *pstate, AlterDefaultPrivilegesStmt *s
 				grantee_uid = ACL_ID_PUBLIC;
 				break;
 			default:
-				grantee_uid = get_rolespec_oid((Node *) grantee, false);
+				grantee_uid = get_rolespec_oid(grantee, false);
 				break;
 		}
 		iacls.grantees = lappend_oid(iacls.grantees, grantee_uid);
@@ -1010,7 +1012,7 @@ ExecAlterDefaultPrivilegesStmt(ParseState *pstate, AlterDefaultPrivilegesStmt *s
 		{
 			RoleSpec   *rolespec = lfirst(rolecell);
 
-			iacls.roleid = get_rolespec_oid((Node *) rolespec, false);
+			iacls.roleid = get_rolespec_oid(rolespec, false);
 
 			/*
 			 * We insist that calling user be a member of each target role. If

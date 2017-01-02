@@ -699,6 +699,79 @@ typedef struct XmlSerialize
 	int			location;		/* token location, or -1 if unknown */
 } XmlSerialize;
 
+/* Partitioning related definitions */
+
+/*
+ * PartitionElem - a column in the partition key
+ */
+typedef struct PartitionElem
+{
+	NodeTag		type;
+	char	   *name;		/* name of column to partition on, or NULL */
+	Node	   *expr;		/* expression to partition on, or NULL */
+	List	   *collation;	/* name of collation; NIL = default */
+	List	   *opclass;	/* name of desired opclass; NIL = default */
+	int			location;	/* token location, or -1 if unknown */
+} PartitionElem;
+
+/*
+ * PartitionSpec - partition key specification
+ */
+typedef struct PartitionSpec
+{
+	NodeTag		type;
+	char	   *strategy;	/* partitioning strategy ('list' or 'range') */
+	List	   *partParams; /* List of PartitionElems */
+	int			location;	/* token location, or -1 if unknown */
+} PartitionSpec;
+
+#define PARTITION_STRATEGY_LIST		'l'
+#define PARTITION_STRATEGY_RANGE	'r'
+
+/*
+ * PartitionBoundSpec - a partition bound specification
+ */
+typedef struct PartitionBoundSpec
+{
+	NodeTag		type;
+
+	char		strategy;
+
+	/* List partition values */
+	List	   *listdatums;
+
+	/*
+	 * Range partition lower and upper bounds; each member of the lists
+	 * is a PartitionRangeDatum (see below).
+	 */
+	List	   *lowerdatums;
+	List	   *upperdatums;
+
+	int			location;
+} PartitionBoundSpec;
+
+/*
+ * PartitionRangeDatum
+ */
+typedef struct PartitionRangeDatum
+{
+	NodeTag		type;
+
+	bool		infinite;
+	Node	   *value;
+
+	int			location;
+} PartitionRangeDatum;
+
+/*
+ * PartitionCmd -  ALTER TABLE partition commands
+ */
+typedef struct PartitionCmd
+{
+	NodeTag		type;
+	RangeVar   *name;
+	Node	   *bound;
+} PartitionCmd;
 
 /****************************************************************************
  *	Nodes for a Query tree
@@ -854,7 +927,6 @@ typedef struct RangeTblEntry
 	 * Fields valid for a values RTE (else NIL):
 	 */
 	List	   *values_lists;	/* list of expression lists */
-	List	   *values_collations;		/* OID list of column collation OIDs */
 
 	/*
 	 * Fields valid for a CTE RTE (else NULL/zero):
@@ -862,9 +934,17 @@ typedef struct RangeTblEntry
 	char	   *ctename;		/* name of the WITH list item */
 	Index		ctelevelsup;	/* number of query levels up */
 	bool		self_reference; /* is this a recursive self-reference? */
-	List	   *ctecoltypes;	/* OID list of column type OIDs */
-	List	   *ctecoltypmods;	/* integer list of column typmods */
-	List	   *ctecolcollations;		/* OID list of column collation OIDs */
+
+	/*
+	 * Fields valid for values and CTE RTEs (else NIL):
+	 *
+	 * We need these for CTE RTEs so that the types of self-referential
+	 * columns are well-defined.  For VALUES RTEs, storing these explicitly
+	 * saves having to re-determine the info by scanning the values_lists.
+	 */
+	List	   *coltypes;		/* OID list of column type OIDs */
+	List	   *coltypmods;		/* integer list of column typmods */
+	List	   *colcollations;	/* OID list of column collation OIDs */
 
 	/*
 	 * Fields valid in all RTEs:
@@ -1462,7 +1542,7 @@ typedef struct CreateSchemaStmt
 {
 	NodeTag		type;
 	char	   *schemaname;		/* the name of the schema to create */
-	Node	   *authrole;		/* the owner of the created schema */
+	RoleSpec   *authrole;		/* the owner of the created schema */
 	List	   *schemaElts;		/* schema components (list of parsenodes) */
 	bool		if_not_exists;	/* just do nothing if schema already exists? */
 } CreateSchemaStmt;
@@ -1549,7 +1629,9 @@ typedef enum AlterTableType
 	AT_DisableRowSecurity,		/* DISABLE ROW SECURITY */
 	AT_ForceRowSecurity,		/* FORCE ROW SECURITY */
 	AT_NoForceRowSecurity,		/* NO FORCE ROW SECURITY */
-	AT_GenericOptions			/* OPTIONS (...) */
+	AT_GenericOptions,			/* OPTIONS (...) */
+	AT_AttachPartition,			/* ATTACH PARTITION */
+	AT_DetachPartition			/* DETACH PARTITION */
 } AlterTableType;
 
 typedef struct ReplicaIdentityStmt
@@ -1565,7 +1647,7 @@ typedef struct AlterTableCmd	/* one subcommand of an ALTER TABLE */
 	AlterTableType subtype;		/* Type of table alteration to apply */
 	char	   *name;			/* column, constraint, or trigger to act on,
 								 * or tablespace */
-	Node	   *newowner;		/* RoleSpec */
+	RoleSpec   *newowner;
 	Node	   *def;			/* definition of new column, index,
 								 * constraint, or parent table */
 	DropBehavior behavior;		/* RESTRICT or CASCADE for DROP cases */
@@ -1684,7 +1766,7 @@ typedef struct GrantRoleStmt
 	List	   *grantee_roles;	/* list of member roles to add/delete */
 	bool		is_grant;		/* true = GRANT, false = REVOKE */
 	bool		admin_opt;		/* with admin option */
-	Node	   *grantor;		/* set grantor to other than current role */
+	RoleSpec   *grantor;		/* set grantor to other than current role */
 	DropBehavior behavior;		/* drop behavior (for REVOKE) */
 } GrantRoleStmt;
 
@@ -1775,6 +1857,8 @@ typedef struct CreateStmt
 	List	   *tableElts;		/* column definitions (list of ColumnDef) */
 	List	   *inhRelations;	/* relations to inherit from (list of
 								 * inhRelation) */
+	Node	   *partbound;		/* FOR VALUES clause */
+	PartitionSpec *partspec;	/* PARTITION BY clause */
 	TypeName   *ofTypename;		/* OF typename */
 	List	   *constraints;	/* constraints (list of Constraint nodes) */
 	List	   *options;		/* options from WITH clause */
@@ -1897,7 +1981,7 @@ typedef struct CreateTableSpaceStmt
 {
 	NodeTag		type;
 	char	   *tablespacename;
-	Node	   *owner;
+	RoleSpec   *owner;
 	char	   *location;
 	List	   *options;
 } CreateTableSpaceStmt;
@@ -2023,7 +2107,7 @@ typedef struct CreateForeignTableStmt
 typedef struct CreateUserMappingStmt
 {
 	NodeTag		type;
-	Node	   *user;			/* user role */
+	RoleSpec   *user;			/* user role */
 	char	   *servername;		/* server name */
 	List	   *options;		/* generic options to server */
 } CreateUserMappingStmt;
@@ -2031,7 +2115,7 @@ typedef struct CreateUserMappingStmt
 typedef struct AlterUserMappingStmt
 {
 	NodeTag		type;
-	Node	   *user;			/* user role */
+	RoleSpec   *user;			/* user role */
 	char	   *servername;		/* server name */
 	List	   *options;		/* generic options to server */
 } AlterUserMappingStmt;
@@ -2039,7 +2123,7 @@ typedef struct AlterUserMappingStmt
 typedef struct DropUserMappingStmt
 {
 	NodeTag		type;
-	Node	   *user;			/* user role */
+	RoleSpec   *user;			/* user role */
 	char	   *servername;		/* server name */
 	bool		missing_ok;		/* ignore missing mappings */
 } DropUserMappingStmt;
@@ -2077,6 +2161,7 @@ typedef struct CreatePolicyStmt
 	char	   *policy_name;	/* Policy's name */
 	RangeVar   *table;			/* the table name the policy applies to */
 	char	   *cmd_name;		/* the command name the policy applies to */
+	bool		permissive;		/* restrictive or permissive policy */
 	List	   *roles;			/* the roles associated with the policy */
 	Node	   *qual;			/* the policy's condition */
 	Node	   *with_check;		/* the policy's WITH CHECK condition. */
@@ -2203,7 +2288,7 @@ typedef struct CreateRoleStmt
 typedef struct AlterRoleStmt
 {
 	NodeTag		type;
-	Node	   *role;			/* role */
+	RoleSpec   *role;			/* role */
 	List	   *options;		/* List of DefElem nodes */
 	int			action;			/* +1 = add members, -1 = drop members */
 } AlterRoleStmt;
@@ -2211,7 +2296,7 @@ typedef struct AlterRoleStmt
 typedef struct AlterRoleSetStmt
 {
 	NodeTag		type;
-	Node	   *role;			/* role */
+	RoleSpec   *role;			/* role */
 	char	   *database;		/* database name, or NULL */
 	VariableSetStmt *setstmt;	/* SET or RESET subcommand */
 } AlterRoleSetStmt;
@@ -2602,7 +2687,7 @@ typedef struct AlterOwnerStmt
 	RangeVar   *relation;		/* in case it's a table */
 	List	   *object;			/* in case it's some other object */
 	List	   *objarg;			/* argument types, if applicable */
-	Node	   *newowner;		/* the new owner */
+	RoleSpec   *newowner;		/* the new owner */
 } AlterOwnerStmt;
 
 
@@ -3086,7 +3171,7 @@ typedef struct ReassignOwnedStmt
 {
 	NodeTag		type;
 	List	   *roles;
-	Node	   *newrole;
+	RoleSpec   *newrole;
 } ReassignOwnedStmt;
 
 /*

@@ -76,6 +76,12 @@ CREATE VIEW pg_policies AS
         C.relname AS tablename,
         pol.polname AS policyname,
         CASE
+            WHEN pol.polpermissive THEN
+                'PERMISSIVE'
+            ELSE
+                'RESTRICTIVE'
+        END AS permissive,
+        CASE
             WHEN pol.polroles = '{0}' THEN
                 string_to_array('public', '')
             ELSE
@@ -163,15 +169,15 @@ CREATE OR REPLACE VIEW pg_sequences AS
         N.nspname AS schemaname,
         C.relname AS sequencename,
         pg_get_userbyid(C.relowner) AS sequenceowner,
-        p.start_value AS start_value,
-        p.minimum_value AS min_value,
-        p.maximum_value AS max_value,
-        p.increment AS increment_by,
-        p.cycle_option AS cycle,
-        p.cache_size AS cache_size,
+        S.seqstart AS start_value,
+        S.seqmin AS min_value,
+        S.seqmax AS max_value,
+        S.seqincrement AS increment_by,
+        S.seqcycle AS cycle,
+        S.seqcache AS cache_size,
         pg_sequence_last_value(C.oid) AS last_value
-    FROM pg_class C LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace),
-         LATERAL pg_sequence_parameters(C.oid) p
+    FROM pg_sequence S JOIN pg_class C ON (C.oid = S.seqrelid)
+         LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
     WHERE NOT pg_is_other_temp_schema(N.oid)
           AND relkind = 'S';
 
@@ -720,6 +726,7 @@ CREATE VIEW pg_replication_slots AS
             L.slot_type,
             L.datoid,
             D.datname AS database,
+            L.temporary,
             L.active,
             L.active_pid,
             L.xmin,
@@ -985,11 +992,21 @@ AS 'pg_logical_slot_peek_binary_changes';
 
 CREATE OR REPLACE FUNCTION pg_create_physical_replication_slot(
     IN slot_name name, IN immediately_reserve boolean DEFAULT false,
+    IN temporary boolean DEFAULT false,
     OUT slot_name name, OUT xlog_position pg_lsn)
 RETURNS RECORD
 LANGUAGE INTERNAL
 STRICT VOLATILE
 AS 'pg_create_physical_replication_slot';
+
+CREATE OR REPLACE FUNCTION pg_create_logical_replication_slot(
+    IN slot_name name, IN plugin name,
+    IN temporary boolean DEFAULT false,
+    OUT slot_name text, OUT xlog_position pg_lsn)
+RETURNS RECORD
+LANGUAGE INTERNAL
+STRICT VOLATILE
+AS 'pg_create_logical_replication_slot';
 
 CREATE OR REPLACE FUNCTION
   make_interval(years int4 DEFAULT 0, months int4 DEFAULT 0, weeks int4 DEFAULT 0,

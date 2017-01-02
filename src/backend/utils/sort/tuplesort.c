@@ -240,16 +240,16 @@ typedef enum
  * Parameters for calculation of number of tapes to use --- see inittapes()
  * and tuplesort_merge_order().
  *
- * In this calculation we assume that each tape will cost us about 3 blocks
- * worth of buffer space (which is an underestimate for very large data
- * volumes, but it's probably close enough --- see logtape.c).
+ * In this calculation we assume that each tape will cost us about 1 blocks
+ * worth of buffer space.  This ignores the overhead of all the other data
+ * structures needed for each tape, but it's probably close enough.
  *
  * MERGE_BUFFER_SIZE is how much data we'd like to read from each input
  * tape during a preread cycle (see discussion at top of file).
  */
 #define MINORDER		6		/* minimum merge order */
 #define MAXORDER		500		/* maximum merge order */
-#define TAPE_BUFFER_OVERHEAD		(BLCKSZ * 3)
+#define TAPE_BUFFER_OVERHEAD		BLCKSZ
 #define MERGE_BUFFER_SIZE			(BLCKSZ * 32)
 
  /*
@@ -1841,21 +1841,21 @@ tuplesort_performsort(Tuplesortstate *state)
 /*
  * Internal routine to fetch the next tuple in either forward or back
  * direction into *stup.  Returns FALSE if no more tuples.
- * If *should_free is set, the caller must pfree stup.tuple when done with it.
- * Otherwise, caller should not use tuple following next call here.
+ * Returned tuple belongs to tuplesort memory context, and must not be freed
+ * by caller.  Caller should not use tuple following next call here.
  */
 static bool
 tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
-						  SortTuple *stup, bool *should_free)
+						  SortTuple *stup)
 {
 	unsigned int tuplen;
+	size_t		nmoved;
 
 	switch (state->status)
 	{
 		case TSS_SORTEDINMEM:
 			Assert(forward || state->randomAccess);
 			Assert(!state->slabAllocatorUsed);
-			*should_free = false;
 			if (forward)
 			{
 				if (state->current < state->memtupcount)
@@ -1927,7 +1927,6 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 					 */
 					state->lastReturnedTuple = stup->tuple;
 
-					*should_free = false;
 					return true;
 				}
 				else
@@ -1950,10 +1949,13 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 				 * end of file; back up to fetch last tuple's ending length
 				 * word.  If seek fails we must have a completely empty file.
 				 */
-				if (!LogicalTapeBackspace(state->tapeset,
-										  state->result_tape,
-										  2 * sizeof(unsigned int)))
+				nmoved = LogicalTapeBackspace(state->tapeset,
+											  state->result_tape,
+											  2 * sizeof(unsigned int));
+				if (nmoved == 0)
 					return false;
+				else if (nmoved != 2 * sizeof(unsigned int))
+					elog(ERROR, "unexpected tape position");
 				state->eof_reached = false;
 			}
 			else
@@ -1962,31 +1964,34 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 				 * Back up and fetch previously-returned tuple's ending length
 				 * word.  If seek fails, assume we are at start of file.
 				 */
-				if (!LogicalTapeBackspace(state->tapeset,
-										  state->result_tape,
-										  sizeof(unsigned int)))
+				nmoved = LogicalTapeBackspace(state->tapeset,
+											  state->result_tape,
+											  sizeof(unsigned int));
+				if (nmoved == 0)
 					return false;
+				else if (nmoved != sizeof(unsigned int))
+					elog(ERROR, "unexpected tape position");
 				tuplen = getlen(state, state->result_tape, false);
 
 				/*
 				 * Back up to get ending length word of tuple before it.
 				 */
-				if (!LogicalTapeBackspace(state->tapeset,
-										  state->result_tape,
-										  tuplen + 2 * sizeof(unsigned int)))
+				nmoved = LogicalTapeBackspace(state->tapeset,
+											  state->result_tape,
+										  tuplen + 2 * sizeof(unsigned int));
+				if (nmoved == tuplen + sizeof(unsigned int))
 				{
 					/*
-					 * If that fails, presumably the prev tuple is the first
-					 * in the file.  Back up so that it becomes next to read
-					 * in forward direction (not obviously right, but that is
-					 * what in-memory case does).
+					 * We backed up over the previous tuple, but there was no
+					 * ending length word before it.  That means that the prev
+					 * tuple is the first tuple in the file.  It is now the
+					 * next to read in forward direction (not obviously right,
+					 * but that is what in-memory case does).
 					 */
-					if (!LogicalTapeBackspace(state->tapeset,
-											  state->result_tape,
-											  tuplen + sizeof(unsigned int)))
-						elog(ERROR, "bogus tuple length in backward scan");
 					return false;
 				}
+				else if (nmoved != tuplen + 2 * sizeof(unsigned int))
+					elog(ERROR, "bogus tuple length in backward scan");
 			}
 
 			tuplen = getlen(state, state->result_tape, false);
@@ -1996,9 +2001,10 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 			 * Note: READTUP expects we are positioned after the initial
 			 * length word of the tuple, so back up to that point.
 			 */
-			if (!LogicalTapeBackspace(state->tapeset,
-									  state->result_tape,
-									  tuplen))
+			nmoved = LogicalTapeBackspace(state->tapeset,
+										  state->result_tape,
+										  tuplen);
+			if (nmoved != tuplen)
 				elog(ERROR, "bogus tuple length in backward scan");
 			READTUP(state, stup, state->result_tape, tuplen);
 
@@ -2008,14 +2014,12 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 			 */
 			state->lastReturnedTuple = stup->tuple;
 
-			*should_free = false;
 			return true;
 
 		case TSS_FINALMERGE:
 			Assert(forward);
 			/* We are managing memory ourselves, with the slab allocator. */
 			Assert(state->slabAllocatorUsed);
-			*should_free = false;
 
 			/*
 			 * The slab slot holding the tuple that we returned in previous
@@ -2097,9 +2101,8 @@ tuplesort_gettupleslot(Tuplesortstate *state, bool forward,
 {
 	MemoryContext oldcontext = MemoryContextSwitchTo(state->sortcontext);
 	SortTuple	stup;
-	bool		should_free;
 
-	if (!tuplesort_gettuple_common(state, forward, &stup, &should_free))
+	if (!tuplesort_gettuple_common(state, forward, &stup))
 		stup.tuple = NULL;
 
 	MemoryContextSwitchTo(oldcontext);
@@ -2110,12 +2113,8 @@ tuplesort_gettupleslot(Tuplesortstate *state, bool forward,
 		if (state->sortKeys->abbrev_converter && abbrev)
 			*abbrev = stup.datum1;
 
-		if (!should_free)
-		{
-			stup.tuple = heap_copy_minimal_tuple((MinimalTuple) stup.tuple);
-			should_free = true;
-		}
-		ExecStoreMinimalTuple((MinimalTuple) stup.tuple, slot, should_free);
+		stup.tuple = heap_copy_minimal_tuple((MinimalTuple) stup.tuple);
+		ExecStoreMinimalTuple((MinimalTuple) stup.tuple, slot, true);
 		return true;
 	}
 	else
@@ -2127,18 +2126,17 @@ tuplesort_gettupleslot(Tuplesortstate *state, bool forward,
 
 /*
  * Fetch the next tuple in either forward or back direction.
- * Returns NULL if no more tuples.  If *should_free is set, the
- * caller must pfree the returned tuple when done with it.
- * If it is not set, caller should not use tuple following next
- * call here.
+ * Returns NULL if no more tuples.  Returned tuple belongs to tuplesort memory
+ * context, and must not be freed by caller.  Caller should not use tuple
+ * following next call here.
  */
 HeapTuple
-tuplesort_getheaptuple(Tuplesortstate *state, bool forward, bool *should_free)
+tuplesort_getheaptuple(Tuplesortstate *state, bool forward)
 {
 	MemoryContext oldcontext = MemoryContextSwitchTo(state->sortcontext);
 	SortTuple	stup;
 
-	if (!tuplesort_gettuple_common(state, forward, &stup, should_free))
+	if (!tuplesort_gettuple_common(state, forward, &stup))
 		stup.tuple = NULL;
 
 	MemoryContextSwitchTo(oldcontext);
@@ -2148,19 +2146,17 @@ tuplesort_getheaptuple(Tuplesortstate *state, bool forward, bool *should_free)
 
 /*
  * Fetch the next index tuple in either forward or back direction.
- * Returns NULL if no more tuples.  If *should_free is set, the
- * caller must pfree the returned tuple when done with it.
- * If it is not set, caller should not use tuple following next
- * call here.
+ * Returns NULL if no more tuples.  Returned tuple belongs to tuplesort memory
+ * context, and must not be freed by caller.  Caller should not use tuple
+ * following next call here.
  */
 IndexTuple
-tuplesort_getindextuple(Tuplesortstate *state, bool forward,
-						bool *should_free)
+tuplesort_getindextuple(Tuplesortstate *state, bool forward)
 {
 	MemoryContext oldcontext = MemoryContextSwitchTo(state->sortcontext);
 	SortTuple	stup;
 
-	if (!tuplesort_gettuple_common(state, forward, &stup, should_free))
+	if (!tuplesort_gettuple_common(state, forward, &stup))
 		stup.tuple = NULL;
 
 	MemoryContextSwitchTo(oldcontext);
@@ -2173,7 +2169,8 @@ tuplesort_getindextuple(Tuplesortstate *state, bool forward,
  * Returns FALSE if no more datums.
  *
  * If the Datum is pass-by-ref type, the returned value is freshly palloc'd
- * and is now owned by the caller.
+ * and is now owned by the caller (this differs from similar routines for
+ * other types of tuplesorts).
  *
  * Caller may optionally be passed back abbreviated value (on TRUE return
  * value) when abbreviation was used, which can be used to cheaply avoid
@@ -2188,9 +2185,8 @@ tuplesort_getdatum(Tuplesortstate *state, bool forward,
 {
 	MemoryContext oldcontext = MemoryContextSwitchTo(state->sortcontext);
 	SortTuple	stup;
-	bool		should_free;
 
-	if (!tuplesort_gettuple_common(state, forward, &stup, &should_free))
+	if (!tuplesort_gettuple_common(state, forward, &stup))
 	{
 		MemoryContextSwitchTo(oldcontext);
 		return false;
@@ -2208,11 +2204,7 @@ tuplesort_getdatum(Tuplesortstate *state, bool forward,
 	else
 	{
 		/* use stup.tuple because stup.datum1 may be an abbreviation */
-
-		if (should_free)
-			*val = PointerGetDatum(stup.tuple);
-		else
-			*val = datumCopy(PointerGetDatum(stup.tuple), false, state->datumTypeLen);
+		*val = datumCopy(PointerGetDatum(stup.tuple), false, state->datumTypeLen);
 		*isNull = false;
 	}
 
@@ -2270,16 +2262,12 @@ tuplesort_skiptuples(Tuplesortstate *state, int64 ntuples, bool forward)
 			while (ntuples-- > 0)
 			{
 				SortTuple	stup;
-				bool		should_free;
 
-				if (!tuplesort_gettuple_common(state, forward,
-											   &stup, &should_free))
+				if (!tuplesort_gettuple_common(state, forward, &stup))
 				{
 					MemoryContextSwitchTo(oldcontext);
 					return false;
 				}
-				if (should_free && stup.tuple)
-					pfree(stup.tuple);
 				CHECK_FOR_INTERRUPTS();
 			}
 			MemoryContextSwitchTo(oldcontext);
@@ -2637,8 +2625,16 @@ mergeruns(Tuplesortstate *state)
 	}
 
 	/*
-	 * Use all the spare memory we have available for read buffers among the
-	 * input tapes.
+	 * Allocate a new 'memtuples' array, for the heap.  It will hold one tuple
+	 * from each input tape.
+	 */
+	state->memtupsize = numInputTapes;
+	state->memtuples = (SortTuple *) palloc(numInputTapes * sizeof(SortTuple));
+	USEMEM(state, GetMemoryChunkSpace(state->memtuples));
+
+	/*
+	 * Use all the remaining memory we have available for read buffers among
+	 * the input tapes.
 	 *
 	 * We do this only after checking for the case that we produced only one
 	 * initial run, because there is no need to use a large read buffer when
@@ -2661,16 +2657,8 @@ mergeruns(Tuplesortstate *state)
 			 (state->availMem) / 1024, numInputTapes);
 #endif
 
-	state->read_buffer_size = state->availMem / numInputTapes;
-	USEMEM(state, state->availMem);
-
-	/*
-	 * Allocate a new 'memtuples' array, for the heap.  It will hold one tuple
-	 * from each input tape.
-	 */
-	state->memtupsize = numInputTapes;
-	state->memtuples = (SortTuple *) palloc(numInputTapes * sizeof(SortTuple));
-	USEMEM(state, GetMemoryChunkSpace(state->memtuples));
+	state->read_buffer_size = Max(state->availMem / numInputTapes, 0);
+	USEMEM(state, state->read_buffer_size * numInputTapes);
 
 	/* End of step D2: rewind all output tapes to prepare for merging */
 	for (tapenum = 0; tapenum < state->tapeRange; tapenum++)
@@ -3203,11 +3191,10 @@ tuplesort_restorepos(Tuplesortstate *state)
 			state->eof_reached = state->markpos_eof;
 			break;
 		case TSS_SORTEDONTAPE:
-			if (!LogicalTapeSeek(state->tapeset,
-								 state->result_tape,
-								 state->markpos_block,
-								 state->markpos_offset))
-				elog(ERROR, "tuplesort_restorepos failed");
+			LogicalTapeSeek(state->tapeset,
+							state->result_tape,
+							state->markpos_block,
+							state->markpos_offset);
 			state->eof_reached = state->markpos_eof;
 			break;
 		default:
