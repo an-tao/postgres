@@ -3,7 +3,7 @@
  * execParallel.c
  *	  Support routines for parallel execution.
  *
- * Portions Copyright (c) 1996-2016, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * This file contains routines that are intended to support setting up,
@@ -486,7 +486,6 @@ ExecInitParallelPlan(PlanState *planstate, EState *estate, int nworkers)
 		shm_toc_insert(pcxt->toc, PARALLEL_KEY_DSA, area_space);
 		pei->area = dsa_create_in_place(area_space, dsa_minsize,
 										LWTRANCHE_PARALLEL_QUERY_DSA,
-										"parallel_query_dsa",
 										pcxt->seg);
 	}
 
