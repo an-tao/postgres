@@ -957,7 +957,7 @@ DESCR("name of the current database");
 DATA(insert OID = 817 (  current_query		  PGNSP PGUID 12 1 0 0 0 f f f f f f v r 0 0 25 "" _null_ _null_ _null_ _null_	_null_ current_query _null_ _null_ _null_ ));
 DESCR("get the currently executing query");
 
-DATA(insert OID = 3343 (  int8_mul_cash		   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 790 "20 790" _null_ _null_ _null_ _null_ _null_ int8_mul_cash _null_ _null_ _null_ ));
+DATA(insert OID = 3399 (  int8_mul_cash		   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 790 "20 790" _null_ _null_ _null_ _null_ _null_ int8_mul_cash _null_ _null_ _null_ ));
 DATA(insert OID =  862 (  int4_mul_cash		   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 790 "23 790" _null_ _null_ _null_ _null_ _null_ int4_mul_cash _null_ _null_ _null_ ));
 DATA(insert OID =  863 (  int2_mul_cash		   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 790 "21 790" _null_ _null_ _null_ _null_ _null_ int2_mul_cash _null_ _null_ _null_ ));
 DATA(insert OID = 3344 (  cash_mul_int8		   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 790 "790 20" _null_ _null_ _null_ _null_ _null_ cash_mul_int8 _null_ _null_ _null_ ));
@@ -4903,6 +4903,7 @@ DESCR("GIN support");
 DATA(insert OID = 3301 (  jsonb_concat	   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 3802 "3802 3802" _null_ _null_ _null_ _null_ _null_ jsonb_concat _null_ _null_ _null_ ));
 DATA(insert OID = 3302 (  jsonb_delete	   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 3802 "3802 25" _null_ _null_ _null_ _null_ _null_ jsonb_delete _null_ _null_ _null_ ));
 DATA(insert OID = 3303 (  jsonb_delete	   PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 3802 "3802 23" _null_ _null_ _null_ _null_ _null_ jsonb_delete_idx _null_ _null_ _null_ ));
+DATA(insert OID = 3343 ( jsonb_delete      PGNSP PGUID 12 1 0 25 0 f f f f t f i s 2 0 3802 "3802 1009" "{3802,1009}" "{i,v}" "{from_json,path_elems}" _null_ _null_ jsonb_delete_array _null_ _null_ _null_ ));
 DATA(insert OID = 3304 (  jsonb_delete_path    PGNSP PGUID 12 1 0 0 0 f f f f t f i s 2 0 3802 "3802 1009" _null_ _null_ _null_ _null_ _null_ jsonb_delete_path _null_ _null_ _null_ ));
 DATA(insert OID = 3305 (  jsonb_set    PGNSP PGUID 12 1 0 0 0 f f f f t f i s 4 0 3802 "3802 1009 3802 16" _null_ _null_ _null_ _null_ _null_ jsonb_set _null_ _null_ _null_ ));
 DESCR("Set part of a jsonb");
@@ -5348,6 +5349,9 @@ DESCR("pg_controldata recovery state information as a function");
 
 DATA(insert OID = 3444 ( pg_control_init PGNSP PGUID 12 1 0 0 0 f f f f t f v s 0 0 2249 "" "{23,23,23,23,23,23,23,23,23,16,16,16,23}" "{o,o,o,o,o,o,o,o,o,o,o,o,o}" "{max_data_alignment,database_block_size,blocks_per_segment,wal_block_size,bytes_per_wal_segment,max_identifier_length,max_index_columns,max_toast_chunk_size,large_object_chunk_size,bigint_timestamps,float4_pass_by_value,float8_pass_by_value,data_page_checksum_version}" _null_ _null_ pg_control_init _null_ _null_ _null_ ));
 DESCR("pg_controldata init state information as a function");
+
+DATA(insert OID = 3445 ( pg_import_system_collations PGNSP PGUID 12 100 0 0 0 f f f f t f v r 2 0 2278 "16 4089" _null_ _null_ "{if_not_exists,schema}" _null_ _null_ pg_import_system_collations _null_ _null_ _null_ ));
+DESCR("import collations from operating system");
 
 /*
  * Symbolic values for provolatile column: these indicate whether the result
