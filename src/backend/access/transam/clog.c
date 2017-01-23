@@ -83,7 +83,8 @@ static SlruCtlData ClogCtlData;
 static int	ZeroCLOGPage(int pageno, bool writeXlog);
 static bool CLOGPagePrecedes(int page1, int page2);
 static void WriteZeroPageXlogRec(int pageno);
-static void WriteTruncateXlogRec(int pageno);
+static void WriteTruncateXlogRec(int pageno, TransactionId oldestXact,
+								 Oid oldestXidDb);
 static void TransactionIdSetPageStatus(TransactionId xid, int nsubxids,
 						   TransactionId *subxids, XidStatus status,
 						   XLogRecPtr lsn, int pageno);
@@ -640,9 +641,22 @@ ExtendCLOG(TransactionId newestXact)
  * the XLOG flush unless we have confirmed that there is a removable segment.
  */
 void
-TruncateCLOG(TransactionId oldestXact)
+TruncateCLOG(TransactionId oldestXact, Oid oldestxid_datoid)
 {
 	int			cutoffPage;
+
+	/*
+	 * Advance oldestXid before truncating clog, so concurrent xact status
+	 * lookups can ensure they don't attempt to access truncated-away clog.
+	 *
+	 * We must do this even if we find we can't actually truncate away any clog
+	 * pages, since we'll advance the xid limits and need oldestXmin to be
+	 * consistent with the new limits.
+	 *
+	 * Losing this on crash before a checkpoint is harmless unless we truncated
+	 * clog, in which case redo of the clog truncation will re-apply it.
+	 */
+	AdvanceOldestXid(oldestXact, oldestxid_datoid);
 
 	/*
 	 * The cutoff point is the start of the segment containing oldestXact. We
@@ -654,8 +668,17 @@ TruncateCLOG(TransactionId oldestXact)
 	if (!SlruScanDirectory(ClogCtl, SlruScanDirCbReportPresence, &cutoffPage))
 		return;					/* nothing to remove */
 
-	/* Write XLOG record and flush XLOG to disk */
-	WriteTruncateXlogRec(cutoffPage);
+	/* vac_truncate_clog already advanced oldestXid */
+	Assert(TransactionIdPrecedesOrEquals(oldestXact,
+		   ShmemVariableCache->oldestXid));
+
+	/*
+	 * Write XLOG record and flush XLOG to disk. We record the oldest xid we're
+	 * keeping information about here so we can ensure that it's always ahead
+	 * of clog truncation in case we crash, and so a standby finds out the new
+	 * valid xid before the next checkpoint.
+	 */
+	WriteTruncateXlogRec(cutoffPage, oldestXact, oldestxid_datoid);
 
 	/* Now we can remove the old CLOG segment(s) */
 	SimpleLruTruncate(ClogCtl, cutoffPage);
@@ -704,12 +727,17 @@ WriteZeroPageXlogRec(int pageno)
  * in TruncateCLOG().
  */
 static void
-WriteTruncateXlogRec(int pageno)
+WriteTruncateXlogRec(int pageno, TransactionId oldestXact, Oid oldestXactDb)
 {
 	XLogRecPtr	recptr;
+	xl_clog_truncate xlrec;
+
+	xlrec.pageno = pageno;
+	xlrec.oldestXact = oldestXact;
+	xlrec.oldestXactDb = oldestXactDb;
 
 	XLogBeginInsert();
-	XLogRegisterData((char *) (&pageno), sizeof(int));
+	XLogRegisterData((char *) (&xlrec), sizeof(xl_clog_truncate));
 	recptr = XLogInsert(RM_CLOG_ID, CLOG_TRUNCATE);
 	XLogFlush(recptr);
 }
@@ -742,17 +770,19 @@ clog_redo(XLogReaderState *record)
 	}
 	else if (info == CLOG_TRUNCATE)
 	{
-		int			pageno;
+		xl_clog_truncate xlrec;
 
-		memcpy(&pageno, XLogRecGetData(record), sizeof(int));
+		memcpy(&xlrec, XLogRecGetData(record), sizeof(xl_clog_truncate));
 
 		/*
 		 * During XLOG replay, latest_page_number isn't set up yet; insert a
 		 * suitable value to bypass the sanity test in SimpleLruTruncate.
 		 */
-		ClogCtl->shared->latest_page_number = pageno;
+		ClogCtl->shared->latest_page_number = xlrec.pageno;
 
-		SimpleLruTruncate(ClogCtl, pageno);
+		AdvanceOldestXid(xlrec.oldestXact, xlrec.oldestXactDb);
+
+		SimpleLruTruncate(ClogCtl, xlrec.pageno);
 	}
 	else
 		elog(PANIC, "clog_redo: unknown op code %u", info);

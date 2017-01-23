@@ -4994,7 +4994,8 @@ BootStrapXLOG(void)
 	ShmemVariableCache->nextOid = checkPoint.nextOid;
 	ShmemVariableCache->oidCount = 0;
 	MultiXactSetNextMXact(checkPoint.nextMulti, checkPoint.nextMultiOffset);
-	SetTransactionIdLimit(checkPoint.oldestXid, checkPoint.oldestXidDB);
+	AdvanceOldestXid(checkPoint.oldestXid, checkPoint.oldestXidDB);
+	SetTransactionIdLimit();
 	SetMultiXactIdLimit(checkPoint.oldestMulti, checkPoint.oldestMultiDB);
 	SetCommitTsLimit(InvalidTransactionId, InvalidTransactionId);
 
@@ -6596,7 +6597,8 @@ StartupXLOG(void)
 	ShmemVariableCache->nextOid = checkPoint.nextOid;
 	ShmemVariableCache->oidCount = 0;
 	MultiXactSetNextMXact(checkPoint.nextMulti, checkPoint.nextMultiOffset);
-	SetTransactionIdLimit(checkPoint.oldestXid, checkPoint.oldestXidDB);
+	AdvanceOldestXid(checkPoint.oldestXid, checkPoint.oldestXidDB);
+	SetTransactionIdLimit();
 	SetMultiXactIdLimit(checkPoint.oldestMulti, checkPoint.oldestMultiDB);
 	SetCommitTsLimit(checkPoint.oldestCommitTsXid,
 					 checkPoint.newestCommitTsXid);
@@ -9590,7 +9592,11 @@ xlog_redo(XLogReaderState *record)
 
 		MultiXactAdvanceOldest(checkPoint.oldestMulti,
 							   checkPoint.oldestMultiDB);
-		SetTransactionIdLimit(checkPoint.oldestXid, checkPoint.oldestXidDB);
+		/*
+		 * No need to call AdvanceOldestXid, startup or an earlier clog trunate
+		 * record will have already advanced it. Just advance the limits.
+		 */
+		SetTransactionIdLimit();
 
 		/*
 		 * If we see a shutdown checkpoint while waiting for an end-of-backup
@@ -9687,10 +9693,12 @@ xlog_redo(XLogReaderState *record)
 		 */
 		MultiXactAdvanceOldest(checkPoint.oldestMulti,
 							   checkPoint.oldestMultiDB);
-		if (TransactionIdPrecedes(ShmemVariableCache->oldestXid,
-								  checkPoint.oldestXid))
-			SetTransactionIdLimit(checkPoint.oldestXid,
-								  checkPoint.oldestXidDB);
+		/*
+		 * We don't need to AdvanceOldestXid here; StartupXLOG or a clog
+		 * truncation record will ensure it's up to date, and we just update
+		 * the limits here based on what's already in shmem.
+		 */
+		SetTransactionIdLimit();
 		/* ControlFile->checkPointCopy always tracks the latest ckpt XID */
 		ControlFile->checkPointCopy.nextXidEpoch = checkPoint.nextXidEpoch;
 		ControlFile->checkPointCopy.nextXid = checkPoint.nextXid;

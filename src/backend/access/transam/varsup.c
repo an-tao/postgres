@@ -259,19 +259,52 @@ ReadNewTransactionId(void)
 }
 
 /*
- * Determine the last safe XID to allocate given the currently oldest
+ * Advance the cluster-wide oldestXid.
+ *
+ * We must ensure that this never goes backwards, otherwise the xid limits set
+ * in SetTransactionIdLimit(...) could be insufficiently conservative if two
+ * vacuums race, with the lower oldestXmin winning then the higher xid limits
+ * winning.
+ */
+void
+AdvanceOldestXid(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
+{
+	LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
+	if (TransactionIdPrecedes(ShmemVariableCache->oldestXid,
+		oldest_datfrozenxid))
+	{
+		ShmemVariableCache->oldestXid = oldest_datfrozenxid;
+		ShmemVariableCache->oldestXidDB = oldest_datoid;
+	}
+	LWLockRelease(XidGenLock);
+}
+
+/*
+ * Determine the last safe XID to allocate using the currently oldest
  * datfrozenxid (ie, the oldest XID that might exist in any database
  * of our cluster), and the OID of the (or a) database with that value.
  */
 void
-SetTransactionIdLimit(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
+SetTransactionIdLimit(void)
 {
 	TransactionId xidVacLimit;
 	TransactionId xidWarnLimit;
 	TransactionId xidStopLimit;
 	TransactionId xidWrapLimit;
 	TransactionId curXid;
+	Oid			  oldest_datoid;
+	TransactionId oldest_datfrozenxid;
 
+	LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
+
+	/*
+	 * We fetch oldest_datfrozenxid and oldest_datoid from shmem to ensure that
+	 * if some other vacuum has advanced oldestXid since we did, we use the
+	 * latest values and the limits never go backwards.
+	 */
+	oldest_datfrozenxid = ShmemVariableCache->oldestXid;
+	oldest_datoid = ShmemVariableCache->oldestXidDB;
+	
 	Assert(TransactionIdIsNormal(oldest_datfrozenxid));
 
 	/*
@@ -284,6 +317,7 @@ SetTransactionIdLimit(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
 	xidWrapLimit = oldest_datfrozenxid + (MaxTransactionId >> 1);
 	if (xidWrapLimit < FirstNormalTransactionId)
 		xidWrapLimit += FirstNormalTransactionId;
+	ShmemVariableCache->xidWrapLimit = xidWrapLimit;
 
 	/*
 	 * We'll refuse to continue assigning XIDs in interactive mode once we get
@@ -296,6 +330,7 @@ SetTransactionIdLimit(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
 	xidStopLimit = xidWrapLimit - 1000000;
 	if (xidStopLimit < FirstNormalTransactionId)
 		xidStopLimit -= FirstNormalTransactionId;
+	ShmemVariableCache->xidStopLimit = xidStopLimit;
 
 	/*
 	 * We'll start complaining loudly when we get within 10M transactions of
@@ -310,6 +345,7 @@ SetTransactionIdLimit(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
 	xidWarnLimit = xidStopLimit - 10000000;
 	if (xidWarnLimit < FirstNormalTransactionId)
 		xidWarnLimit -= FirstNormalTransactionId;
+	ShmemVariableCache->xidWarnLimit = xidWarnLimit;
 
 	/*
 	 * We'll start trying to force autovacuums when oldest_datfrozenxid gets
@@ -329,15 +365,8 @@ SetTransactionIdLimit(TransactionId oldest_datfrozenxid, Oid oldest_datoid)
 	xidVacLimit = oldest_datfrozenxid + autovacuum_freeze_max_age;
 	if (xidVacLimit < FirstNormalTransactionId)
 		xidVacLimit += FirstNormalTransactionId;
-
-	/* Grab lock for just long enough to set the new limit values */
-	LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
-	ShmemVariableCache->oldestXid = oldest_datfrozenxid;
 	ShmemVariableCache->xidVacLimit = xidVacLimit;
-	ShmemVariableCache->xidWarnLimit = xidWarnLimit;
-	ShmemVariableCache->xidStopLimit = xidStopLimit;
-	ShmemVariableCache->xidWrapLimit = xidWrapLimit;
-	ShmemVariableCache->oldestXidDB = oldest_datoid;
+
 	curXid = ShmemVariableCache->nextXid;
 	LWLockRelease(XidGenLock);
 
