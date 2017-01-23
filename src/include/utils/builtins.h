@@ -120,5 +120,169 @@ extern int32 type_maximum_size(Oid type_oid, int32 typemod);
 
 /* quote.c */
 extern char *quote_literal_cstr(const char *rawstr);
+extern Datum quote_nullable(PG_FUNCTION_ARGS);
+
+/* guc.c */
+extern Datum show_config_by_name(PG_FUNCTION_ARGS);
+extern Datum show_config_by_name_missing_ok(PG_FUNCTION_ARGS);
+extern Datum set_config_by_name(PG_FUNCTION_ARGS);
+extern Datum show_all_settings(PG_FUNCTION_ARGS);
+extern Datum show_all_file_settings(PG_FUNCTION_ARGS);
+
+/* pg_config.c */
+extern Datum pg_config(PG_FUNCTION_ARGS);
+
+/* pg_controldata.c */
+extern Datum pg_control_checkpoint(PG_FUNCTION_ARGS);
+extern Datum pg_control_system(PG_FUNCTION_ARGS);
+extern Datum pg_control_init(PG_FUNCTION_ARGS);
+extern Datum pg_control_recovery(PG_FUNCTION_ARGS);
+
+/* rls.c */
+extern Datum row_security_active(PG_FUNCTION_ARGS);
+extern Datum row_security_active_name(PG_FUNCTION_ARGS);
+
+/* lockfuncs.c */
+extern Datum pg_lock_status(PG_FUNCTION_ARGS);
+extern Datum pg_blocking_pids(PG_FUNCTION_ARGS);
+extern Datum pg_advisory_lock_int8(PG_FUNCTION_ARGS);
+extern Datum pg_advisory_xact_lock_int8(PG_FUNCTION_ARGS);
+extern Datum pg_advisory_lock_shared_int8(PG_FUNCTION_ARGS);
+extern Datum pg_advisory_xact_lock_shared_int8(PG_FUNCTION_ARGS);
+extern Datum pg_try_advisory_lock_int8(PG_FUNCTION_ARGS);
+extern Datum pg_try_advisory_xact_lock_int8(PG_FUNCTION_ARGS);
+extern Datum pg_try_advisory_lock_shared_int8(PG_FUNCTION_ARGS);
+extern Datum pg_try_advisory_xact_lock_shared_int8(PG_FUNCTION_ARGS);
+extern Datum pg_advisory_unlock_int8(PG_FUNCTION_ARGS);
+extern Datum pg_advisory_unlock_shared_int8(PG_FUNCTION_ARGS);
+extern Datum pg_advisory_lock_int4(PG_FUNCTION_ARGS);
+extern Datum pg_advisory_xact_lock_int4(PG_FUNCTION_ARGS);
+extern Datum pg_advisory_lock_shared_int4(PG_FUNCTION_ARGS);
+extern Datum pg_advisory_xact_lock_shared_int4(PG_FUNCTION_ARGS);
+extern Datum pg_try_advisory_lock_int4(PG_FUNCTION_ARGS);
+extern Datum pg_try_advisory_xact_lock_int4(PG_FUNCTION_ARGS);
+extern Datum pg_try_advisory_lock_shared_int4(PG_FUNCTION_ARGS);
+extern Datum pg_try_advisory_xact_lock_shared_int4(PG_FUNCTION_ARGS);
+extern Datum pg_advisory_unlock_int4(PG_FUNCTION_ARGS);
+extern Datum pg_advisory_unlock_shared_int4(PG_FUNCTION_ARGS);
+extern Datum pg_advisory_unlock_all(PG_FUNCTION_ARGS);
+
+/* txid.c */
+extern Datum txid_snapshot_in(PG_FUNCTION_ARGS);
+extern Datum txid_snapshot_out(PG_FUNCTION_ARGS);
+extern Datum txid_snapshot_recv(PG_FUNCTION_ARGS);
+extern Datum txid_snapshot_send(PG_FUNCTION_ARGS);
+extern Datum txid_current(PG_FUNCTION_ARGS);
+extern Datum txid_current_if_assigned(PG_FUNCTION_ARGS);
+extern Datum txid_current_snapshot(PG_FUNCTION_ARGS);
+extern Datum txid_snapshot_xmin(PG_FUNCTION_ARGS);
+extern Datum txid_snapshot_xmax(PG_FUNCTION_ARGS);
+extern Datum txid_snapshot_xip(PG_FUNCTION_ARGS);
+extern Datum txid_visible_in_snapshot(PG_FUNCTION_ARGS);
+extern Datum txid_status(PG_FUNCTION_ARGS);
+
+/* uuid.c */
+extern Datum uuid_in(PG_FUNCTION_ARGS);
+extern Datum uuid_out(PG_FUNCTION_ARGS);
+extern Datum uuid_send(PG_FUNCTION_ARGS);
+extern Datum uuid_recv(PG_FUNCTION_ARGS);
+extern Datum uuid_lt(PG_FUNCTION_ARGS);
+extern Datum uuid_le(PG_FUNCTION_ARGS);
+extern Datum uuid_eq(PG_FUNCTION_ARGS);
+extern Datum uuid_ge(PG_FUNCTION_ARGS);
+extern Datum uuid_gt(PG_FUNCTION_ARGS);
+extern Datum uuid_ne(PG_FUNCTION_ARGS);
+extern Datum uuid_cmp(PG_FUNCTION_ARGS);
+extern Datum uuid_sortsupport(PG_FUNCTION_ARGS);
+extern Datum uuid_hash(PG_FUNCTION_ARGS);
+
+/* windowfuncs.c */
+extern Datum window_row_number(PG_FUNCTION_ARGS);
+extern Datum window_rank(PG_FUNCTION_ARGS);
+extern Datum window_dense_rank(PG_FUNCTION_ARGS);
+extern Datum window_percent_rank(PG_FUNCTION_ARGS);
+extern Datum window_cume_dist(PG_FUNCTION_ARGS);
+extern Datum window_ntile(PG_FUNCTION_ARGS);
+extern Datum window_lag(PG_FUNCTION_ARGS);
+extern Datum window_lag_with_offset(PG_FUNCTION_ARGS);
+extern Datum window_lag_with_offset_and_default(PG_FUNCTION_ARGS);
+extern Datum window_lead(PG_FUNCTION_ARGS);
+extern Datum window_lead_with_offset(PG_FUNCTION_ARGS);
+extern Datum window_lead_with_offset_and_default(PG_FUNCTION_ARGS);
+extern Datum window_first_value(PG_FUNCTION_ARGS);
+extern Datum window_last_value(PG_FUNCTION_ARGS);
+extern Datum window_nth_value(PG_FUNCTION_ARGS);
+
+/* access/spgist/spgquadtreeproc.c */
+extern Datum spg_quad_config(PG_FUNCTION_ARGS);
+extern Datum spg_quad_choose(PG_FUNCTION_ARGS);
+extern Datum spg_quad_picksplit(PG_FUNCTION_ARGS);
+extern Datum spg_quad_inner_consistent(PG_FUNCTION_ARGS);
+extern Datum spg_quad_leaf_consistent(PG_FUNCTION_ARGS);
+
+/* access/spgist/spgkdtreeproc.c */
+extern Datum spg_kd_config(PG_FUNCTION_ARGS);
+extern Datum spg_kd_choose(PG_FUNCTION_ARGS);
+extern Datum spg_kd_picksplit(PG_FUNCTION_ARGS);
+extern Datum spg_kd_inner_consistent(PG_FUNCTION_ARGS);
+
+/* access/spgist/spgtextproc.c */
+extern Datum spg_text_config(PG_FUNCTION_ARGS);
+extern Datum spg_text_choose(PG_FUNCTION_ARGS);
+extern Datum spg_text_picksplit(PG_FUNCTION_ARGS);
+extern Datum spg_text_inner_consistent(PG_FUNCTION_ARGS);
+extern Datum spg_text_leaf_consistent(PG_FUNCTION_ARGS);
+
+/* access/gin/ginarrayproc.c */
+extern Datum ginarrayextract(PG_FUNCTION_ARGS);
+extern Datum ginarrayextract_2args(PG_FUNCTION_ARGS);
+extern Datum ginqueryarrayextract(PG_FUNCTION_ARGS);
+extern Datum ginarrayconsistent(PG_FUNCTION_ARGS);
+extern Datum ginarraytriconsistent(PG_FUNCTION_ARGS);
+
+/* access/tablesample/bernoulli.c */
+extern Datum tsm_bernoulli_handler(PG_FUNCTION_ARGS);
+
+/* access/tablesample/system.c */
+extern Datum tsm_system_handler(PG_FUNCTION_ARGS);
+
+/* access/transam/twophase.c */
+extern Datum pg_prepared_xact(PG_FUNCTION_ARGS);
+
+/* access/transam/multixact.c */
+extern Datum pg_get_multixact_members(PG_FUNCTION_ARGS);
+
+/* access/transam/committs.c */
+extern Datum pg_xact_commit_timestamp(PG_FUNCTION_ARGS);
+extern Datum pg_last_committed_xact(PG_FUNCTION_ARGS);
+
+/* catalogs/dependency.c */
+extern Datum pg_describe_object(PG_FUNCTION_ARGS);
+extern Datum pg_identify_object(PG_FUNCTION_ARGS);
+extern Datum pg_identify_object_as_address(PG_FUNCTION_ARGS);
+
+/* catalog/objectaddress.c */
+extern Datum pg_get_object_address(PG_FUNCTION_ARGS);
+
+/* commands/constraint.c */
+extern Datum unique_key_recheck(PG_FUNCTION_ARGS);
+
+/* commands/event_trigger.c */
+extern Datum pg_event_trigger_dropped_objects(PG_FUNCTION_ARGS);
+extern Datum pg_event_trigger_table_rewrite_oid(PG_FUNCTION_ARGS);
+extern Datum pg_event_trigger_table_rewrite_reason(PG_FUNCTION_ARGS);
+extern Datum pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS);
+
+/* commands/extension.c */
+extern Datum pg_available_extensions(PG_FUNCTION_ARGS);
+extern Datum pg_available_extension_versions(PG_FUNCTION_ARGS);
+extern Datum pg_extension_update_paths(PG_FUNCTION_ARGS);
+extern Datum pg_extension_config_dump(PG_FUNCTION_ARGS);
+
+/* commands/prepare.c */
+extern Datum pg_prepared_statement(PG_FUNCTION_ARGS);
+
+/* utils/mmgr/portalmem.c */
+extern Datum pg_cursor(PG_FUNCTION_ARGS);
 
 #endif   /* BUILTINS_H */

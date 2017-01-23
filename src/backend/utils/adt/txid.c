@@ -21,6 +21,7 @@
 
 #include "postgres.h"
 
+#include "access/clog.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -28,6 +29,7 @@
 #include "miscadmin.h"
 #include "libpq/pqformat.h"
 #include "postmaster/postmaster.h"
+#include "storage/lwlock.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
@@ -90,6 +92,63 @@ static void
 load_xid_epoch(TxidEpoch *state)
 {
 	GetNextXidAndEpoch(&state->last_xid, &state->epoch);
+}
+
+/*
+ * Helper to get a TransactionId from a 64-bit xid with wraparound detection.
+ *
+ * It is an ERROR if the xid is in the future.  Otherwise, returns true if
+ * the transaction is still new enough that we can determine whether it
+ * committed and false otherwise.  If *extracted_xid is not NULL, it is set
+ * to the low 32 bits of the transaction ID (i.e. the actual XID, without the
+ * epoch).
+ */
+static bool
+TransactionIdInRecentPast(uint64 xid_with_epoch, TransactionId *extracted_xid)
+{
+	uint32		xid_epoch = (uint32) (xid_with_epoch >> 32);
+	TransactionId xid = (TransactionId) xid_with_epoch;
+	uint32		now_epoch;
+	TransactionId now_epoch_last_xid;
+
+	GetNextXidAndEpoch(&now_epoch_last_xid, &now_epoch);
+
+	if (extracted_xid != NULL)
+		*extracted_xid = xid;
+
+	/* For non-normal transaction IDs, we can ignore the epoch. */
+	if (!TransactionIdIsNormal(xid))
+		return true;
+
+	/* If the transaction ID is in the future, throw an error. */
+	if (xid_epoch > now_epoch
+		|| (xid_epoch == now_epoch && xid > now_epoch_last_xid))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("transaction ID " UINT64_FORMAT " is in the future",
+						xid_with_epoch)));
+
+	/*
+	 * ShmemVariableCache->oldestXid is protected by XidGenLock, but we don't
+	 * acquire that lock here.  Instead, we require the caller to acquire it,
+	 * because the caller is presumably going to look up the returned XID.
+	 * If we took and released the lock within this function, a CLOG
+	 * truncation could occur before the caller finished with the XID.
+	 */
+	Assert(LWLockHeldByMe(XidGenLock));
+
+	/*
+	 * If the transaction ID has wrapped around, it's definitely too old to
+	 * determine the commit status.  Otherwise, we can compare it to
+	 * ShmemVariableCache->oldestXid to determine whether the relevant CLOG
+	 * entry is guaranteed to still exist.
+	 */
+	if (xid_epoch + 1 < now_epoch
+		|| (xid_epoch + 1 == now_epoch && xid < now_epoch_last_xid)
+		|| TransactionIdPrecedes(xid, ShmemVariableCache->oldestXid))
+		return false;
+
+	return true;
 }
 
 /*
@@ -354,6 +413,9 @@ bad_format:
  *
  *	Return the current toplevel transaction ID as TXID
  *	If the current transaction does not have one, one is assigned.
+ *
+ *	This value has the epoch as the high 32 bits and the 32-bit xid
+ *	as the low 32 bits.
  */
 Datum
 txid_current(PG_FUNCTION_ARGS)
@@ -657,4 +719,58 @@ txid_snapshot_xip(PG_FUNCTION_ARGS)
 	{
 		SRF_RETURN_DONE(fctx);
 	}
+}
+
+/*
+ * Report the status of a recent transaction ID, or null for wrapped,
+ * truncated away or otherwise too old XIDs.
+ */
+Datum
+txid_status(PG_FUNCTION_ARGS)
+{
+	const char	   *status;
+	uint64			xid_with_epoch = PG_GETARG_INT64(0);
+	TransactionId	xid;
+
+	/*
+	 * Ensure clog isn't removed between when we check whether the current xid
+	 * is valid and when we look its status up.
+	 */
+	LWLockAcquire(XidGenLock, LW_SHARED);
+	if (TransactionIdInRecentPast(xid_with_epoch, &xid))
+	{
+		if (!TransactionIdIsValid(xid))
+		{
+			LWLockRelease(XidGenLock);
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("transaction ID " UINT64_FORMAT " is an invalid xid",
+						xid_with_epoch)));
+		}
+
+		if (TransactionIdIsCurrentTransactionId(xid))
+			status = gettext_noop("in progress");
+		else if (TransactionIdDidCommit(xid))
+			status = gettext_noop("committed");
+		else if (TransactionIdDidAbort(xid))
+			status = gettext_noop("aborted");
+		else
+
+			/*
+			 * can't test TransactionIdIsInProgress here or we race with
+			 * concurrent commit/abort. There's no point anyway, since it
+			 * might then commit/abort just after we check.
+			 */
+			status = gettext_noop("in progress");
+	}
+	else
+	{
+		status = NULL;
+	}
+	LWLockRelease(XidGenLock);
+
+	if (status == NULL)
+		PG_RETURN_NULL();
+	else
+		PG_RETURN_TEXT_P(cstring_to_text(status));
 }
