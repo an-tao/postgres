@@ -2,7 +2,7 @@
  * launcher.c
  *	   PostgreSQL logical replication worker launcher process
  *
- * Copyright (c) 2012-2016, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2017, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/launcher.c
@@ -261,6 +261,7 @@ logicalrep_worker_launch(Oid dbid, Oid subid, const char *subname, Oid userid)
 	/* Bail if not found */
 	if (worker == NULL)
 	{
+		LWLockRelease(LogicalRepWorkerLock);
 		ereport(WARNING,
 				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
 				 errmsg("out of logical replication workers slots"),
@@ -349,10 +350,21 @@ logicalrep_worker_stop(Oid subid)
 
 		ResetLatch(&MyProc->procLatch);
 
-		/* Check if the worker has started. */
+		/* Check worker status. */
 		LWLockAcquire(LogicalRepWorkerLock, LW_SHARED);
-		worker = logicalrep_worker_find(subid);
-		if (!worker || worker->proc)
+
+		/*
+		 * Worker is no longer associated with subscription.  It must have
+		 * exited, nothing more for us to do.
+		 */
+		if (worker->subid == InvalidOid)
+		{
+			LWLockRelease(LogicalRepWorkerLock);
+			return;
+		}
+
+		/* Worker has assigned proc, so it has started. */
+		if (worker->proc)
 			break;
 	}
 

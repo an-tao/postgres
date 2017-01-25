@@ -181,7 +181,7 @@ static void dumpOpr(Archive *fout, OprInfo *oprinfo);
 static void dumpAccessMethod(Archive *fout, AccessMethodInfo *oprinfo);
 static void dumpOpclass(Archive *fout, OpclassInfo *opcinfo);
 static void dumpOpfamily(Archive *fout, OpfamilyInfo *opfinfo);
-static void dumpCollation(Archive *fout, CollInfo *convinfo);
+static void dumpCollation(Archive *fout, CollInfo *collinfo);
 static void dumpConversion(Archive *fout, ConvInfo *convinfo);
 static void dumpRule(Archive *fout, RuleInfo *rinfo);
 static void dumpAgg(Archive *fout, AggInfo *agginfo);
@@ -3360,15 +3360,6 @@ getPublications(Archive *fout)
 
 	ntups = PQntuples(res);
 
-	if (ntups == 0)
-	{
-		/*
-		 * There are no publications defined. Clean up and return.
-		 */
-		PQclear(res);
-		return;
-	}
-
 	i_tableoid = PQfnumber(res, "tableoid");
 	i_oid = PQfnumber(res, "oid");
 	i_pubname = PQfnumber(res, "pubname");
@@ -3636,15 +3627,6 @@ getSubscriptions(Archive *fout)
 	res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
 
 	ntups = PQntuples(res);
-
-	if (ntups == 0)
-	{
-		/*
-		 * There are no subscriptions defined. Clean up and return.
-		 */
-		PQclear(res);
-		return;
-	}
 
 	i_tableoid = PQfnumber(res, "tableoid");
 	i_oid = PQfnumber(res, "oid");
@@ -15891,14 +15873,14 @@ dumpSequence(Archive *fout, TableInfo *tbinfo)
 	PQExpBuffer delqry = createPQExpBuffer();
 	PQExpBuffer labelq = createPQExpBuffer();
 
-	/* Make sure we are in proper schema */
-	selectSourceSchema(fout, tbinfo->dobj.namespace->dobj.name);
-
-	snprintf(bufm, sizeof(bufm), INT64_FORMAT, SEQ_MINVALUE);
-	snprintf(bufx, sizeof(bufx), INT64_FORMAT, SEQ_MAXVALUE);
+	snprintf(bufm, sizeof(bufm), INT64_FORMAT, PG_INT64_MIN);
+	snprintf(bufx, sizeof(bufx), INT64_FORMAT, PG_INT64_MAX);
 
 	if (fout->remoteVersion >= 100000)
 	{
+		/* Make sure we are in proper schema */
+		selectSourceSchema(fout, "pg_catalog");
+
 		appendPQExpBuffer(query,
 						  "SELECT seqstart, seqincrement, "
 						  "CASE WHEN seqincrement > 0 AND seqmax = %s THEN NULL "
@@ -15912,12 +15894,20 @@ dumpSequence(Archive *fout, TableInfo *tbinfo)
 						  "seqcache, seqcycle "
 						  "FROM pg_class c "
 						  "JOIN pg_sequence s ON (s.seqrelid = c.oid) "
-						  "WHERE relname = ",
-						  bufx, bufm);
-		appendStringLiteralAH(query, tbinfo->dobj.name, fout);
+						  "WHERE c.oid = '%u'::oid",
+						  bufx, bufm,
+						  tbinfo->dobj.catId.oid);
 	}
 	else if (fout->remoteVersion >= 80400)
 	{
+		/*
+		 * Before PostgreSQL 10, sequence metadata is in the sequence itself,
+		 * so switch to the sequence's schema instead of pg_catalog.
+		 */
+
+		/* Make sure we are in proper schema */
+		selectSourceSchema(fout, tbinfo->dobj.namespace->dobj.name);
+
 		appendPQExpBuffer(query,
 						  "SELECT start_value, increment_by, "
 				   "CASE WHEN increment_by > 0 AND max_value = %s THEN NULL "
@@ -15934,6 +15924,9 @@ dumpSequence(Archive *fout, TableInfo *tbinfo)
 	}
 	else
 	{
+		/* Make sure we are in proper schema */
+		selectSourceSchema(fout, tbinfo->dobj.namespace->dobj.name);
+
 		appendPQExpBuffer(query,
 						  "SELECT 0 AS start_value, increment_by, "
 				   "CASE WHEN increment_by > 0 AND max_value = %s THEN NULL "
