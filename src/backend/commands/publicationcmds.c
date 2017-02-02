@@ -215,8 +215,7 @@ CreatePublication(CreatePublicationStmt *stmt)
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
 	/* Insert tuple into catalog. */
-	puboid = simple_heap_insert(rel, tup);
-	CatalogUpdateIndexes(rel, tup);
+	puboid = CatalogTupleInsert(rel, tup);
 	heap_freetuple(tup);
 
 	recordDependencyOnOwner(PublicationRelationId, puboid, GetUserId());
@@ -295,8 +294,7 @@ AlterPublicationOptions(AlterPublicationStmt *stmt, Relation rel,
 							replaces);
 
 	/* Update the catalog. */
-	simple_heap_update(rel, &tup->t_self, tup);
-	CatalogUpdateIndexes(rel, tup);
+	CatalogTupleUpdate(rel, &tup->t_self, tup);
 
 	CommandCounterIncrement();
 
@@ -463,7 +461,7 @@ RemovePublicationById(Oid pubid)
 	if (!HeapTupleIsValid(tup))
 		elog(ERROR, "cache lookup failed for publication %u", pubid);
 
-	simple_heap_delete(rel, &tup->t_self);
+	CatalogTupleDelete(rel, &tup->t_self);
 
 	ReleaseSysCache(tup);
 
@@ -488,13 +486,12 @@ RemovePublicationRelById(Oid proid)
 		elog(ERROR, "cache lookup failed for publication table %u",
 			 proid);
 
-
 	pubrel = (Form_pg_publication_rel) GETSTRUCT(tup);
 
 	/* Invalidate relcache so that publication info is rebuilt. */
 	CacheInvalidateRelcacheByRelid(pubrel->prrelid);
 
-	simple_heap_delete(rel, &tup->t_self);
+	CatalogTupleDelete(rel, &tup->t_self);
 
 	ReleaseSysCache(tup);
 
@@ -686,8 +683,7 @@ AlterPublicationOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 				 errhint("The owner of a publication must be a superuser.")));
 
 	form->pubowner = newOwnerId;
-	simple_heap_update(rel, &tup->t_self, tup);
-	CatalogUpdateIndexes(rel, tup);
+	CatalogTupleUpdate(rel, &tup->t_self, tup);
 
 	/* Update owner dependency reference */
 	changeDependencyOnOwner(PublicationRelationId,

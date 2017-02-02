@@ -299,8 +299,7 @@ replorigin_create(char *roname)
 			values[Anum_pg_replication_origin_roname - 1] = roname_d;
 
 			tuple = heap_form_tuple(RelationGetDescr(rel), values, nulls);
-			simple_heap_insert(rel, tuple);
-			CatalogUpdateIndexes(rel, tuple);
+			CatalogTupleInsert(rel, tuple);
 			CommandCounterIncrement();
 			break;
 		}
@@ -378,7 +377,7 @@ replorigin_drop(RepOriginId roident)
 		elog(ERROR, "cache lookup failed for replication origin with oid %u",
 			 roident);
 
-	simple_heap_delete(rel, &tuple->t_self);
+	CatalogTupleDelete(rel, &tuple->t_self);
 	ReleaseSysCache(tuple);
 
 	CommandCounterIncrement();
