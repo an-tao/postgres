@@ -3500,7 +3500,7 @@ getPublicationTables(Archive *fout, TableInfo tblinfo[], int numTables)
 
 		resetPQExpBuffer(query);
 
-		/* Get the publication memebership for the table. */
+		/* Get the publication membership for the table. */
 		appendPQExpBuffer(query,
 						  "SELECT pr.tableoid, pr.oid, p.pubname "
 						  "FROM pg_catalog.pg_publication_rel pr,"
@@ -11489,7 +11489,7 @@ dumpCast(Archive *fout, CastInfo *cast)
 	{
 		funcInfo = findFuncByOid(cast->castfunc);
 		if (funcInfo == NULL)
-			exit_horribly(NULL, "unable to find function definition for OID %u",
+			exit_horribly(NULL, "could not find function definition for function with OID %u\n",
 						  cast->castfunc);
 	}
 
@@ -11599,14 +11599,14 @@ dumpTransform(Archive *fout, TransformInfo *transform)
 	{
 		fromsqlFuncInfo = findFuncByOid(transform->trffromsql);
 		if (fromsqlFuncInfo == NULL)
-			exit_horribly(NULL, "unable to find function definition for OID %u",
+			exit_horribly(NULL, "could not find function definition for function with OID %u\n",
 						  transform->trffromsql);
 	}
 	if (OidIsValid(transform->trftosql))
 	{
 		tosqlFuncInfo = findFuncByOid(transform->trftosql);
 		if (tosqlFuncInfo == NULL)
-			exit_horribly(NULL, "unable to find function definition for OID %u",
+			exit_horribly(NULL, "could not find function definition for function with OID %u\n",
 						  transform->trftosql);
 	}
 

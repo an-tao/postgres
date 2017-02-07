@@ -474,7 +474,7 @@ DropSubscription(DropSubscriptionStmt *stmt)
 	InvokeObjectDropHook(SubscriptionRelationId, subid, 0);
 
 	/*
-	 * Lock the subscription so noboby else can do anything with it
+	 * Lock the subscription so nobody else can do anything with it
 	 * (including the replication workers).
 	 */
 	LockSharedObject(SubscriptionRelationId, subid, 0, AccessExclusiveLock);
@@ -513,6 +513,8 @@ DropSubscription(DropSubscriptionStmt *stmt)
 
 	/* Kill the apply worker so that the slot becomes accessible. */
 	logicalrep_worker_stop(subid);
+
+	LWLockRelease(LogicalRepLauncherLock);
 
 	/* Remove the origin tracking if exists. */
 	snprintf(originname, sizeof(originname), "pg_%u", subid);
