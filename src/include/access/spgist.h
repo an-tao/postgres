@@ -191,7 +191,8 @@ extern IndexBuildResult *spgbuild(Relation heap, Relation index,
 extern void spgbuildempty(Relation index);
 extern bool spginsert(Relation index, Datum *values, bool *isnull,
 		  ItemPointer ht_ctid, Relation heapRel,
-		  IndexUniqueCheck checkUnique);
+		  IndexUniqueCheck checkUnique,
+		  struct IndexInfo *indexInfo);
 
 /* spgscan.c */
 extern IndexScanDesc spgbeginscan(Relation rel, int keysz, int orderbysz);
@@ -219,5 +220,6 @@ extern void spg_desc(StringInfo buf, XLogReaderState *record);
 extern const char *spg_identify(uint8 info);
 extern void spg_xlog_startup(void);
 extern void spg_xlog_cleanup(void);
+extern void spg_mask(char *pagedata, BlockNumber blkno);
 
 #endif   /* SPGIST_H */

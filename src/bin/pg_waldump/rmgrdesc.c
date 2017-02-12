@@ -1,9 +1,9 @@
 /*
  * rmgrdesc.c
  *
- * pg_xlogdump resource managers definition
+ * pg_waldump resource managers definition
  *
- * src/bin/pg_xlogdump/rmgrdesc.c
+ * src/bin/pg_waldump/rmgrdesc.c
  */
 #define FRONTEND 1
 #include "postgres.h"
@@ -32,7 +32,7 @@
 #include "storage/standbydefs.h"
 #include "utils/relmapper.h"
 
-#define PG_RMGR(symname,name,redo,desc,identify,startup,cleanup) \
+#define PG_RMGR(symname,name,redo,desc,identify,startup,cleanup,mask) \
 	{ name, desc, identify},
 
 const RmgrDescData RmgrDescTable[RM_MAX_ID + 1] = {

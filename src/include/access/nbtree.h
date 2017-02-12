@@ -659,7 +659,8 @@ extern IndexBuildResult *btbuild(Relation heap, Relation index,
 extern void btbuildempty(Relation index);
 extern bool btinsert(Relation rel, Datum *values, bool *isnull,
 		 ItemPointer ht_ctid, Relation heapRel,
-		 IndexUniqueCheck checkUnique);
+		 IndexUniqueCheck checkUnique,
+		 struct IndexInfo *indexInfo);
 extern IndexScanDesc btbeginscan(Relation rel, int nkeys, int norderbys);
 extern bool btgettuple(IndexScanDesc scan, ScanDirection dir);
 extern int64 btgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
@@ -774,5 +775,6 @@ extern void _bt_leafbuild(BTSpool *btspool, BTSpool *spool2);
 extern void btree_redo(XLogReaderState *record);
 extern void btree_desc(StringInfo buf, XLogReaderState *record);
 extern const char *btree_identify(uint8 info);
+extern void btree_mask(char *pagedata, BlockNumber blkno);
 
 #endif   /* NBTREE_H */

@@ -426,7 +426,8 @@ typedef struct GiSTOptions
 extern void gistbuildempty(Relation index);
 extern bool gistinsert(Relation r, Datum *values, bool *isnull,
 		   ItemPointer ht_ctid, Relation heapRel,
-		   IndexUniqueCheck checkUnique);
+		   IndexUniqueCheck checkUnique,
+		   struct IndexInfo *indexInfo);
 extern MemoryContext createTempGistContext(void);
 extern GISTSTATE *initGISTstate(Relation index);
 extern void freeGISTstate(GISTSTATE *giststate);
@@ -459,6 +460,7 @@ extern void gist_desc(StringInfo buf, XLogReaderState *record);
 extern const char *gist_identify(uint8 info);
 extern void gist_xlog_startup(void);
 extern void gist_xlog_cleanup(void);
+extern void gist_mask(char *pagedata, BlockNumber blkno);
 
 extern XLogRecPtr gistXLogUpdate(Buffer buffer,
 			   OffsetNumber *todelete, int ntodelete,
