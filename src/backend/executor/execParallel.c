@@ -28,6 +28,7 @@
 #include "executor/nodeCustom.h"
 #include "executor/nodeForeignscan.h"
 #include "executor/nodeSeqscan.h"
+#include "executor/nodeIndexscan.h"
 #include "executor/tqueue.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/planmain.h"
@@ -156,7 +157,7 @@ ExecSerializePlan(Plan *plan, EState *estate)
 	pstmt->planTree = plan;
 	pstmt->rtable = estate->es_range_table;
 	pstmt->resultRelations = NIL;
-	pstmt->subplans = NIL;
+	pstmt->subplans = estate->es_plannedstmt->subplans;
 	pstmt->rewindPlanIDs = NULL;
 	pstmt->rowMarks = NIL;
 	pstmt->relationOids = NIL;
@@ -196,6 +197,10 @@ ExecParallelEstimate(PlanState *planstate, ExecParallelEstimateContext *e)
 			case T_SeqScanState:
 				ExecSeqScanEstimate((SeqScanState *) planstate,
 									e->pcxt);
+				break;
+			case T_IndexScanState:
+				ExecIndexScanEstimate((IndexScanState *) planstate,
+									  e->pcxt);
 				break;
 			case T_ForeignScanState:
 				ExecForeignScanEstimate((ForeignScanState *) planstate,
@@ -248,6 +253,10 @@ ExecParallelInitializeDSM(PlanState *planstate,
 			case T_SeqScanState:
 				ExecSeqScanInitializeDSM((SeqScanState *) planstate,
 										 d->pcxt);
+				break;
+			case T_IndexScanState:
+				ExecIndexScanInitializeDSM((IndexScanState *) planstate,
+										   d->pcxt);
 				break;
 			case T_ForeignScanState:
 				ExecForeignScanInitializeDSM((ForeignScanState *) planstate,
@@ -724,6 +733,9 @@ ExecParallelInitializeWorker(PlanState *planstate, shm_toc *toc)
 		{
 			case T_SeqScanState:
 				ExecSeqScanInitializeWorker((SeqScanState *) planstate, toc);
+				break;
+			case T_IndexScanState:
+				ExecIndexScanInitializeWorker((IndexScanState *) planstate, toc);
 				break;
 			case T_ForeignScanState:
 				ExecForeignScanInitializeWorker((ForeignScanState *) planstate,
