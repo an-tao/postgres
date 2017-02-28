@@ -55,6 +55,8 @@ static void heap_prune_record_redirect(PruneState *prstate,
 static void heap_prune_record_dead(PruneState *prstate, OffsetNumber offnum);
 static void heap_prune_record_unused(PruneState *prstate, OffsetNumber offnum);
 
+static void heap_get_root_tuples_internal(Page page,
+				OffsetNumber target_offnum, OffsetNumber *root_offsets);
 
 /*
  * Optionally prune and repair fragmentation in the specified page.
@@ -553,6 +555,17 @@ heap_prune_chain(Relation relation, Buffer buffer, OffsetNumber rootoffnum,
 		if (!HeapTupleHeaderIsHotUpdated(htup))
 			break;
 
+
+		/*
+		 * If the tuple was HOT-updated and the update was later
+		 * aborted, someone could mark this tuple to be the last tuple
+		 * in the chain, without clearing the HOT-updated flag. So we must
+		 * check if this is the last tuple in the chain and stop following the
+		 * CTID, else we risk getting into an infinite recursion (though
+		 * prstate->marked[] currently protects against that).
+		 */
+		if (HeapTupleHeaderHasRootOffset(htup))
+			break;
 		/*
 		 * Advance to next chain member.
 		 */
@@ -726,27 +739,47 @@ heap_page_prune_execute(Buffer buffer,
 
 
 /*
- * For all items in this page, find their respective root line pointers.
- * If item k is part of a HOT-chain with root at item j, then we set
- * root_offsets[k - 1] = j.
+ * Either for all items in this page or for the given item, find their
+ * respective root line pointers.
  *
- * The passed-in root_offsets array must have MaxHeapTuplesPerPage entries.
- * We zero out all unused entries.
+ * When target_offnum is a valid offset number, the caller is interested in
+ * just one item. In that case, the root line pointer is returned in
+ * root_offsets.
+ *
+ * When target_offnum is a InvalidOffsetNumber then the caller wants to know
+ * the root line pointers of all the items in this page. The root_offsets array
+ * must have MaxHeapTuplesPerPage entries in that case. If item k is part of a
+ * HOT-chain with root at item j, then we set root_offsets[k - 1] = j. We zero
+ * out all unused entries.
  *
  * The function must be called with at least share lock on the buffer, to
  * prevent concurrent prune operations.
  *
+ * This is not a cheap function since it must scan through all line pointers
+ * and tuples on the page in order to find the root line pointers. To minimize
+ * the cost, we break early if target_offnum is specified and root line pointer
+ * to target_offnum is found.
+ *
  * Note: The information collected here is valid only as long as the caller
  * holds a pin on the buffer. Once pin is released, a tuple might be pruned
  * and reused by a completely unrelated tuple.
+ *
+ * Note: This function must not be called inside a critical section because it
+ * internally calls HeapTupleHeaderGetUpdateXid which somewhere down the stack
+ * may try to allocate heap memory. Memory allocation is disallowed in a
+ * critical section.
  */
-void
-heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
+static void
+heap_get_root_tuples_internal(Page page, OffsetNumber target_offnum,
+		OffsetNumber *root_offsets)
 {
 	OffsetNumber offnum,
 				maxoff;
 
-	MemSet(root_offsets, 0, MaxHeapTuplesPerPage * sizeof(OffsetNumber));
+	if (OffsetNumberIsValid(target_offnum))
+		*root_offsets = InvalidOffsetNumber;
+	else
+		MemSet(root_offsets, 0, MaxHeapTuplesPerPage * sizeof(OffsetNumber));
 
 	maxoff = PageGetMaxOffsetNumber(page);
 	for (offnum = FirstOffsetNumber; offnum <= maxoff; offnum = OffsetNumberNext(offnum))
@@ -774,9 +807,28 @@ heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
 
 			/*
 			 * This is either a plain tuple or the root of a HOT-chain.
-			 * Remember it in the mapping.
+			 *
+			 * If the target_offnum is specified and if we found its mapping,
+			 * return.
 			 */
-			root_offsets[offnum - 1] = offnum;
+			if (OffsetNumberIsValid(target_offnum))
+			{
+				if (target_offnum == offnum)
+				{
+					root_offsets[0] = offnum;
+					return;
+				}
+				/*
+				 * No need to remember mapping for any other item. The
+				 * root_offsets array may not even has place for them. So be
+				 * careful about not writing past the array.
+				 */
+			}
+			else
+			{
+				/* Remember it in the mapping. */
+				root_offsets[offnum - 1] = offnum;
+			}
 
 			/* If it's not the start of a HOT-chain, we're done with it */
 			if (!HeapTupleHeaderIsHotUpdated(htup))
@@ -817,15 +869,65 @@ heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
 				!TransactionIdEquals(priorXmax, HeapTupleHeaderGetXmin(htup)))
 				break;
 
-			/* Remember the root line pointer for this item */
-			root_offsets[nextoffnum - 1] = offnum;
+			/*
+			 * If target_offnum is specified and we found its mapping, return.
+			 */
+			if (OffsetNumberIsValid(target_offnum))
+			{
+				if (nextoffnum == target_offnum)
+				{
+					root_offsets[0] = offnum;
+					return;
+				}
+				/*
+				 * No need to remember mapping for any other item. The
+				 * root_offsets array may not even has place for them. So be
+				 * careful about not writing past the array.
+				 */
+			}
+			else
+			{
+				/* Remember the root line pointer for this item. */
+				root_offsets[nextoffnum - 1] = offnum;
+			}
 
 			/* Advance to next chain member, if any */
 			if (!HeapTupleHeaderIsHotUpdated(htup))
+				break;
+
+			/*
+			 * If the tuple was HOT-updated and the update was later aborted,
+			 * someone could mark this tuple to be the last tuple in the chain
+			 * and store root offset in CTID, without clearing the HOT-updated
+			 * flag. So we must check if CTID is actually root offset and break
+			 * to avoid infinite recursion.
+			 */
+			if (HeapTupleHeaderHasRootOffset(htup))
 				break;
 
 			nextoffnum = ItemPointerGetOffsetNumber(&htup->t_ctid);
 			priorXmax = HeapTupleHeaderGetUpdateXid(htup);
 		}
 	}
+}
+
+/*
+ * Get root line pointer for the given tuple.
+ */
+OffsetNumber
+heap_get_root_tuple(Page page, OffsetNumber target_offnum)
+{
+	OffsetNumber offnum = InvalidOffsetNumber;
+	heap_get_root_tuples_internal(page, target_offnum, &offnum);
+	return offnum;
+}
+
+/*
+ * Get root line pointers for all tuples in the page
+ */
+void
+heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
+{
+	return heap_get_root_tuples_internal(page, InvalidOffsetNumber,
+			root_offsets);
 }

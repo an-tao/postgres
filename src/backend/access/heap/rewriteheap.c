@@ -421,14 +421,18 @@ rewrite_heap_tuple(RewriteState state,
 	 */
 	if (!((old_tuple->t_data->t_infomask & HEAP_XMAX_INVALID) ||
 		  HeapTupleHeaderIsOnlyLocked(old_tuple->t_data)) &&
-		!(ItemPointerEquals(&(old_tuple->t_self),
-							&(old_tuple->t_data->t_ctid))))
+		!(HeapTupleHeaderIsHeapLatest(old_tuple->t_data, &old_tuple->t_self)))
 	{
 		OldToNewMapping mapping;
 
 		memset(&hashkey, 0, sizeof(hashkey));
 		hashkey.xmin = HeapTupleHeaderGetUpdateXid(old_tuple->t_data);
-		hashkey.tid = old_tuple->t_data->t_ctid;
+
+		/* 
+		 * We've already checked that this is not the last tuple in the chain,
+		 * so fetch the next TID in the chain.
+		 */
+		HeapTupleHeaderGetNextTid(old_tuple->t_data, &hashkey.tid);
 
 		mapping = (OldToNewMapping)
 			hash_search(state->rs_old_new_tid_map, &hashkey,
@@ -441,7 +445,7 @@ rewrite_heap_tuple(RewriteState state,
 			 * set the ctid of this tuple to point to the new location, and
 			 * insert it right away.
 			 */
-			new_tuple->t_data->t_ctid = mapping->new_tid;
+			HeapTupleHeaderSetNextTid(new_tuple->t_data, &mapping->new_tid);
 
 			/* We don't need the mapping entry anymore */
 			hash_search(state->rs_old_new_tid_map, &hashkey,
@@ -527,7 +531,7 @@ rewrite_heap_tuple(RewriteState state,
 				new_tuple = unresolved->tuple;
 				free_new = true;
 				old_tid = unresolved->old_tid;
-				new_tuple->t_data->t_ctid = new_tid;
+				HeapTupleHeaderSetNextTid(new_tuple->t_data, &new_tid);
 
 				/*
 				 * We don't need the hash entry anymore, but don't free its
@@ -733,7 +737,12 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
 		newitemid = PageGetItemId(page, newoff);
 		onpage_tup = (HeapTupleHeader) PageGetItem(page, newitemid);
 
-		onpage_tup->t_ctid = tup->t_self;
+		/* 
+		 * Set t_ctid just to ensure that block number is copied correctly, but
+		 * then immediately mark the tuple as the latest.
+		 */
+		HeapTupleHeaderSetNextTid(onpage_tup, &tup->t_self);
+		HeapTupleHeaderSetHeapLatest(onpage_tup, newoff);
 	}
 
 	/* If heaptup is a private copy, release it. */

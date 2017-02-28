@@ -785,7 +785,8 @@ retry:
 			  DirtySnapshot.speculativeToken &&
 			  TransactionIdPrecedes(GetCurrentTransactionId(), xwait))))
 		{
-			ctid_wait = tup->t_data->t_ctid;
+			if (!HeapTupleHeaderIsHeapLatest(tup->t_data, &tup->t_self))
+				HeapTupleHeaderGetNextTid(tup->t_data, &ctid_wait);
 			reason_wait = indexInfo->ii_ExclusionOps ?
 				XLTW_RecheckExclusionConstr : XLTW_InsertIndex;
 			index_endscan(index_scan);

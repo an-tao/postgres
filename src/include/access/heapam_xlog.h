@@ -193,6 +193,8 @@ typedef struct xl_heap_update
 	uint8		flags;
 	TransactionId new_xmax;		/* xmax of the new tuple */
 	OffsetNumber new_offnum;	/* new tuple's offset */
+	OffsetNumber root_offnum;	/* offset of the root line pointer in case of
+								   HOT or WARM update */
 
 	/*
 	 * If XLOG_HEAP_CONTAINS_OLD_TUPLE or XLOG_HEAP_CONTAINS_OLD_KEY flags are
@@ -200,7 +202,7 @@ typedef struct xl_heap_update
 	 */
 } xl_heap_update;
 
-#define SizeOfHeapUpdate	(offsetof(xl_heap_update, new_offnum) + sizeof(OffsetNumber))
+#define SizeOfHeapUpdate	(offsetof(xl_heap_update, root_offnum) + sizeof(OffsetNumber))
 
 /*
  * This is what we need to know about vacuum page cleanup/redirect

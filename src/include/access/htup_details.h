@@ -260,13 +260,19 @@ struct HeapTupleHeaderData
  * information stored in t_infomask2:
  */
 #define HEAP_NATTS_MASK			0x07FF	/* 11 bits for number of attributes */
-/* bits 0x1800 are available */
+/* bits 0x0800 are available */
+#define HEAP_LATEST_TUPLE		0x1000	/*
+										 * This is the last tuple in chain and
+										 * ip_posid points to the root line
+										 * pointer
+										 */
 #define HEAP_KEYS_UPDATED		0x2000	/* tuple was updated and key cols
 										 * modified, or tuple deleted */
 #define HEAP_HOT_UPDATED		0x4000	/* tuple was HOT-updated */
 #define HEAP_ONLY_TUPLE			0x8000	/* this is heap-only tuple */
 
-#define HEAP2_XACT_MASK			0xE000	/* visibility-related bits */
+#define HEAP2_XACT_MASK			0xF000	/* visibility-related bits */
+
 
 /*
  * HEAP_TUPLE_HAS_MATCH is a temporary flag used during hash joins.  It is
@@ -504,6 +510,43 @@ do { \
   ((tup)->t_infomask2 & HEAP_ONLY_TUPLE) != 0 \
 )
 
+/*
+ * Mark this as the last tuple in the HOT chain. Before PG v10 we used to store
+ * the TID of the tuple itself in t_ctid field to mark the end of the chain.
+ * But starting PG v10, we use a special flag HEAP_LATEST_TUPLE to identify the
+ * last tuple and store the root line pointer of the HOT chain in t_ctid field
+ * instead.
+ *
+ * Note: beware of multiple evaluations of "tup" argument.
+ */
+#define HeapTupleHeaderSetHeapLatest(tup, offnum) \
+do { \
+	AssertMacro(OffsetNumberIsValid(offnum)); \
+	(tup)->t_infomask2 |= HEAP_LATEST_TUPLE; \
+	ItemPointerSetOffsetNumber(&(tup)->t_ctid, (offnum)); \
+} while (0)
+
+#define HeapTupleHeaderClearHeapLatest(tup) \
+( \
+	(tup)->t_infomask2 &= ~HEAP_LATEST_TUPLE \
+)
+
+/*
+ * Starting from PostgreSQL 10, the latest tuple in an update chain has
+ * HEAP_LATEST_TUPLE set; but tuples upgraded from earlier versions do not.
+ * For those, we determine whether a tuple is latest by testing that its t_ctid
+ * points to itself.
+ *
+ * Note: beware of multiple evaluations of "tup" and "tid" arguments.
+ */
+#define HeapTupleHeaderIsHeapLatest(tup, tid) \
+( \
+  (((tup)->t_infomask2 & HEAP_LATEST_TUPLE) != 0) || \
+  ((ItemPointerGetBlockNumber(&(tup)->t_ctid) == ItemPointerGetBlockNumber(tid)) && \
+   (ItemPointerGetOffsetNumber(&(tup)->t_ctid) == ItemPointerGetOffsetNumber(tid))) \
+)
+
+
 #define HeapTupleHeaderSetHeapOnly(tup) \
 ( \
   (tup)->t_infomask2 |= HEAP_ONLY_TUPLE \
@@ -540,6 +583,56 @@ do { \
 #define HeapTupleHeaderHasExternal(tup) \
 		(((tup)->t_infomask & HEAP_HASEXTERNAL) != 0)
 
+
+/*
+ * Set the t_ctid chain and also clear the HEAP_LATEST_TUPLE flag since we
+ * now have a new tuple in the chain and this is no longer the last tuple of
+ * the chain.
+ *
+ * Note: beware of multiple evaluations of "tup" argument.
+ */
+#define HeapTupleHeaderSetNextTid(tup, tid) \
+do { \
+		ItemPointerCopy((tid), &((tup)->t_ctid)); \
+		HeapTupleHeaderClearHeapLatest((tup)); \
+} while (0)
+
+/*
+ * Get TID of next tuple in the update chain. Caller must have checked that
+ * we are not already at the end of the chain because in that case t_ctid may
+ * actually store the root line pointer of the HOT chain.
+ *
+ * Note: beware of multiple evaluations of "tup" argument.
+ */
+#define HeapTupleHeaderGetNextTid(tup, next_ctid) \
+do { \
+	AssertMacro(!((tup)->t_infomask2 & HEAP_LATEST_TUPLE)); \
+	ItemPointerCopy(&(tup)->t_ctid, (next_ctid)); \
+} while (0)
+
+/*
+ * Get the root line pointer of the HOT chain. The caller should have confirmed
+ * that the root offset is cached before calling this macro.
+ *
+ * Note: beware of multiple evaluations of "tup" argument.
+ */
+#define HeapTupleHeaderGetRootOffset(tup) \
+( \
+	AssertMacro(((tup)->t_infomask2 & HEAP_LATEST_TUPLE) != 0), \
+	ItemPointerGetOffsetNumber(&(tup)->t_ctid) \
+)
+
+/*
+ * Return whether the tuple has a cached root offset.  We don't use
+ * HeapTupleHeaderIsHeapLatest because that one also considers the case of
+ * t_ctid pointing to itself, for tuples migrated from pre v10 clusters. Here
+ * we are only interested in the tuples which are marked with HEAP_LATEST_TUPLE
+ * flag.
+ */
+#define HeapTupleHeaderHasRootOffset(tup) \
+( \
+	((tup)->t_infomask2 & HEAP_LATEST_TUPLE) != 0 \
+)
 
 /*
  * BITMAPLEN(NATTS) -

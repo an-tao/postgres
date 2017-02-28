@@ -31,12 +31,20 @@
  * !!! EREPORT(ERROR) IS DISALLOWED HERE !!!  Must PANIC on failure!!!
  *
  * Note - caller must hold BUFFER_LOCK_EXCLUSIVE on the buffer.
+ *
+ * The caller can optionally tell us to set the root offset to the given value.
+ * Otherwise, the root offset is set to the offset of the new location once its
+ * known. The former is used while updating an existing tuple where the caller
+ * tells us about the root line pointer of the chain.  The latter is used
+ * during insertion of a new row, hence root line pointer is set to the offset
+ * where this tuple is inserted.
  */
-void
+OffsetNumber
 RelationPutHeapTuple(Relation relation,
 					 Buffer buffer,
 					 HeapTuple tuple,
-					 bool token)
+					 bool token,
+					 OffsetNumber root_offnum)
 {
 	Page		pageHeader;
 	OffsetNumber offnum;
@@ -60,17 +68,24 @@ RelationPutHeapTuple(Relation relation,
 	ItemPointerSet(&(tuple->t_self), BufferGetBlockNumber(buffer), offnum);
 
 	/*
-	 * Insert the correct position into CTID of the stored tuple, too (unless
-	 * this is a speculative insertion, in which case the token is held in
-	 * CTID field instead)
+	 * Set block number and the root offset into CTID of the stored tuple, too
+	 * (unless this is a speculative insertion, in which case the token is held
+	 * in CTID field instead).
 	 */
 	if (!token)
 	{
 		ItemId		itemId = PageGetItemId(pageHeader, offnum);
 		Item		item = PageGetItem(pageHeader, itemId);
 
+		/* Copy t_ctid to set the correct block number. */
 		((HeapTupleHeader) item)->t_ctid = tuple->t_self;
+
+		if (!OffsetNumberIsValid(root_offnum))
+			root_offnum = offnum;
+		HeapTupleHeaderSetHeapLatest((HeapTupleHeader) item, root_offnum);
 	}
+
+	return root_offnum;
 }
 
 /*

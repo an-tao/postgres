@@ -94,7 +94,8 @@ static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
 					TransactionId xid, CommandId cid, int options);
 static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 				Buffer newbuf, HeapTuple oldtup,
-				HeapTuple newtup, HeapTuple old_key_tup,
+				HeapTuple newtup, OffsetNumber root_offnum,
+				HeapTuple old_key_tup,
 				bool all_visible_cleared, bool new_all_visible_cleared);
 static Bitmapset *HeapDetermineModifiedColumns(Relation relation,
 							 Bitmapset *interesting_cols,
@@ -2264,13 +2265,13 @@ heap_get_latest_tid(Relation relation,
 		 */
 		if ((tp.t_data->t_infomask & HEAP_XMAX_INVALID) ||
 			HeapTupleHeaderIsOnlyLocked(tp.t_data) ||
-			ItemPointerEquals(&tp.t_self, &tp.t_data->t_ctid))
+			HeapTupleHeaderIsHeapLatest(tp.t_data, &ctid))
 		{
 			UnlockReleaseBuffer(buffer);
 			break;
 		}
 
-		ctid = tp.t_data->t_ctid;
+		HeapTupleHeaderGetNextTid(tp.t_data, &ctid);
 		priorXmax = HeapTupleHeaderGetUpdateXid(tp.t_data);
 		UnlockReleaseBuffer(buffer);
 	}							/* end of loop */
@@ -2401,6 +2402,7 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	Buffer		buffer;
 	Buffer		vmbuffer = InvalidBuffer;
 	bool		all_visible_cleared = false;
+	OffsetNumber	root_offnum;
 
 	/*
 	 * Fill in tuple header fields, assign an OID, and toast the tuple if
@@ -2439,8 +2441,13 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	/* NO EREPORT(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();
 
-	RelationPutHeapTuple(relation, buffer, heaptup,
-						 (options & HEAP_INSERT_SPECULATIVE) != 0);
+	root_offnum = RelationPutHeapTuple(relation, buffer, heaptup,
+						 (options & HEAP_INSERT_SPECULATIVE) != 0,
+						 InvalidOffsetNumber);
+
+	/* We must not overwrite the speculative insertion token. */
+	if ((options & HEAP_INSERT_SPECULATIVE) == 0)
+		HeapTupleHeaderSetHeapLatest(heaptup->t_data, root_offnum);
 
 	if (PageIsAllVisible(BufferGetPage(buffer)))
 	{
@@ -2668,6 +2675,7 @@ heap_multi_insert(Relation relation, HeapTuple *tuples, int ntuples,
 	Size		saveFreeSpace;
 	bool		need_tuple_data = RelationIsLogicallyLogged(relation);
 	bool		need_cids = RelationIsAccessibleInLogicalDecoding(relation);
+	OffsetNumber	root_offnum;
 
 	needwal = !(options & HEAP_INSERT_SKIP_WAL) && RelationNeedsWAL(relation);
 	saveFreeSpace = RelationGetTargetPageFreeSpace(relation,
@@ -2738,7 +2746,12 @@ heap_multi_insert(Relation relation, HeapTuple *tuples, int ntuples,
 		 * RelationGetBufferForTuple has ensured that the first tuple fits.
 		 * Put that on the page, and then as many other tuples as fit.
 		 */
-		RelationPutHeapTuple(relation, buffer, heaptuples[ndone], false);
+		root_offnum = RelationPutHeapTuple(relation, buffer, heaptuples[ndone], false,
+				InvalidOffsetNumber);
+
+		/* Mark this tuple as the latest and also set root offset. */
+		HeapTupleHeaderSetHeapLatest(heaptuples[ndone]->t_data, root_offnum);
+
 		for (nthispage = 1; ndone + nthispage < ntuples; nthispage++)
 		{
 			HeapTuple	heaptup = heaptuples[ndone + nthispage];
@@ -2746,7 +2759,10 @@ heap_multi_insert(Relation relation, HeapTuple *tuples, int ntuples,
 			if (PageGetHeapFreeSpace(page) < MAXALIGN(heaptup->t_len) + saveFreeSpace)
 				break;
 
-			RelationPutHeapTuple(relation, buffer, heaptup, false);
+			root_offnum = RelationPutHeapTuple(relation, buffer, heaptup, false,
+					InvalidOffsetNumber);
+			/* Mark each tuple as the latest and also set root offset. */
+			HeapTupleHeaderSetHeapLatest(heaptup->t_data, root_offnum);
 
 			/*
 			 * We don't use heap_multi_insert for catalog tuples yet, but
@@ -3018,6 +3034,7 @@ heap_delete(Relation relation, ItemPointer tid,
 	HeapTupleData tp;
 	Page		page;
 	BlockNumber block;
+	OffsetNumber	offnum;
 	Buffer		buffer;
 	Buffer		vmbuffer = InvalidBuffer;
 	TransactionId new_xmax;
@@ -3028,6 +3045,7 @@ heap_delete(Relation relation, ItemPointer tid,
 	bool		all_visible_cleared = false;
 	HeapTuple	old_key_tuple = NULL;	/* replica identity of the tuple */
 	bool		old_key_copied = false;
+	OffsetNumber	root_offnum;
 
 	Assert(ItemPointerIsValid(tid));
 
@@ -3069,7 +3087,8 @@ heap_delete(Relation relation, ItemPointer tid,
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 	}
 
-	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(tid));
+	offnum = ItemPointerGetOffsetNumber(tid);
+	lp = PageGetItemId(page, offnum);
 	Assert(ItemIdIsNormal(lp));
 
 	tp.t_tableOid = RelationGetRelid(relation);
@@ -3199,7 +3218,17 @@ l1:
 			   result == HeapTupleUpdated ||
 			   result == HeapTupleBeingUpdated);
 		Assert(!(tp.t_data->t_infomask & HEAP_XMAX_INVALID));
-		hufd->ctid = tp.t_data->t_ctid;
+
+		/*
+		 * If we're at the end of the chain, then just return the same TID back
+		 * to the caller. The caller uses that as a hint to know if we have hit
+		 * the end of the chain.
+		 */
+		if (!HeapTupleHeaderIsHeapLatest(tp.t_data, &tp.t_self))
+			HeapTupleHeaderGetNextTid(tp.t_data, &hufd->ctid);
+		else
+			ItemPointerCopy(&tp.t_self, &hufd->ctid);
+
 		hufd->xmax = HeapTupleHeaderGetUpdateXid(tp.t_data);
 		if (result == HeapTupleSelfUpdated)
 			hufd->cmax = HeapTupleHeaderGetCmax(tp.t_data);
@@ -3248,6 +3277,22 @@ l1:
 							  xid, LockTupleExclusive, true,
 							  &new_xmax, &new_infomask, &new_infomask2);
 
+	/*
+	 * heap_get_root_tuple_one() may call palloc, which is disallowed once we
+	 * enter the critical section. So check if the root offset is cached in the
+	 * tuple and if not, fetch that information hard way before entering the
+	 * critical section.
+	 *
+	 * Most often and unless we are dealing with a pg-upgraded cluster, the
+	 * root offset information should be cached. So there should not be too
+	 * much overhead of fetching this information. Also, once a tuple is
+	 * updated, the information will be copied to the new version. So it's not
+	 * as if we're going to pay this price forever.
+	 */
+	if (!HeapTupleHeaderHasRootOffset(tp.t_data))
+		root_offnum = heap_get_root_tuple(page,
+				ItemPointerGetOffsetNumber(&tp.t_self));
+
 	START_CRIT_SECTION();
 
 	/*
@@ -3275,8 +3320,10 @@ l1:
 	HeapTupleHeaderClearHotUpdated(tp.t_data);
 	HeapTupleHeaderSetXmax(tp.t_data, new_xmax);
 	HeapTupleHeaderSetCmax(tp.t_data, cid, iscombo);
-	/* Make sure there is no forward chain link in t_ctid */
-	tp.t_data->t_ctid = tp.t_self;
+
+	/* Mark this tuple as the latest tuple in the update chain. */
+	if (!HeapTupleHeaderHasRootOffset(tp.t_data))
+		HeapTupleHeaderSetHeapLatest(tp.t_data, root_offnum);
 
 	MarkBufferDirty(buffer);
 
@@ -3477,6 +3524,8 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	bool		old_key_copied = false;
 	Page		page;
 	BlockNumber block;
+	OffsetNumber	offnum;
+	OffsetNumber	root_offnum;
 	MultiXactStatus mxact_status;
 	Buffer		buffer,
 				newbuf,
@@ -3536,6 +3585,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 
 
 	block = ItemPointerGetBlockNumber(otid);
+	offnum = ItemPointerGetOffsetNumber(otid);
 	buffer = ReadBuffer(relation, block);
 	page = BufferGetPage(buffer);
 
@@ -3839,7 +3889,12 @@ l2:
 			   result == HeapTupleUpdated ||
 			   result == HeapTupleBeingUpdated);
 		Assert(!(oldtup.t_data->t_infomask & HEAP_XMAX_INVALID));
-		hufd->ctid = oldtup.t_data->t_ctid;
+
+		if (!HeapTupleHeaderIsHeapLatest(oldtup.t_data, &oldtup.t_self))
+			HeapTupleHeaderGetNextTid(oldtup.t_data, &hufd->ctid);
+		else
+			ItemPointerCopy(&oldtup.t_self, &hufd->ctid);
+
 		hufd->xmax = HeapTupleHeaderGetUpdateXid(oldtup.t_data);
 		if (result == HeapTupleSelfUpdated)
 			hufd->cmax = HeapTupleHeaderGetCmax(oldtup.t_data);
@@ -3979,6 +4034,7 @@ l2:
 		uint16		infomask_lock_old_tuple,
 					infomask2_lock_old_tuple;
 		bool		cleared_all_frozen = false;
+		OffsetNumber	root_offnum;
 
 		/*
 		 * To prevent concurrent sessions from updating the tuple, we have to
@@ -4006,6 +4062,14 @@ l2:
 
 		Assert(HEAP_XMAX_IS_LOCKED_ONLY(infomask_lock_old_tuple));
 
+		/*
+		 * Fetch root offset before entering the critical section. We do this
+		 * only if the information is not already available.
+		 */
+		if (!HeapTupleHeaderHasRootOffset(oldtup.t_data))
+			root_offnum = heap_get_root_tuple(page,
+					ItemPointerGetOffsetNumber(&oldtup.t_self));
+
 		START_CRIT_SECTION();
 
 		/* Clear obsolete visibility flags ... */
@@ -4020,7 +4084,8 @@ l2:
 		HeapTupleHeaderSetCmax(oldtup.t_data, cid, iscombo);
 
 		/* temporarily make it look not-updated, but locked */
-		oldtup.t_data->t_ctid = oldtup.t_self;
+		if (!HeapTupleHeaderHasRootOffset(oldtup.t_data))
+			HeapTupleHeaderSetHeapLatest(oldtup.t_data, root_offnum);
 
 		/*
 		 * Clear all-frozen bit on visibility map if needed. We could
@@ -4179,6 +4244,10 @@ l2:
 										   bms_overlap(modified_attrs, id_attrs),
 										   &old_key_copied);
 
+	if (!HeapTupleHeaderHasRootOffset(oldtup.t_data))
+		root_offnum = heap_get_root_tuple(page,
+				ItemPointerGetOffsetNumber(&(oldtup.t_self)));
+
 	/* NO EREPORT(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();
 
@@ -4204,6 +4273,17 @@ l2:
 		HeapTupleSetHeapOnly(heaptup);
 		/* Mark the caller's copy too, in case different from heaptup */
 		HeapTupleSetHeapOnly(newtup);
+		/*
+		 * For HOT (or WARM) updated tuples, we store the offset of the root
+		 * line pointer of this chain in the ip_posid field of the new tuple.
+		 * Usually this information will be available in the corresponding
+		 * field of the old tuple. But for aborted updates or pg_upgraded
+		 * databases, we might be seeing the old-style CTID chains and hence
+		 * the information must be obtained by hard way (we should have done
+		 * that before entering the critical section above).
+		 */
+		if (HeapTupleHeaderHasRootOffset(oldtup.t_data))
+			root_offnum = HeapTupleHeaderGetRootOffset(oldtup.t_data);
 	}
 	else
 	{
@@ -4211,10 +4291,22 @@ l2:
 		HeapTupleClearHotUpdated(&oldtup);
 		HeapTupleClearHeapOnly(heaptup);
 		HeapTupleClearHeapOnly(newtup);
+		root_offnum = InvalidOffsetNumber;
 	}
 
-	RelationPutHeapTuple(relation, newbuf, heaptup, false);		/* insert new tuple */
-
+	/* insert new tuple */
+	root_offnum = RelationPutHeapTuple(relation, newbuf, heaptup, false,
+									   root_offnum);
+	/*
+	 * Also mark both copies as latest and set the root offset information. If
+	 * we're doing a HOT/WARM update, then we just copy the information from
+	 * old tuple, if available or computed above. For regular updates,
+	 * RelationPutHeapTuple must have returned us the actual offset number
+	 * where the new version was inserted and we store the same value since the
+	 * update resulted in a new HOT-chain.
+	 */
+	HeapTupleHeaderSetHeapLatest(heaptup->t_data, root_offnum);
+	HeapTupleHeaderSetHeapLatest(newtup->t_data, root_offnum);
 
 	/* Clear obsolete visibility flags, possibly set by ourselves above... */
 	oldtup.t_data->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
@@ -4227,7 +4319,7 @@ l2:
 	HeapTupleHeaderSetCmax(oldtup.t_data, cid, iscombo);
 
 	/* record address of new tuple in t_ctid of old one */
-	oldtup.t_data->t_ctid = heaptup->t_self;
+	HeapTupleHeaderSetNextTid(oldtup.t_data, &(heaptup->t_self));
 
 	/* clear PD_ALL_VISIBLE flags, reset all visibilitymap bits */
 	if (PageIsAllVisible(BufferGetPage(buffer)))
@@ -4266,6 +4358,7 @@ l2:
 
 		recptr = log_heap_update(relation, buffer,
 								 newbuf, &oldtup, heaptup,
+								 root_offnum,
 								 old_key_tuple,
 								 all_visible_cleared,
 								 all_visible_cleared_new);
@@ -4546,7 +4639,8 @@ heap_lock_tuple(Relation relation, HeapTuple tuple,
 	ItemId		lp;
 	Page		page;
 	Buffer		vmbuffer = InvalidBuffer;
-	BlockNumber block;
+	BlockNumber	block;
+	OffsetNumber	offnum;
 	TransactionId xid,
 				xmax;
 	uint16		old_infomask,
@@ -4555,9 +4649,11 @@ heap_lock_tuple(Relation relation, HeapTuple tuple,
 	bool		first_time = true;
 	bool		have_tuple_lock = false;
 	bool		cleared_all_frozen = false;
+	OffsetNumber	root_offnum;
 
 	*buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(tid));
 	block = ItemPointerGetBlockNumber(tid);
+	offnum = ItemPointerGetOffsetNumber(tid);
 
 	/*
 	 * Before locking the buffer, pin the visibility map page if it appears to
@@ -4577,6 +4673,7 @@ heap_lock_tuple(Relation relation, HeapTuple tuple,
 	tuple->t_data = (HeapTupleHeader) PageGetItem(page, lp);
 	tuple->t_len = ItemIdGetLength(lp);
 	tuple->t_tableOid = RelationGetRelid(relation);
+	tuple->t_self = *tid;
 
 l3:
 	result = HeapTupleSatisfiesUpdate(tuple, cid, *buffer);
@@ -4604,7 +4701,11 @@ l3:
 		xwait = HeapTupleHeaderGetRawXmax(tuple->t_data);
 		infomask = tuple->t_data->t_infomask;
 		infomask2 = tuple->t_data->t_infomask2;
-		ItemPointerCopy(&tuple->t_data->t_ctid, &t_ctid);
+
+		if (!HeapTupleHeaderIsHeapLatest(tuple->t_data, tid))
+			HeapTupleHeaderGetNextTid(tuple->t_data, &t_ctid);
+		else
+			ItemPointerCopy(tid, &t_ctid);
 
 		LockBuffer(*buffer, BUFFER_LOCK_UNLOCK);
 
@@ -5042,7 +5143,12 @@ failed:
 		Assert(result == HeapTupleSelfUpdated || result == HeapTupleUpdated ||
 			   result == HeapTupleWouldBlock);
 		Assert(!(tuple->t_data->t_infomask & HEAP_XMAX_INVALID));
-		hufd->ctid = tuple->t_data->t_ctid;
+
+		if (!HeapTupleHeaderIsHeapLatest(tuple->t_data, tid))
+			HeapTupleHeaderGetNextTid(tuple->t_data, &hufd->ctid);
+		else
+			ItemPointerCopy(tid, &hufd->ctid);
+
 		hufd->xmax = HeapTupleHeaderGetUpdateXid(tuple->t_data);
 		if (result == HeapTupleSelfUpdated)
 			hufd->cmax = HeapTupleHeaderGetCmax(tuple->t_data);
@@ -5090,6 +5196,10 @@ failed:
 							  GetCurrentTransactionId(), mode, false,
 							  &xid, &new_infomask, &new_infomask2);
 
+	if (!HeapTupleHeaderHasRootOffset(tuple->t_data))
+		root_offnum = heap_get_root_tuple(page,
+				ItemPointerGetOffsetNumber(&tuple->t_self));
+
 	START_CRIT_SECTION();
 
 	/*
@@ -5118,7 +5228,10 @@ failed:
 	 * the tuple as well.
 	 */
 	if (HEAP_XMAX_IS_LOCKED_ONLY(new_infomask))
-		tuple->t_data->t_ctid = *tid;
+	{
+		if (!HeapTupleHeaderHasRootOffset(tuple->t_data))
+			HeapTupleHeaderSetHeapLatest(tuple->t_data, root_offnum);
+	}
 
 	/* Clear only the all-frozen bit on visibility map if needed */
 	if (PageIsAllVisible(page) &&
@@ -5632,6 +5745,7 @@ heap_lock_updated_tuple_rec(Relation rel, ItemPointer tid, TransactionId xid,
 	bool		cleared_all_frozen = false;
 	Buffer		vmbuffer = InvalidBuffer;
 	BlockNumber block;
+	OffsetNumber offnum;
 
 	ItemPointerCopy(tid, &tupid);
 
@@ -5640,6 +5754,8 @@ heap_lock_updated_tuple_rec(Relation rel, ItemPointer tid, TransactionId xid,
 		new_infomask = 0;
 		new_xmax = InvalidTransactionId;
 		block = ItemPointerGetBlockNumber(&tupid);
+		offnum = ItemPointerGetOffsetNumber(&tupid);
+
 		ItemPointerCopy(&tupid, &(mytup.t_self));
 
 		if (!heap_fetch(rel, SnapshotAny, &mytup, &buf, false, NULL))
@@ -5869,7 +5985,7 @@ l4:
 
 		/* if we find the end of update chain, we're done. */
 		if (mytup.t_data->t_infomask & HEAP_XMAX_INVALID ||
-			ItemPointerEquals(&mytup.t_self, &mytup.t_data->t_ctid) ||
+			HeapTupleHeaderIsHeapLatest(mytup.t_data, &mytup.t_self) ||
 			HeapTupleHeaderIsOnlyLocked(mytup.t_data))
 		{
 			result = HeapTupleMayBeUpdated;
@@ -5878,7 +5994,7 @@ l4:
 
 		/* tail recursion */
 		priorXmax = HeapTupleHeaderGetUpdateXid(mytup.t_data);
-		ItemPointerCopy(&(mytup.t_data->t_ctid), &tupid);
+		HeapTupleHeaderGetNextTid(mytup.t_data, &tupid);
 		UnlockReleaseBuffer(buf);
 		if (vmbuffer != InvalidBuffer)
 			ReleaseBuffer(vmbuffer);
@@ -5995,7 +6111,7 @@ heap_finish_speculative(Relation relation, HeapTuple tuple)
 	 * Replace the speculative insertion token with a real t_ctid, pointing to
 	 * itself like it does on regular tuples.
 	 */
-	htup->t_ctid = tuple->t_self;
+	HeapTupleHeaderSetHeapLatest(htup, offnum);
 
 	/* XLOG stuff */
 	if (RelationNeedsWAL(relation))
@@ -6121,8 +6237,7 @@ heap_abort_speculative(Relation relation, HeapTuple tuple)
 	HeapTupleHeaderSetXmin(tp.t_data, InvalidTransactionId);
 
 	/* Clear the speculative insertion token too */
-	tp.t_data->t_ctid = tp.t_self;
-
+	HeapTupleHeaderSetHeapLatest(tp.t_data, ItemPointerGetOffsetNumber(tid));
 	MarkBufferDirty(buffer);
 
 	/*
@@ -7470,6 +7585,7 @@ log_heap_visible(RelFileNode rnode, Buffer heap_buffer, Buffer vm_buffer,
 static XLogRecPtr
 log_heap_update(Relation reln, Buffer oldbuf,
 				Buffer newbuf, HeapTuple oldtup, HeapTuple newtup,
+				OffsetNumber root_offnum,
 				HeapTuple old_key_tuple,
 				bool all_visible_cleared, bool new_all_visible_cleared)
 {
@@ -7589,6 +7705,9 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	/* Prepare WAL data for the new page */
 	xlrec.new_offnum = ItemPointerGetOffsetNumber(&newtup->t_self);
 	xlrec.new_xmax = HeapTupleHeaderGetRawXmax(newtup->t_data);
+
+	Assert(OffsetNumberIsValid(root_offnum));
+	xlrec.root_offnum = root_offnum;
 
 	bufflags = REGBUF_STANDARD;
 	if (init)
@@ -8244,7 +8363,13 @@ heap_xlog_delete(XLogReaderState *record)
 			PageClearAllVisible(page);
 
 		/* Make sure there is no forward chain link in t_ctid */
-		htup->t_ctid = target_tid;
+		if (!HeapTupleHeaderHasRootOffset(htup))
+		{
+			OffsetNumber	root_offnum;
+			root_offnum = heap_get_root_tuple(page, xlrec->offnum); 
+			HeapTupleHeaderSetHeapLatest(htup, root_offnum);
+		}
+
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
 	}
@@ -8334,7 +8459,8 @@ heap_xlog_insert(XLogReaderState *record)
 		htup->t_hoff = xlhdr.t_hoff;
 		HeapTupleHeaderSetXmin(htup, XLogRecGetXid(record));
 		HeapTupleHeaderSetCmin(htup, FirstCommandId);
-		htup->t_ctid = target_tid;
+
+		HeapTupleHeaderSetHeapLatest(htup, xlrec->offnum);
 
 		if (PageAddItem(page, (Item) htup, newlen, xlrec->offnum,
 						true, true) == InvalidOffsetNumber)
@@ -8469,8 +8595,8 @@ heap_xlog_multi_insert(XLogReaderState *record)
 			htup->t_hoff = xlhdr->t_hoff;
 			HeapTupleHeaderSetXmin(htup, XLogRecGetXid(record));
 			HeapTupleHeaderSetCmin(htup, FirstCommandId);
-			ItemPointerSetBlockNumber(&htup->t_ctid, blkno);
-			ItemPointerSetOffsetNumber(&htup->t_ctid, offnum);
+
+			HeapTupleHeaderSetHeapLatest(htup, offnum);
 
 			offnum = PageAddItem(page, (Item) htup, newlen, offnum, true, true);
 			if (offnum == InvalidOffsetNumber)
@@ -8606,7 +8732,7 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		HeapTupleHeaderSetXmax(htup, xlrec->old_xmax);
 		HeapTupleHeaderSetCmax(htup, FirstCommandId, false);
 		/* Set forward chain link in t_ctid */
-		htup->t_ctid = newtid;
+		HeapTupleHeaderSetNextTid(htup, &newtid);
 
 		/* Mark the page as a candidate for pruning */
 		PageSetPrunable(page, XLogRecGetXid(record));
@@ -8739,12 +8865,16 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		HeapTupleHeaderSetXmin(htup, XLogRecGetXid(record));
 		HeapTupleHeaderSetCmin(htup, FirstCommandId);
 		HeapTupleHeaderSetXmax(htup, xlrec->new_xmax);
-		/* Make sure there is no forward chain link in t_ctid */
-		htup->t_ctid = newtid;
 
 		offnum = PageAddItem(page, (Item) htup, newlen, offnum, true, true);
 		if (offnum == InvalidOffsetNumber)
 			elog(PANIC, "failed to add tuple");
+
+		/*
+		 * Make sure the tuple is marked as the latest and root offset
+		 * information is restored.
+		 */
+		HeapTupleHeaderSetHeapLatest(htup, xlrec->root_offnum);
 
 		if (xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(page);
@@ -8807,6 +8937,9 @@ heap_xlog_confirm(XLogReaderState *record)
 		 * Confirm tuple as actually inserted
 		 */
 		ItemPointerSet(&htup->t_ctid, BufferGetBlockNumber(buffer), offnum);
+
+		/* For newly inserted tuple, set root offset to itself. */
+		HeapTupleHeaderSetHeapLatest(htup, offnum);
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
@@ -8871,11 +9004,17 @@ heap_xlog_lock(XLogReaderState *record)
 		 */
 		if (HEAP_XMAX_IS_LOCKED_ONLY(htup->t_infomask))
 		{
+			ItemPointerData	target_tid;
+
+			ItemPointerSet(&target_tid, BufferGetBlockNumber(buffer), offnum);
 			HeapTupleHeaderClearHotUpdated(htup);
 			/* Make sure there is no forward chain link in t_ctid */
-			ItemPointerSet(&htup->t_ctid,
-						   BufferGetBlockNumber(buffer),
-						   offnum);
+			if (!HeapTupleHeaderHasRootOffset(htup))
+			{
+				OffsetNumber	root_offnum;
+				root_offnum = heap_get_root_tuple(page, offnum);
+				HeapTupleHeaderSetHeapLatest(htup, root_offnum);
+			}
 		}
 		HeapTupleHeaderSetXmax(htup, xlrec->locking_xid);
 		HeapTupleHeaderSetCmax(htup, FirstCommandId, false);
