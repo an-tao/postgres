@@ -14,8 +14,8 @@
 #ifndef STAT_EXT_INTERNAL_H
 #define STAT_EXT_INTERNAL_H
 
-#include "commands/vacuum.h"
 #include "utils/sortsupport.h"
+#include "statistics/stats.h"
 
 
 typedef struct
@@ -45,6 +45,12 @@ typedef struct SortItem
 	Datum	   *values;
 	bool	   *isnull;
 } SortItem;
+
+extern MVNDistinct statext_ndistinct_build(double totalrows,
+						int numrows, HeapTuple *rows,
+						int2vector *attrs, VacAttrStats **stats);
+extern bytea *statext_ndistinct_serialize(MVNDistinct ndistinct);
+extern MVNDistinct statext_ndistinct_deserialize(bytea *data);
 
 extern MultiSortSupport multi_sort_init(int ndims);
 extern void multi_sort_add_dimension(MultiSortSupport mss, int sortdim,
