@@ -15,7 +15,7 @@ ALTER TABLE ab1 DROP COLUMN a;
  b      | integer |           |          | 
  c      | integer |           |          | 
 Statistics:
-    "public.ab1_a_b_c_stats" (ndistinct) ON (b, c)
+    "public.ab1_a_b_c_stats" WITH (ndistinct) ON (b, c)
 
 DROP TABLE ab1;
 -- data type passed by value
