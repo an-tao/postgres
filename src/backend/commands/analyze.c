@@ -41,7 +41,7 @@
 #include "parser/parse_relation.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
-#include "statistics/stats_ext_internal.h"
+#include "statistics/stat_ext_internal.h"
 #include "statistics/stats.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
