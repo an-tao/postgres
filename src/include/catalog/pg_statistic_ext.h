@@ -43,7 +43,8 @@ CATALOG(pg_statistic_ext,3381)
 	int2vector	stakeys;		/* array of column keys */
 
 #ifdef CATALOG_VARLEN
-	char		staenabled[1] BKI_FORCE_NOT_NULL;	/* statistics requested to build */
+	char		staenabled[1] BKI_FORCE_NOT_NULL;	/* statistic types
+													 * requested to build */
 	pg_ndistinct standistinct;	/* ndistinct coefficients (serialized) */
 #endif
 
