@@ -110,6 +110,7 @@
 #include "catalog/pg_operator.h"
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_statistic.h"
+#include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "mb/pg_wchar.h"
@@ -3741,22 +3742,22 @@ find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
 	/* look for a matching ndistinct statistics */
 	foreach(lc, rel->statlist)
 	{
+		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
 		int			i,
 					k;
 		bool		matches;
-		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
 		int			j;
 		MVNDistinct stat;
 
-		/* skip statistics without ndistinct coefficient built */
-		if (!info->ndist_built)
+		/* skip statistics of other kinds */
+		if (info->kind != STATS_EXT_NDISTINCT)
 			continue;
 
 		/*
 		 * Only ndistinct stats covering all Vars are acceptable, which can't
 		 * happen if the statistics has fewer attributes than we have Vars.
 		 */
-		if (nattnums > info->stakeys->dim1)
+		if (nattnums > info->keys->dim1)
 			continue;
 
 		/* check that all Vars are covered by the statistic */
@@ -3767,9 +3768,9 @@ find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
 		{
 			bool		attr_found = false;
 
-			for (i = 0; i < info->stakeys->dim1; i++)
+			for (i = 0; i < info->keys->dim1; i++)
 			{
-				if (info->stakeys->values[i] == k)
+				if (info->keys->values[i] == k)
 				{
 					attr_found = true;
 					break;
@@ -3809,7 +3810,7 @@ find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
 
 				for (i = 0; i < item->nattrs; i++)
 				{
-					if (info->stakeys->values[item->attrs[i]] == k)
+					if (info->keys->values[item->attrs[i]] == k)
 					{
 						attr_found = true;
 						break;

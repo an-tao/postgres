@@ -1263,46 +1263,50 @@ get_relation_constraints(PlannerInfo *root,
  *
  * Returns a List (possibly empty) of StatisticExtInfo objects describing
  * the statistics.  Note that this doesn't load the actual statistics data,
- * just its identifying metadata.  Only stats actually built are considered.
+ * just the identifying metadata.  Only stats actually built are considered.
  */
 static List *
 get_relation_statistics(RelOptInfo *rel, Relation relation)
 {
 	List	   *statoidlist;
-	ListCell   *l;
 	List	   *stainfos = NIL;
+	ListCell   *l;
 
 	statoidlist = RelationGetStatExtList(relation);
 
 	foreach(l, statoidlist)
 	{
+		Oid			statOid = lfirst_oid(l);
 		ArrayType  *arr;
+		int2vector *keys;
 		Datum		adatum;
 		bool		isnull;
-		Oid			statOid = lfirst_oid(l);
+		HeapTuple	htup;
 
-		HeapTuple	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
+		htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
+		if (!htup)
+			elog(ERROR, "cache lookup failed for statistics %u", statOid);
 
-		/* unavailable stats are not interesting for the planner */
+		/*
+		 * First, build the array of columns covered.  This is ultimately
+		 * wasted if no stats are actually built, but it doesn't seem worth
+		 * troubling over that case.
+		 */
+		adatum = SysCacheGetAttr(STATEXTOID, htup,
+								 Anum_pg_statistic_ext_stakeys, &isnull);
+		Assert(!isnull);
+		arr = DatumGetArrayTypeP(adatum);
+		keys = buildint2vector((int16 *) ARR_DATA_PTR(arr), ARR_DIMS(arr)[0]);
+
+		/* add one StatisticExtInfo for each kind built */
 		if (statext_is_kind_built(htup, STATS_EXT_NDISTINCT))
 		{
 			StatisticExtInfo *info = makeNode(StatisticExtInfo);
 
 			info->statOid = statOid;
 			info->rel = rel;
-
-			/* built/available statistics */
-			info->ndist_built = true;
-
-			/* decode the stakeys array */
-			adatum = SysCacheGetAttr(STATEXTOID, htup,
-									 Anum_pg_statistic_ext_stakeys, &isnull);
-			Assert(!isnull);
-
-			arr = DatumGetArrayTypeP(adatum);
-
-			info->stakeys = buildint2vector((int16 *) ARR_DATA_PTR(arr),
-											ARR_DIMS(arr)[0]);
+			info->kind = STATS_EXT_NDISTINCT;
+			info->keys = keys;
 
 			stainfos = lcons(info, stainfos);
 		}

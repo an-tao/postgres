@@ -2273,9 +2273,9 @@ _outStatisticExtInfo(StringInfo str, const StatisticExtInfo *node)
 
 	/* NB: this isn't a complete set of fields */
 	WRITE_OID_FIELD(statOid);
-
-	/* built/available statistics */
-	WRITE_BOOL_FIELD(ndist_built);
+	/* don't write rel, leads to infinite recursion in plan tree dump */
+	WRITE_CHAR_FIELD(kind);
+	/* XXX missing a way to print keys */
 }
 
 static void

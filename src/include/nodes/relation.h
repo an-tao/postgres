@@ -680,15 +680,8 @@ typedef struct StatisticExtInfo
 
 	Oid			statOid;		/* OID of the statistics row */
 	RelOptInfo *rel;			/* back-link to index's table */
-
-	/* enabled statistics */
-	bool		ndist_enabled;	/* ndistinct coefficient enabled */
-
-	/* built/available statistics */
-	bool		ndist_built;	/* ndistinct coefficient built */
-
-	/* columns in the statistics (attnums) */
-	int2vector *stakeys;		/* attnums of the columns covered */
+	char		kind;			/* statistic kind of this entry */
+	int2vector *keys;			/* attnums of the columns covered */
 } StatisticExtInfo;
 
 /*
