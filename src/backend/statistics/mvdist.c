@@ -101,6 +101,10 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	return result;
 }
 
+/*
+ * statext_ndistinct_load
+ *		Load the ndistinct value for the indicated pg_statistic_ext tuple
+ */
 MVNDistinct
 statext_ndistinct_load(Oid mvoid)
 {
@@ -111,7 +115,6 @@ statext_ndistinct_load(Oid mvoid)
 	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
 	if (!htup)
 		elog(ERROR, "cache lookup failed for statistics %u", mvoid);
-	Assert(stats_are_enabled(htup, STATS_EXT_NDISTINCT));
 
 	ndist = SysCacheGetAttr(STATEXTOID, htup,
 							Anum_pg_statistic_ext_standistinct, &isnull);
@@ -126,7 +129,8 @@ statext_ndistinct_load(Oid mvoid)
 }
 
 /*
- * serialize list of ndistinct items into a bytea
+ * statext_ndistinct_serialize
+ *		serialize ndistinct to the on-disk bytea format
  */
 bytea *
 statext_ndistinct_serialize(MVNDistinct ndistinct)
@@ -134,10 +138,11 @@ statext_ndistinct_serialize(MVNDistinct ndistinct)
 	int			i;
 	bytea	   *output;
 	char	   *tmp;
+	Size		len;
 
 	/* we need to store nitems */
-	Size		len = VARHDRSZ + offsetof(MVNDistinctData, items) +
-	ndistinct->nitems * offsetof(MVNDistinctItem, attrs);
+	len = VARHDRSZ + offsetof(MVNDistinctData, items) +
+		ndistinct->nitems * offsetof(MVNDistinctItem, attrs);
 
 	/* and also include space for the actual attribute numbers */
 	for (i = 0; i < ndistinct->nitems; i++)
@@ -176,7 +181,8 @@ statext_ndistinct_serialize(MVNDistinct ndistinct)
 }
 
 /*
- * Reads serialized ndistinct into MVNDistinct structure.
+ * statext_ndistinct_deserialize
+ *		Read an on-disk bytea format MVNDistinct to in-memory format
  */
 MVNDistinct
 statext_ndistinct_deserialize(bytea *data)
@@ -258,17 +264,11 @@ statext_ndistinct_deserialize(bytea *data)
  * pg_ndistinct_in		- input routine for type pg_ndistinct.
  *
  * pg_ndistinct is real enough to be a table column, but it has no operations
- * of its own, and disallows input too
- *
- * XXX This is inspired by what pg_node_tree does.
+ * of its own, and disallows input too.
  */
 Datum
 pg_ndistinct_in(PG_FUNCTION_ARGS)
 {
-	/*
-	 * pg_node_list stores the data in binary form and parsing text input is
-	 * not needed, so disallow this.
-	 */
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("cannot accept a value of type %s", "pg_ndistinct")));
@@ -279,20 +279,16 @@ pg_ndistinct_in(PG_FUNCTION_ARGS)
 /*
  * pg_ndistinct		- output routine for type pg_ndistinct.
  *
- * histograms are serialized into a bytea value, so we simply call byteaout()
- * to serialize the value into text. But it'd be nice to serialize that into
- * a meaningful representation (e.g. for inspection by people).
+ * Produces a human-readable representation of the value.
  */
 Datum
 pg_ndistinct_out(PG_FUNCTION_ARGS)
 {
+	bytea	   *data = PG_GETARG_BYTEA_PP(0);
+	MVNDistinct ndist = statext_ndistinct_deserialize(data);
 	int			i,
 				j;
 	StringInfoData str;
-
-	bytea	   *data = PG_GETARG_BYTEA_PP(0);
-
-	MVNDistinct ndist = statext_ndistinct_deserialize(data);
 
 	initStringInfo(&str);
 	appendStringInfoChar(&str, '[');
@@ -340,7 +336,7 @@ pg_ndistinct_recv(PG_FUNCTION_ARGS)
 /*
  * pg_ndistinct_send		- binary output routine for type pg_ndistinct.
  *
- * XXX Histograms are serialized into a bytea value, so let's just send that.
+ * n-distinct is serialized into a bytea value, so let's send that.
  */
 Datum
 pg_ndistinct_send(PG_FUNCTION_ARGS)
