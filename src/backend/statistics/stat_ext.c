@@ -30,7 +30,16 @@
 #include "utils/syscache.h"
 
 
-static List *list_ext_stats(Oid relid);
+typedef struct StatExtEntry
+{
+	Oid			relid;		/* owning relation XXX useless? */
+	Oid			statOid;	/* OID of pg_statistic_ext entry */
+	int2vector *columns;	/* columns */
+	List	   *types;		/* enabled types */
+} StatExtEntry;
+
+
+static List *fetch_statentries_for_relation(Relation pg_statext, Oid relid);
 static VacAttrStats **lookup_var_attr_stats(int2vector *attrs,
 					  int natts, VacAttrStats **vacattrstats);
 static void statext_store(Oid relid, MVNDistinct ndistinct,
@@ -49,25 +58,29 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 						   int numrows, HeapTuple *rows,
 						   int natts, VacAttrStats **vacattrstats)
 {
+	Relation	pg_stext;
 	ListCell   *lc;
 	List	   *stats;
-
 	TupleDesc	tupdesc = RelationGetDescr(onerel);
 
-	/* Fetch defined statistics from pg_statistic_ext, and compute them. */
-	stats = list_ext_stats(RelationGetRelid(onerel));
+	pg_stext = heap_open(StatisticExtRelationId, RowExclusiveLock);
+	stats = fetch_statentries_for_relation(pg_stext, RelationGetRelid(onerel));
 
 	foreach(lc, stats)
 	{
-		int			j;
-		StatisticExtInfo *stat = (StatisticExtInfo *) lfirst(lc);
-		MVNDistinct ndistinct = NULL;
-
-		VacAttrStats **stats = NULL;
-		int			numatts = 0;
+		StatExtEntry   *stat = (StatExtEntry *) lfirst(lc);
+		MVNDistinct		ndistinct = NULL;
+		VacAttrStats  **stats;
+		int2vector	   *attrs;
+		int				j;
+		int				numatts = 0;
+		ListCell	   *lc2;
 
 		/* int2 vector of attnums the stats should be computed on */
-		int2vector *attrs = stat->stakeys;
+		attrs = stat->columns;
+
+		/* filter only the interesting vacattrstats records */
+		stats = lookup_var_attr_stats(attrs, natts, vacattrstats);
 
 		/* see how many of the columns are not dropped */
 		for (j = 0; j < attrs->dim1; j++)
@@ -77,8 +90,8 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		/* if there are dropped attributes, build a filtered int2vector */
 		if (numatts != attrs->dim1)
 		{
-			int16	   *tmp = palloc0(numatts * sizeof(int16));
-			int			attnum = 0;
+			int16      *tmp = palloc0(numatts * sizeof(int16));
+			int         attnum = 0;
 
 			for (j = 0; j < attrs->dim1; j++)
 				if (!tupdesc->attrs[attrs->values[j] - 1]->attisdropped)
@@ -88,72 +101,24 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 			attrs = buildint2vector(tmp, numatts);
 		}
 
-		/* filter only the interesting vacattrstats records */
-		stats = lookup_var_attr_stats(attrs, natts, vacattrstats);
-
 		/* check allowed number of dimensions */
 		Assert((attrs->dim1 >= 2) && (attrs->dim1 <= STATS_MAX_DIMENSIONS));
 
-		/* compute ndistinct coefficients */
-		if (stat->ndist_enabled)
-			ndistinct = statext_ndistinct_build(totalrows, numrows, rows,
-												attrs, stats);
+		/* compute statistic of each type */
+		foreach(lc2, stat->types)
+		{
+			char	t = (char) lfirst_int(lc2);
+
+			if (t == STATS_EXT_NDISTINCT)
+				ndistinct = statext_ndistinct_build(totalrows, numrows, rows,
+													stat->columns, stats);
+		}
 
 		/* store the statistics in the catalog */
 		statext_store(stat->statOid, ndistinct, attrs, stats);
 	}
-}
 
-/*
- * Fetch list of MV stats defined on a table, without the actual data
- * for histograms, MCV lists etc.
- */
-static List *
-list_ext_stats(Oid relid)
-{
-	Relation	indrel;
-	SysScanDesc indscan;
-	ScanKeyData skey;
-	HeapTuple	htup;
-	List	   *result = NIL;
-
-	/*
-	 * Prepare to scan pg_statistic_ext for entries having indrelid = this
-	 * rel.
-	 */
-	ScanKeyInit(&skey,
-				Anum_pg_statistic_ext_starelid,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(relid));
-
-	indrel = heap_open(StatisticExtRelationId, AccessShareLock);
-	indscan = systable_beginscan(indrel, StatisticExtRelidIndexId, true,
-								 NULL, 1, &skey);
-
-	while (HeapTupleIsValid(htup = systable_getnext(indscan)))
-	{
-		StatisticExtInfo *info = makeNode(StatisticExtInfo);
-		Form_pg_statistic_ext stats = (Form_pg_statistic_ext) GETSTRUCT(htup);
-
-		info->statOid = HeapTupleGetOid(htup);
-		info->stakeys = buildint2vector(stats->stakeys.values, stats->stakeys.dim1);
-
-		info->ndist_enabled = stats_are_enabled(htup, STATS_EXT_NDISTINCT);
-		info->ndist_built = statext_is_kind_built(htup, STATS_EXT_NDISTINCT);
-
-		result = lappend(result, info);
-	}
-
-	systable_endscan(indscan);
-
-	heap_close(indrel, AccessShareLock);
-
-	/*
-	 * TODO maybe save the list into relcache, as in RelationGetIndexList
-	 * (which was used as an inspiration of this one)?.
-	 */
-
-	return result;
+	heap_close(pg_stext, RowExclusiveLock);
 }
 
 /*
@@ -176,6 +141,72 @@ statext_is_kind_built(HeapTuple htup, char type)
 	}
 
 	return !heap_attisnull(htup, attnum);
+}
+
+/*
+ * Return a list (of StatExtEntry) of statistics enabled for the given relation.
+ */
+static List *
+fetch_statentries_for_relation(Relation pg_statext, Oid relid)
+{
+	SysScanDesc scan;
+	ScanKeyData skey;
+	HeapTuple   htup;
+	List       *result = NIL;
+
+	/*
+	 * Prepare to scan pg_statistic_ext for entries having indrelid = this
+	 * rel.
+	 */
+	ScanKeyInit(&skey,
+				Anum_pg_statistic_ext_starelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(relid));
+
+	scan = systable_beginscan(pg_statext, StatisticExtRelidIndexId, true,
+							  NULL, 1, &skey);
+
+	while (HeapTupleIsValid(htup = systable_getnext(scan)))
+	{
+		StatExtEntry *entry;
+		Datum		datum;
+		bool		isnull;
+		int			i;
+		ArrayType  *arr;
+		char	   *enabled;
+
+		entry = palloc0(sizeof(StatExtEntry));
+		entry->relid = relid;
+		entry->statOid = HeapTupleGetOid(htup);
+		datum = SysCacheGetAttr(STATEXTOID, htup,
+								Anum_pg_statistic_ext_stakeys, &isnull);
+		Assert(!isnull);
+		arr = DatumGetArrayTypeP(datum);
+		entry->columns = buildint2vector((int16 *) ARR_DATA_PTR(arr),
+										 ARR_DIMS(arr)[0]);
+
+		/* decode the staenabled char array into a list of chars */
+		datum = SysCacheGetAttr(STATEXTOID, htup,
+								Anum_pg_statistic_ext_staenabled, &isnull);
+		Assert(!isnull);
+		arr = DatumGetArrayTypeP(datum);
+		if (ARR_NDIM(arr) != 1 ||
+			ARR_HASNULL(arr) ||
+			ARR_ELEMTYPE(arr) != CHAROID)
+			elog(ERROR, "staenabled is not a 1-D char array");
+		enabled = (char *) ARR_DATA_PTR(arr);
+		for (i = 0; i < ARR_DIMS(arr)[0]; i++)
+		{
+			Assert(enabled[i] == STATS_EXT_NDISTINCT);
+			entry->types = lappend_int(entry->types, (int) enabled[i]);
+		}
+
+		result = lappend(result, entry);
+	}
+
+	systable_endscan(scan);
+
+	return result;
 }
 
 /*
