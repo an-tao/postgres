@@ -70,7 +70,7 @@ WHERE p1.typtype not in ('c','d','p') AND p1.typname NOT LIKE E'\\_%'
  oid  |   typname    
 ------+--------------
   194 | pg_node_tree
- 3353 | pg_ndistinct
+ 3361 | pg_ndistinct
   210 | smgr
 (3 rows)
 
