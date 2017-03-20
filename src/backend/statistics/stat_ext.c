@@ -61,7 +61,6 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 	Relation	pg_stext;
 	ListCell   *lc;
 	List	   *stats;
-	TupleDesc	tupdesc = RelationGetDescr(onerel);
 
 	pg_stext = heap_open(StatisticExtRelationId, RowExclusiveLock);
 	stats = fetch_statentries_for_relation(pg_stext, RelationGetRelid(onerel));
@@ -71,38 +70,14 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		StatExtEntry   *stat = (StatExtEntry *) lfirst(lc);
 		MVNDistinct		ndistinct = NULL;
 		VacAttrStats  **stats;
-		int2vector	   *attrs;
-		int				j;
-		int				numatts = 0;
 		ListCell	   *lc2;
 
-		/* int2 vector of attnums the stats should be computed on */
-		attrs = stat->columns;
-
 		/* filter only the interesting vacattrstats records */
-		stats = lookup_var_attr_stats(attrs, natts, vacattrstats);
-
-		/* see how many of the columns are not dropped */
-		for (j = 0; j < attrs->dim1; j++)
-			if (!tupdesc->attrs[attrs->values[j] - 1]->attisdropped)
-				numatts += 1;
-
-		/* if there are dropped attributes, build a filtered int2vector */
-		if (numatts != attrs->dim1)
-		{
-			int16      *tmp = palloc0(numatts * sizeof(int16));
-			int         attnum = 0;
-
-			for (j = 0; j < attrs->dim1; j++)
-				if (!tupdesc->attrs[attrs->values[j] - 1]->attisdropped)
-					tmp[attnum++] = attrs->values[j];
-
-			pfree(attrs);
-			attrs = buildint2vector(tmp, numatts);
-		}
+		stats = lookup_var_attr_stats(stat->columns, natts, vacattrstats);
 
 		/* check allowed number of dimensions */
-		Assert((attrs->dim1 >= 2) && (attrs->dim1 <= STATS_MAX_DIMENSIONS));
+		Assert((stat->columns->dim1 >= 2) &&
+			   (stat->columns->dim1 <= STATS_MAX_DIMENSIONS));
 
 		/* compute statistic of each type */
 		foreach(lc2, stat->types)
@@ -115,7 +90,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		}
 
 		/* store the statistics in the catalog */
-		statext_store(stat->statOid, ndistinct, attrs, stats);
+		statext_store(stat->statOid, ndistinct, stat->columns, stats);
 	}
 
 	heap_close(pg_stext, RowExclusiveLock);
@@ -217,14 +192,18 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 static VacAttrStats **
 lookup_var_attr_stats(int2vector *attrs, int natts, VacAttrStats **vacattrstats)
 {
-	int			i,
-				j;
-	int			numattrs = attrs->dim1;
-	VacAttrStats **stats = (VacAttrStats **) palloc0(numattrs * sizeof(VacAttrStats *));
+	int			i;
+	int			numattrs;
+	VacAttrStats **stats;
+
+	numattrs = attrs->dim1;
+	stats = (VacAttrStats **) palloc0(numattrs * sizeof(VacAttrStats *));
 
 	/* lookup VacAttrStats info for the requested columns (same attnum) */
 	for (i = 0; i < numattrs; i++)
 	{
+		int		j;
+
 		stats[i] = NULL;
 		for (j = 0; j < natts; j++)
 		{
@@ -236,11 +215,11 @@ lookup_var_attr_stats(int2vector *attrs, int natts, VacAttrStats **vacattrstats)
 		}
 
 		/*
-		 * Check that we found the info, that the attnum matches and that
-		 * there's the requested 'lt' operator and that the type is
+		 * Check that we found a non-dropped column, that the attnum matches
+		 * and that there's the requested 'lt' operator and that the type is
 		 * 'passed-by-value'.
 		 */
-		Assert(stats[i] != NULL);
+		Assert(!stats[i]->attr->attisdropped);
 		Assert(stats[i]->tupattnum == attrs->values[i]);
 
 		/*

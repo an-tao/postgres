@@ -5,6 +5,7 @@ DROP STATISTICS ab1_a_b_stats;
 CREATE SCHEMA regress_schema_2;
 CREATE STATISTICS regress_schema_2.ab1_a_b_stats ON (a, b) FROM ab1;
 DROP STATISTICS regress_schema_2.ab1_a_b_stats;
+CREATE STATISTICS ab1_b_c_stats ON (b, c) FROM ab1;
 CREATE STATISTICS ab1_a_b_c_stats ON (a, b, c) FROM ab1;
 CREATE STATISTICS ab1_a_b_stats ON (a, b) FROM ab1;
 ALTER TABLE ab1 DROP COLUMN a;
@@ -15,7 +16,7 @@ ALTER TABLE ab1 DROP COLUMN a;
  b      | integer |           |          | 
  c      | integer |           |          | 
 Statistics:
-    "public.ab1_a_b_c_stats" WITH (ndistinct) ON (b, c)
+    "public.ab1_b_c_stats" WITH (ndistinct) ON (b, c)
 
 DROP TABLE ab1;
 -- data type passed by value

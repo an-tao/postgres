@@ -2771,10 +2771,10 @@ RemoveStatistics(Oid relid, AttrNumber attnum)
 
 
 /*
- * RemoveStatisticsExt --- remove entries in pg_statistic_ext for a rel
+ * RemoveStatisticsExt --- remove entries in pg_statistic_ext for a relation
  *
  * If attnum is zero, remove all entries for rel; else remove only the one(s)
- * for that column.
+ * involving that column.
  */
 void
 RemoveStatisticsExt(Oid relid, AttrNumber attnum)
@@ -2821,9 +2821,11 @@ RemoveStatisticsExt(Oid relid, AttrNumber attnum)
 	/* we must loop even when attnum != 0, in case of inherited stats */
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
-		bool		delete = true;
+		bool		delete = false;
 
-		if (attnum != 0)
+		if (attnum == 0)
+			delete = true;
+		else if (attnum != 0)
 		{
 			Datum		adatum;
 			bool		isnull;
@@ -2832,29 +2834,21 @@ RemoveStatisticsExt(Oid relid, AttrNumber attnum)
 			ArrayType  *arr;
 			int16	   *attnums;
 
-			/* get the columns */
+			/* get the column list */
 			adatum = SysCacheGetAttr(STATEXTOID, tuple,
 									 Anum_pg_statistic_ext_stakeys, &isnull);
 			Assert(!isnull);
-
 			arr = DatumGetArrayTypeP(adatum);
 			attnums = (int16 *) ARR_DATA_PTR(arr);
 
 			for (i = 0; i < ARR_DIMS(arr)[0]; i++)
-			{
-				/* count the column unless it's has been / is being dropped */
-				if ((!tupdesc->attrs[attnums[i] - 1]->attisdropped) &&
-					(attnums[i] != attnum))
-					ncolumns += 1;
-			}
-
-			/* delete if there are less than two attributes */
-			delete = (ncolumns < 2);
+				if (attnums[i] == attnum)
+					delete = true;
 		}
 
 		if (delete)
 		{
-			simple_heap_delete(pgstatisticext, &tuple->t_self);
+			CatalogTupleDelete(pgstatisticext, &tuple->t_self);
 			deleteDependencyRecordsFor(StatisticExtRelationId,
 									   HeapTupleGetOid(tuple),
 									   false);
