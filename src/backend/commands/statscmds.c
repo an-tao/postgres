@@ -64,6 +64,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 	Datum		types[1];		/* only ndistinct defined now */
 	int			ntypes;
 	ArrayType  *staenabled;
+	bool		build_ndistinct;
+	bool		requested_type = false;
 
 	Assert(IsA(stmt, CreateStatsStmt));
 
@@ -101,11 +103,6 @@ CreateStatistics(CreateStatsStmt *stmt)
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("relation \"%s\" is not a table or materialized view",
 						RelationGetRelationName(rel))));
-
-
-	/* ndistinct coefficients is the only known type of extended statistics */
-	ntypes = 1;
-	types[0] = CharGetDatum(STATS_EXT_NDISTINCT);
 
 	/*
 	 * Transform column names to array of attnums. While doing that, we also
@@ -164,7 +161,35 @@ CreateStatistics(CreateStatsStmt *stmt)
 
 	stakeys = buildint2vector(attnums, numcols);
 
+	/*
+	 * Parse the statistics options.  Currently only statistics types are
+	 * recognized.
+	 */
+	build_ndistinct = false;
+	foreach(l, stmt->options)
+	{
+		DefElem    *opt = (DefElem *) lfirst(l);
+
+		if (strcmp(opt->defname, "ndistinct") == 0)
+		{
+			build_ndistinct = defGetBoolean(opt);
+			requested_type = true;
+		}
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("unrecognized STATISTICS option \"%s\"",
+							opt->defname)));
+	}
+	/* If no statistic type was specified, build them all. */
+	if (!requested_type)
+		build_ndistinct = true;
+
 	/* construct the char array of enabled statistic types */
+	ntypes = 0;
+	if (build_ndistinct)
+		types[ntypes++] = CharGetDatum(STATS_EXT_NDISTINCT);
+	Assert(ntypes > 0);
 	staenabled = construct_array(types, ntypes, CHAROID, 1, true, 'c');
 
 	/*

@@ -2654,6 +2654,7 @@ typedef struct CreateStatsStmt
 	List	   *defnames;		/* qualified name (list of Value strings) */
 	RangeVar   *relation;		/* relation to build statistics on */
 	List	   *keys;			/* String nodes naming referenced columns */
+	List	   *options;		/* list of DefElem */
 	bool		if_not_exists;	/* do nothing if statistics already exists */
 } CreateStatsStmt;
 
