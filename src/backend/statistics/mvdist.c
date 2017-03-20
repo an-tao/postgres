@@ -205,7 +205,7 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 }
 
 MVNDistinct
-load_ext_ndistinct(Oid mvoid)
+statext_ndistinct_load(Oid mvoid)
 {
 	bool		isnull = false;
 	Datum		ndist;

@@ -3790,7 +3790,7 @@ find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
 		/* hey, this statistics matches! great, let's extract the value */
 		*found = true;
 
-		stat = load_ext_ndistinct(info->statOid);
+		stat = statext_ndistinct_load(info->statOid);
 
 		for (j = 0; j < stat->nitems; j++)
 		{

@@ -38,7 +38,7 @@ typedef struct MVNDistinctData
 
 typedef MVNDistinctData *MVNDistinct;
 
-extern MVNDistinct load_ext_ndistinct(Oid mvoid);
+extern MVNDistinct statext_ndistinct_load(Oid mvoid);
 
 extern bytea *serialize_ext_ndistinct(MVNDistinct ndistinct);
 
