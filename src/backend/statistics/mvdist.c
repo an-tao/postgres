@@ -101,25 +101,24 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	return result;
 }
 
-
 MVNDistinct
 statext_ndistinct_load(Oid mvoid)
 {
 	bool		isnull = false;
 	Datum		ndist;
+	HeapTuple	htup;
 
-	/*
-	 * Prepare to scan pg_statistic_ext for entries having indrelid = this
-	 * rel.
-	 */
-	HeapTuple	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
-
+	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
+	if (!htup)
+		elog(ERROR, "cache lookup failed for statistics %u", mvoid);
 	Assert(stats_are_enabled(htup, STATS_EXT_NDISTINCT));
 
 	ndist = SysCacheGetAttr(STATEXTOID, htup,
 							Anum_pg_statistic_ext_standistinct, &isnull);
-
-	Assert(!isnull);
+	if (isnull)
+		elog(ERROR,
+			 "requested statistic kind %c not yet built for statistics %u",
+			 STATS_EXT_NDISTINCT, mvoid);
 
 	ReleaseSysCache(htup);
 
