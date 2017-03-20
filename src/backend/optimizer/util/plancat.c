@@ -1259,12 +1259,11 @@ get_relation_constraints(PlannerInfo *root,
 
 /*
  * get_relation_statistics
- *
- * Retrieve extended statistics defined on the table.
+ *		Retrieve extended statistics defined on the table.
  *
  * Returns a List (possibly empty) of StatisticExtInfo objects describing
- * the statistics.  Only attributes needed for selecting statistics are
- * retrieved (columns covered by the statistics, etc.).
+ * the statistics.  Note that this doesn't load the actual statistics data,
+ * just its identifying metadata.  Only stats actually built are considered.
  */
 static List *
 get_relation_statistics(RelOptInfo *rel, Relation relation)

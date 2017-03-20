@@ -3683,15 +3683,15 @@ estimate_hash_bucketsize(PlannerInfo *root, Node *hashkey, double nbuckets)
  */
 
 /*
- * Find applicable ndistinct statistics and compute the coefficient to
- * correct the estimate (simply a product of per-column ndistincts).
+ * Find applicable ndistinct statistics and compute the coefficient to correct
+ * the estimate (simply a product of per-column ndistincts).  If an exact match
+ * is found, *found is set to TRUE and the value is returned.
  *
- * XXX Currently we only look for a perfect match, i.e. a single ndistinct
- * estimate exactly matching all the columns of the statistics. This may be
- * a bit problematic as adding a column (not covered by the ndistinct stats)
- * will prevent us from using the stats entirely. So instead this needs to
- * estimate the covered attributes, and then combine that with the extra
- * attributes somehow (probably the old way).
+ * XXX Currently, only perfect matches (exactly same set of columns) are
+ * considered.  If additional columns are used, we fail to find a match.
+ * It would be better to use the saved stats to a subset of the columns, then
+ * fixup according to any additional columns not covered by the ndistinct
+ * stats.
  */
 static double
 find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
@@ -3722,7 +3722,7 @@ find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
 		 * attribute we're dealing with - we need this for matching the
 		 * ndistinct coefficient
 		 *
-		 * FIXME probably might remember this from estimate_num_groups
+		 * FIXME probably should remember this from estimate_num_groups
 		 */
 		examine_variable(root, varinfo->var, 0, &vardata);
 

@@ -3750,7 +3750,7 @@ ExistingIndex:   USING INDEX index_name				{ $$ = $3; }
 /*****************************************************************************
  *
  *		QUERY :
- *				CREATE STATISTICS stats_name ON relname (columns) WITH (options)
+ *				CREATE STATISTICS stats_name WITH (options) ON (columns) FROM relname
  *
  *****************************************************************************/
 
@@ -3774,7 +3774,6 @@ CreateStatsStmt:	CREATE STATISTICS any_name ON '(' columnList ')' FROM qualified
 							$$ = (Node *)n;
 						}
 			;
-
 
 /*****************************************************************************
  *

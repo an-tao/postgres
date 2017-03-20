@@ -30,7 +30,7 @@
 #include "utils/syscache.h"
 
 
-/* used for sorting the attnums in ExecCreateStatistics */
+/* used for sorting the attnums in CreateStatistics */
 static int
 compare_int16(const void *a, const void *b)
 {
@@ -38,10 +38,7 @@ compare_int16(const void *a, const void *b)
 }
 
 /*
- * Implements the CREATE STATISTICS name ON (columns) FROM table
- *
- * We do require that the types support sorting (ltopr), although some
- * statistics might work with equality only.
+ *		CREATE STATISTICS
  */
 ObjectAddress
 CreateStatistics(CreateStatsStmt *stmt)
@@ -171,36 +168,25 @@ CreateStatistics(CreateStatsStmt *stmt)
 	staenabled = construct_array(types, ntypes, CHAROID, 1, true, 'c');
 
 	/*
-	 * Everything seems fine, so let's build the pg_statistic_ext entry. At
-	 * this point we obviously only have the keys and options.
+	 * Everything seems fine, so let's build the pg_statistic_ext tuple.
 	 */
-
 	memset(values, 0, sizeof(values));
 	memset(nulls, false, sizeof(nulls));
-
-	/* metadata */
 	values[Anum_pg_statistic_ext_starelid - 1] = ObjectIdGetDatum(relid);
 	values[Anum_pg_statistic_ext_staname - 1] = NameGetDatum(&staname);
 	values[Anum_pg_statistic_ext_stanamespace - 1] = ObjectIdGetDatum(namespaceId);
 	values[Anum_pg_statistic_ext_staowner - 1] = ObjectIdGetDatum(GetUserId());
-
 	values[Anum_pg_statistic_ext_stakeys - 1] = PointerGetDatum(stakeys);
-
-	/* enabled statistics */
 	values[Anum_pg_statistic_ext_staenabled - 1] = PointerGetDatum(staenabled);
 
 	/* no statistics build yet */
 	nulls[Anum_pg_statistic_ext_standistinct - 1] = true;
 
-	/* insert the tuple into pg_statistic_ext */
+	/* insert it into pg_statistic_ext */
 	statrel = heap_open(StatisticExtRelationId, RowExclusiveLock);
-
 	htup = heap_form_tuple(statrel->rd_att, values, nulls);
-
 	CatalogTupleInsert(statrel, htup);
-
 	statoid = HeapTupleGetOid(htup);
-
 	heap_freetuple(htup);
 
 	/*
@@ -208,16 +194,14 @@ CreateStatistics(CreateStatsStmt *stmt)
 	 */
 	ObjectAddressSet(parentobject, RelationRelationId, relid);
 	ObjectAddressSet(childobject, StatisticExtRelationId, statoid);
-
 	recordDependencyOn(&childobject, &parentobject, DEPENDENCY_AUTO);
 
 	/*
 	 * Also add dependency on the schema (to drop statistics on DROP SCHEMA).
-	 * This is not handled automatically by DROP TABLE because statistics have
-	 * their own schema.
+	 * This is not handled automatically by DROP TABLE because statistics are
+	 * on their own schema.
 	 */
 	ObjectAddressSet(parentobject, NamespaceRelationId, namespaceId);
-
 	recordDependencyOn(&childobject, &parentobject, DEPENDENCY_AUTO);
 
 	heap_close(statrel, RowExclusiveLock);
@@ -234,11 +218,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 	return address;
 }
 
-
 /*
- * Implements the DROP STATISTICS
- *
- *	   DROP STATISTICS stats_name
+ * Guts of statistics deletion.
  */
 void
 RemoveStatisticsById(Oid statsOid)
