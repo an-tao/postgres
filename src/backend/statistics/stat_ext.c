@@ -42,8 +42,9 @@ typedef struct StatExtEntry
 static List *fetch_statentries_for_relation(Relation pg_statext, Oid relid);
 static VacAttrStats **lookup_var_attr_stats(int2vector *attrs,
 					  int natts, VacAttrStats **vacattrstats);
-static void statext_store(Oid relid, MVNDistinct ndistinct,
-				 int2vector *attrs, VacAttrStats **stats);
+static void statext_store(Relation pg_stext, Oid relid,
+			  MVNDistinct ndistinct,
+			  int2vector *attrs, VacAttrStats **stats);
 
 
 /*
@@ -90,7 +91,8 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		}
 
 		/* store the statistics in the catalog */
-		statext_store(stat->statOid, ndistinct, stat->columns, stats);
+		statext_store(pg_stext, stat->statOid, ndistinct,
+					  stat->columns, stats);
 	}
 
 	heap_close(pg_stext, RowExclusiveLock);
@@ -237,7 +239,8 @@ lookup_var_attr_stats(int2vector *attrs, int natts, VacAttrStats **vacattrstats)
  *	Serializes the statistics and stores them into the pg_statistic_ext tuple.
  */
 static void
-statext_store(Oid statOid, MVNDistinct ndistinct,
+statext_store(Relation pg_stext, Oid statOid,
+			  MVNDistinct ndistinct,
 			  int2vector *attrs, VacAttrStats **stats)
 {
 	HeapTuple	stup,
@@ -245,8 +248,6 @@ statext_store(Oid statOid, MVNDistinct ndistinct,
 	Datum		values[Natts_pg_statistic_ext];
 	bool		nulls[Natts_pg_statistic_ext];
 	bool		replaces[Natts_pg_statistic_ext];
-
-	Relation	sd = heap_open(StatisticExtRelationId, RowExclusiveLock);
 
 	memset(nulls, 1, Natts_pg_statistic_ext * sizeof(bool));
 	memset(replaces, 0, Natts_pg_statistic_ext * sizeof(bool));
@@ -284,15 +285,14 @@ statext_store(Oid statOid, MVNDistinct ndistinct,
 
 	/* replace it */
 	stup = heap_modify_tuple(oldtup,
-							 RelationGetDescr(sd),
+							 RelationGetDescr(pg_stext),
 							 values,
 							 nulls,
 							 replaces);
 	ReleaseSysCache(oldtup);
-	CatalogTupleUpdate(sd, &stup->t_self, stup);
+	CatalogTupleUpdate(pg_stext, &stup->t_self, stup);
 
 	heap_freetuple(stup);
-	heap_close(sd, RowExclusiveLock);
 }
 
 /* multi-variate stats comparator */
