@@ -43,7 +43,6 @@ extern MVNDistinct statext_ndistinct_load(Oid mvoid);
 extern void BuildRelationExtStatistics(Relation onerel, double totalrows,
 						   int numrows, HeapTuple *rows,
 						   int natts, VacAttrStats **vacattrstats);
-extern bool stats_are_enabled(HeapTuple htup, char type);
 extern bool statext_is_kind_built(HeapTuple htup, char kind);
 
 #endif   /* STATS_H */
