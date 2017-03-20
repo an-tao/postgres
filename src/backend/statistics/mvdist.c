@@ -31,6 +31,8 @@ static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
 static int	n_choose_k(int n, int k);
 static int	num_combinations(int n);
 
+/* Combination generator API */
+
 /* internal state for generator of k-combinations of n elements */
 typedef struct CombinationGenerator
 {
@@ -40,10 +42,9 @@ typedef struct CombinationGenerator
 	AttrNumber *combinations;	/* array of pre-built combinations */
 } CombinationGenerator;
 
-/* generator API */
 static CombinationGenerator *generator_init(int2vector *attrs, int k);
-static AttrNumber *generator_next(CombinationGenerator *state, int2vector *attrs);
 static void generator_free(CombinationGenerator *state);
+static AttrNumber *generator_next(CombinationGenerator *state, int2vector *attrs);
 static void generate_combinations(CombinationGenerator *state, int n);
 
 

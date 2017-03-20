@@ -30,11 +30,9 @@
 #include "utils/syscache.h"
 
 
+static List *list_ext_stats(Oid relid);
 static VacAttrStats **lookup_var_attr_stats(int2vector *attrs,
 					  int natts, VacAttrStats **vacattrstats);
-
-static List *list_ext_stats(Oid relid);
-
 static void statext_store(Oid relid, MVNDistinct ndistinct,
 				 int2vector *attrs, VacAttrStats **stats);
 
@@ -107,50 +105,6 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 }
 
 /*
- * Lookup the VacAttrStats info for the selected columns, with indexes
- * matching the attrs vector (to make it easy to work with when
- * computing extended stats).
- */
-static VacAttrStats **
-lookup_var_attr_stats(int2vector *attrs, int natts, VacAttrStats **vacattrstats)
-{
-	int			i,
-				j;
-	int			numattrs = attrs->dim1;
-	VacAttrStats **stats = (VacAttrStats **) palloc0(numattrs * sizeof(VacAttrStats *));
-
-	/* lookup VacAttrStats info for the requested columns (same attnum) */
-	for (i = 0; i < numattrs; i++)
-	{
-		stats[i] = NULL;
-		for (j = 0; j < natts; j++)
-		{
-			if (attrs->values[i] == vacattrstats[j]->tupattnum)
-			{
-				stats[i] = vacattrstats[j];
-				break;
-			}
-		}
-
-		/*
-		 * Check that we found the info, that the attnum matches and that
-		 * there's the requested 'lt' operator and that the type is
-		 * 'passed-by-value'.
-		 */
-		Assert(stats[i] != NULL);
-		Assert(stats[i]->tupattnum == attrs->values[i]);
-
-		/*
-		 * FIXME This is rather ugly way to check for 'ltopr' (which is
-		 * defined for 'scalar' attributes).
-		 */
-		Assert(((StdAnalyzeData *) stats[i]->extra_data)->ltopr != InvalidOid);
-	}
-
-	return stats;
-}
-
-/*
  * Fetch list of MV stats defined on a table, without the actual data
  * for histograms, MCV lists etc.
  */
@@ -200,6 +154,50 @@ list_ext_stats(Oid relid)
 	 */
 
 	return result;
+}
+
+/*
+ * Lookup the VacAttrStats info for the selected columns, with indexes
+ * matching the attrs vector (to make it easy to work with when
+ * computing extended stats).
+ */
+static VacAttrStats **
+lookup_var_attr_stats(int2vector *attrs, int natts, VacAttrStats **vacattrstats)
+{
+	int			i,
+				j;
+	int			numattrs = attrs->dim1;
+	VacAttrStats **stats = (VacAttrStats **) palloc0(numattrs * sizeof(VacAttrStats *));
+
+	/* lookup VacAttrStats info for the requested columns (same attnum) */
+	for (i = 0; i < numattrs; i++)
+	{
+		stats[i] = NULL;
+		for (j = 0; j < natts; j++)
+		{
+			if (attrs->values[i] == vacattrstats[j]->tupattnum)
+			{
+				stats[i] = vacattrstats[j];
+				break;
+			}
+		}
+
+		/*
+		 * Check that we found the info, that the attnum matches and that
+		 * there's the requested 'lt' operator and that the type is
+		 * 'passed-by-value'.
+		 */
+		Assert(stats[i] != NULL);
+		Assert(stats[i]->tupattnum == attrs->values[i]);
+
+		/*
+		 * FIXME This is rather ugly way to check for 'ltopr' (which is
+		 * defined for 'scalar' attributes).
+		 */
+		Assert(((StdAnalyzeData *) stats[i]->extra_data)->ltopr != InvalidOid);
+	}
+
+	return stats;
 }
 
 /*

@@ -213,6 +213,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 	CatalogTupleInsert(statrel, htup);
 	statoid = HeapTupleGetOid(htup);
 	heap_freetuple(htup);
+	heap_close(statrel, RowExclusiveLock);
+	relation_close(rel, NoLock);
 
 	/*
 	 * Add a dependency on a table, so that stats get dropped on DROP TABLE.
@@ -229,16 +231,12 @@ CreateStatistics(CreateStatsStmt *stmt)
 	ObjectAddressSet(parentobject, NamespaceRelationId, namespaceId);
 	recordDependencyOn(&childobject, &parentobject, DEPENDENCY_AUTO);
 
-	heap_close(statrel, RowExclusiveLock);
-
-	relation_close(rel, NoLock);
+	ObjectAddressSet(address, StatisticExtRelationId, statoid);
 
 	/*
 	 * Invalidate relcache so that others see the new statistics.
 	 */
 	CacheInvalidateRelcache(rel);
-
-	ObjectAddressSet(address, StatisticExtRelationId, statoid);
 
 	return address;
 }
