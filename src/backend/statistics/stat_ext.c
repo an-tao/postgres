@@ -98,7 +98,8 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 
 		/* compute ndistinct coefficients */
 		if (stat->ndist_enabled)
-			ndistinct = build_ext_ndistinct(totalrows, numrows, rows, attrs, stats);
+			ndistinct = statext_ndistinct_build(totalrows, numrows, rows,
+												attrs, stats);
 
 		/* store the statistics in the catalog */
 		update_ext_stats(stat->statOid, ndistinct, attrs, stats);

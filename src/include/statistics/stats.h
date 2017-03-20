@@ -45,7 +45,7 @@ extern bytea *serialize_ext_ndistinct(MVNDistinct ndistinct);
 /* deserialization of stats (serialization is private to analyze) */
 extern MVNDistinct deserialize_ext_ndistinct(bytea *data);
 
-extern MVNDistinct build_ext_ndistinct(double totalrows, int numrows, HeapTuple *rows,
+extern MVNDistinct statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 					int2vector *attrs, VacAttrStats **stats);
 
 extern void BuildRelationExtStatistics(Relation onerel, double totalrows,

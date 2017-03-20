@@ -57,8 +57,8 @@ static double ndistinct_for_combination(double totalrows, int numrows,
  * and then computes the coefficient.
  */
 MVNDistinct
-build_ext_ndistinct(double totalrows, int numrows, HeapTuple *rows,
-					int2vector *attrs, VacAttrStats **stats)
+statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
+						int2vector *attrs, VacAttrStats **stats)
 {
 	int			i,
 				k;
