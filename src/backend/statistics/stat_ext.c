@@ -47,9 +47,9 @@ static void update_ext_stats(Oid relid, MVNDistinct ndistinct,
  * and serializes them back into the catalog (as bytea values).
  */
 void
-build_ext_stats(Relation onerel, double totalrows,
-				int numrows, HeapTuple *rows,
-				int natts, VacAttrStats **vacattrstats)
+BuildRelationExtStatistics(Relation onerel, double totalrows,
+						   int numrows, HeapTuple *rows,
+						   int natts, VacAttrStats **vacattrstats)
 {
 	ListCell   *lc;
 	List	   *stats;

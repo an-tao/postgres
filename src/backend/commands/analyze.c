@@ -574,7 +574,8 @@ do_analyze_rel(Relation onerel, int options, VacuumParams *params,
 		}
 
 		/* Build extended statistics (if there are any). */
-		build_ext_stats(onerel, totalrows, numrows, rows, attr_cnt, vacattrstats);
+		BuildRelationExtStatistics(onerel, totalrows, numrows, rows, attr_cnt,
+								   vacattrstats);
 	}
 
 	/*

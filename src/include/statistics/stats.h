@@ -48,9 +48,9 @@ extern MVNDistinct deserialize_ext_ndistinct(bytea *data);
 extern MVNDistinct build_ext_ndistinct(double totalrows, int numrows, HeapTuple *rows,
 					int2vector *attrs, VacAttrStats **stats);
 
-extern void build_ext_stats(Relation onerel, double totalrows,
-				int numrows, HeapTuple *rows,
-				int natts, VacAttrStats **vacattrstats);
+extern void BuildRelationExtStatistics(Relation onerel, double totalrows,
+						   int numrows, HeapTuple *rows,
+						   int natts, VacAttrStats **vacattrstats);
 extern bool stats_are_enabled(HeapTuple htup, char type);
 extern bool stats_are_built(HeapTuple htup, char type);
 
