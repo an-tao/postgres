@@ -32,24 +32,19 @@ static int	n_choose_k(int n, int k);
 static int	num_combinations(int n);
 
 /* internal state for generator of k-combinations of n elements */
-typedef struct CombinationGeneratorData
+typedef struct CombinationGenerator
 {
-
 	int			k;				/* size of the combination */
 	int			current;		/* index of the next combination to return */
-
 	int			ncombinations;	/* number of combinations (size of array) */
 	AttrNumber *combinations;	/* array of pre-built combinations */
-
-} CombinationGeneratorData;
-
-typedef CombinationGeneratorData *CombinationGenerator;
+} CombinationGenerator;
 
 /* generator API */
-static CombinationGenerator generator_init(int2vector *attrs, int k);
-static AttrNumber *generator_next(CombinationGenerator state, int2vector *attrs);
-static void generator_free(CombinationGenerator state);
-static void generate_combinations(CombinationGenerator state, int n);
+static CombinationGenerator *generator_init(int2vector *attrs, int k);
+static AttrNumber *generator_next(CombinationGenerator *state, int2vector *attrs);
+static void generator_free(CombinationGenerator *state);
+static void generate_combinations(CombinationGenerator *state, int n);
 
 
 /*
@@ -77,7 +72,7 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	for (k = 2; k <= numattrs; k++)
 	{
 		AttrNumber *combination;
-		CombinationGenerator generator;
+		CombinationGenerator *generator;
 
 		generator = generator_init(attrs, k);
 
@@ -529,16 +524,16 @@ num_combinations(int n)
  * This pre-builds all the combinations. We could also generate them in
  * generator_next(), but this seems simpler.
  */
-static CombinationGenerator
+static CombinationGenerator *
 generator_init(int2vector *attrs, int k)
 {
 	int			n = attrs->dim1;
-	CombinationGenerator state;
+	CombinationGenerator *state;
 
 	Assert((n >= k) && (k > 0));
 
 	/* allocate the generator state as a single chunk of memory */
-	state = (CombinationGenerator) palloc0(sizeof(CombinationGeneratorData));
+	state = (CombinationGenerator *) palloc0(sizeof(CombinationGenerator));
 	state->combinations = (AttrNumber *) palloc(k * sizeof(AttrNumber));
 
 	state->ncombinations = n_choose_k(n, k);
@@ -559,7 +554,7 @@ generator_init(int2vector *attrs, int k)
 
 /* generate next combination */
 static AttrNumber *
-generator_next(CombinationGenerator state, int2vector *attrs)
+generator_next(CombinationGenerator *state, int2vector *attrs)
 {
 	if (state->current == state->ncombinations)
 		return NULL;
@@ -569,7 +564,7 @@ generator_next(CombinationGenerator state, int2vector *attrs)
 
 /* free the generator state */
 static void
-generator_free(CombinationGenerator state)
+generator_free(CombinationGenerator *state)
 {
 	/* we've allocated a single chunk, so just free it */
 	pfree(state);
@@ -579,7 +574,7 @@ generator_free(CombinationGenerator state)
  * generate all combinations (k elements from n)
  */
 static void
-generate_combinations_recurse(CombinationGenerator state, AttrNumber n,
+generate_combinations_recurse(CombinationGenerator *state, AttrNumber n,
 							int index, AttrNumber start, AttrNumber *current)
 {
 	/* If we haven't filled all the elements, simply recurse. */
@@ -613,7 +608,7 @@ generate_combinations_recurse(CombinationGenerator state, AttrNumber n,
 
 /* generate all k-combinations of n elements */
 static void
-generate_combinations(CombinationGenerator state, int n)
+generate_combinations(CombinationGenerator *state, int n)
 {
 	AttrNumber *current = (AttrNumber *) palloc0(sizeof(AttrNumber) * state->k);
 
