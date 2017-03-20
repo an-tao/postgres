@@ -2830,7 +2830,6 @@ RemoveStatisticsExt(Oid relid, AttrNumber attnum)
 			Datum		adatum;
 			bool		isnull;
 			int			i;
-			int			ncolumns = 0;
 			ArrayType  *arr;
 			int16	   *attnums;
 
