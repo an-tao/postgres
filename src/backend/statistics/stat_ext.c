@@ -35,7 +35,7 @@ static VacAttrStats **lookup_var_attr_stats(int2vector *attrs,
 
 static List *list_ext_stats(Oid relid);
 
-static void update_ext_stats(Oid relid, MVNDistinct ndistinct,
+static void statext_store(Oid relid, MVNDistinct ndistinct,
 				 int2vector *attrs, VacAttrStats **stats);
 
 
@@ -102,7 +102,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 												attrs, stats);
 
 		/* store the statistics in the catalog */
-		update_ext_stats(stat->statOid, ndistinct, attrs, stats);
+		statext_store(stat->statOid, ndistinct, attrs, stats);
 	}
 }
 
@@ -203,12 +203,12 @@ list_ext_stats(Oid relid)
 }
 
 /*
- * update_ext_stats
+ * statext_store
  *	Serializes the statistics and stores them into the pg_statistic_ext tuple.
  */
 static void
-update_ext_stats(Oid statOid, MVNDistinct ndistinct,
-				 int2vector *attrs, VacAttrStats **stats)
+statext_store(Oid statOid, MVNDistinct ndistinct,
+			  int2vector *attrs, VacAttrStats **stats)
 {
 	HeapTuple	stup,
 				oldtup;
@@ -228,7 +228,7 @@ update_ext_stats(Oid statOid, MVNDistinct ndistinct,
 	 */
 	if (ndistinct != NULL)
 	{
-		bytea	   *data = serialize_ext_ndistinct(ndistinct);
+		bytea	   *data = statext_ndistinct_serialize(ndistinct);
 
 		nulls[Anum_pg_statistic_ext_standistinct - 1] = (data == NULL);
 		values[Anum_pg_statistic_ext_standistinct - 1] = PointerGetDatum(data);

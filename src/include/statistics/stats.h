@@ -40,10 +40,10 @@ typedef MVNDistinctData *MVNDistinct;
 
 extern MVNDistinct statext_ndistinct_load(Oid mvoid);
 
-extern bytea *serialize_ext_ndistinct(MVNDistinct ndistinct);
+extern bytea *statext_ndistinct_serialize(MVNDistinct ndistinct);
 
 /* deserialization of stats (serialization is private to analyze) */
-extern MVNDistinct deserialize_ext_ndistinct(bytea *data);
+extern MVNDistinct statext_ndistinct_deserialize(bytea *data);
 
 extern MVNDistinct statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 					int2vector *attrs, VacAttrStats **stats);

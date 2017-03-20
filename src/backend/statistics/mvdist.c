@@ -226,7 +226,7 @@ statext_ndistinct_load(Oid mvoid)
 
 	ReleaseSysCache(htup);
 
-	return deserialize_ext_ndistinct(DatumGetByteaP(ndist));
+	return statext_ndistinct_deserialize(DatumGetByteaP(ndist));
 }
 
 /* The Duj1 estimator (already used in analyze.c). */
@@ -292,7 +292,7 @@ pg_ndistinct_out(PG_FUNCTION_ARGS)
 
 	bytea	   *data = PG_GETARG_BYTEA_PP(0);
 
-	MVNDistinct ndist = deserialize_ext_ndistinct(data);
+	MVNDistinct ndist = statext_ndistinct_deserialize(data);
 
 	initStringInfo(&str);
 	appendStringInfoChar(&str, '[');
@@ -495,7 +495,7 @@ generator_next(CombinationGenerator state, int2vector *attrs)
  * serialize list of ndistinct items into a bytea
  */
 bytea *
-serialize_ext_ndistinct(MVNDistinct ndistinct)
+statext_ndistinct_serialize(MVNDistinct ndistinct)
 {
 	int			i;
 	bytea	   *output;
@@ -545,7 +545,7 @@ serialize_ext_ndistinct(MVNDistinct ndistinct)
  * Reads serialized ndistinct into MVNDistinct structure.
  */
 MVNDistinct
-deserialize_ext_ndistinct(bytea *data)
+statext_ndistinct_deserialize(bytea *data)
 {
 	int			i;
 	Size		expected_size;
