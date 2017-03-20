@@ -26,7 +26,7 @@
 
 static double ndistinct_for_combination(double totalrows, int numrows,
 					HeapTuple *rows, int2vector *attrs, VacAttrStats **stats,
-						  int k, AttrNumber *combination);
+					int k, int16 *combination);
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
 static int	n_choose_k(int n, int k);
 static int	num_combinations(int n);
@@ -36,15 +36,15 @@ static int	num_combinations(int n);
 /* internal state for generator of k-combinations of n elements */
 typedef struct CombinationGenerator
 {
-	int			k;				/* size of the combination */
-	int			current;		/* index of the next combination to return */
-	int			ncombinations;	/* number of combinations (size of array) */
-	AttrNumber *combinations;	/* array of pre-built combinations */
+	int		k;				/* size of the combination */
+	int		current;		/* index of the next combination to return */
+	int		ncombinations;	/* number of combinations (size of array) */
+	int16  *combinations;	/* array of pre-built combinations */
 } CombinationGenerator;
 
-static CombinationGenerator *generator_init(int2vector *attrs, int k);
+static CombinationGenerator *generator_init(int n, int k);
 static void generator_free(CombinationGenerator *state);
-static AttrNumber *generator_next(CombinationGenerator *state, int2vector *attrs);
+static int16 *generator_next(CombinationGenerator *state, int2vector *attrs);
 static void generate_combinations(CombinationGenerator *state, int n);
 
 
@@ -72,10 +72,11 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	i = 0;
 	for (k = 2; k <= numattrs; k++)
 	{
-		AttrNumber *combination;
+		int16 *combination;
 		CombinationGenerator *generator;
 
-		generator = generator_init(attrs, k);
+		/* generate combinations of K out of N elements */
+		generator = generator_init(numattrs, k);
 
 		while ((combination = generator_next(generator, attrs)))
 		{
@@ -85,8 +86,9 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 			item->ndistinct = ndistinct_for_combination(totalrows, numrows, rows,
 											   attrs, stats, k, combination);
 
-			item->attrs = palloc(k * sizeof(AttrNumber));
-			memcpy(item->attrs, combination, k * sizeof(AttrNumber));
+			/* copy the indexes in place */
+			item->attrs = palloc(k * sizeof(int16));
+			memcpy(item->attrs, combination, k * sizeof(int16));
 
 			/* must not overflow the output array */
 			Assert(i <= result->nitems);
@@ -146,7 +148,7 @@ statext_ndistinct_serialize(MVNDistinct ndistinct)
 
 	/* and also include space for the actual attribute numbers */
 	for (i = 0; i < ndistinct->nitems; i++)
-		len += (sizeof(AttrNumber) * ndistinct->items[i].nattrs);
+		len += (sizeof(int16) * ndistinct->items[i].nattrs);
 
 	output = (bytea *) palloc0(len);
 	SET_VARSIZE(output, len);
@@ -171,8 +173,8 @@ statext_ndistinct_serialize(MVNDistinct ndistinct)
 		memcpy(tmp, &item, offsetof(MVNDistinctItem, attrs));
 		tmp += offsetof(MVNDistinctItem, attrs);
 
-		memcpy(tmp, item.attrs, sizeof(AttrNumber) * item.nattrs);
-		tmp += sizeof(AttrNumber) * item.nattrs;
+		memcpy(tmp, item.attrs, sizeof(int16) * item.nattrs);
+		tmp += sizeof(int16) * item.nattrs;
 
 		Assert(tmp <= ((char *) output + len));
 	}
@@ -222,7 +224,7 @@ statext_ndistinct_deserialize(bytea *data)
 	/* what minimum bytea size do we expect for those parameters */
 	expected_size = offsetof(MVNDistinctData, items) +
 		ndistinct->nitems * (offsetof(MVNDistinctItem, attrs) +
-							 sizeof(AttrNumber) * 2);
+							 sizeof(int16) * 2);
 
 	if (VARSIZE_ANY_EXHDR(data) < expected_size)
 		elog(ERROR, "invalid dependencies size %ld (expected at least %ld)",
@@ -244,11 +246,11 @@ statext_ndistinct_deserialize(bytea *data)
 		Assert((item->nattrs >= 2) && (item->nattrs <= STATS_MAX_DIMENSIONS));
 
 		/* now that we know the number of attributes, allocate the attribute */
-		item->attrs = (AttrNumber *) palloc0(item->nattrs * sizeof(AttrNumber));
+		item->attrs = (int16 *) palloc0(item->nattrs * sizeof(int16));
 
 		/* copy attribute numbers */
-		memcpy(item->attrs, tmp, sizeof(AttrNumber) * item->nattrs);
-		tmp += sizeof(AttrNumber) * item->nattrs;
+		memcpy(item->attrs, tmp, sizeof(int16) * item->nattrs);
+		tmp += sizeof(int16) * item->nattrs;
 
 		/* still within the bytea */
 		Assert(tmp <= ((char *) data + VARSIZE_ANY(data)));
@@ -358,7 +360,7 @@ pg_ndistinct_send(PG_FUNCTION_ARGS)
 static double
 ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 						  int2vector *attrs, VacAttrStats **stats,
-						  int k, AttrNumber *combination)
+						  int k, int16 *combination)
 {
 	int			i,
 				j;
@@ -520,22 +522,25 @@ num_combinations(int n)
  * generator_next(), but this seems simpler.
  */
 static CombinationGenerator *
-generator_init(int2vector *attrs, int k)
+generator_init(int n, int k)
 {
-	int			n = attrs->dim1;
 	CombinationGenerator *state;
 
 	Assert((n >= k) && (k > 0));
 
 	/* allocate the generator state as a single chunk of memory */
 	state = (CombinationGenerator *) palloc0(sizeof(CombinationGenerator));
-	state->combinations = (AttrNumber *) palloc(k * sizeof(AttrNumber));
 
 	state->ncombinations = n_choose_k(n, k);
+
+	/* pre-allocate space for all combinations*/
+	state->combinations
+			= (int16 *) palloc(sizeof(int16) * k * state->ncombinations);
+
 	state->current = 0;
 	state->k = k;
 
-	/* now actually pre-generate all the combinations */
+	/* now actually pre-generate all the combinations of K elements */
 	generate_combinations(state, n);
 
 	/* make sure we got the expected number of combinations */
@@ -548,7 +553,7 @@ generator_init(int2vector *attrs, int k)
 }
 
 /* generate next combination */
-static AttrNumber *
+static int16 *
 generator_next(CombinationGenerator *state, int2vector *attrs)
 {
 	if (state->current == state->ncombinations)
@@ -561,7 +566,7 @@ generator_next(CombinationGenerator *state, int2vector *attrs)
 static void
 generator_free(CombinationGenerator *state)
 {
-	/* we've allocated a single chunk, so just free it */
+	pfree(state->combinations);
 	pfree(state);
 }
 
@@ -569,13 +574,13 @@ generator_free(CombinationGenerator *state)
  * generate all combinations (k elements from n)
  */
 static void
-generate_combinations_recurse(CombinationGenerator *state, AttrNumber n,
-							int index, AttrNumber start, AttrNumber *current)
+generate_combinations_recurse(CombinationGenerator *state, int n,
+							  int index, int start, int16 *current)
 {
 	/* If we haven't filled all the elements, simply recurse. */
 	if (index < state->k)
 	{
-		AttrNumber	i;
+		int16	i;
 
 		/*
 		 * The values have to be in ascending order, so make sure we start
@@ -592,11 +597,9 @@ generate_combinations_recurse(CombinationGenerator *state, AttrNumber n,
 	}
 	else
 	{
-		/* we got a correct combination */
-		state->combinations = (AttrNumber *) repalloc(state->combinations,
-					   state->k * (state->current + 1) * sizeof(AttrNumber));
+		/* we got a valid combination, add it to the array */
 		memcpy(&state->combinations[(state->k * state->current)],
-			   current, state->k * sizeof(AttrNumber));
+			   current, state->k * sizeof(int16));
 		state->current++;
 	}
 }
@@ -605,7 +608,7 @@ generate_combinations_recurse(CombinationGenerator *state, AttrNumber n,
 static void
 generate_combinations(CombinationGenerator *state, int n)
 {
-	AttrNumber *current = (AttrNumber *) palloc0(sizeof(AttrNumber) * state->k);
+	int16 *current = (int16 *) palloc0(sizeof(int16) * state->k);
 
 	generate_combinations_recurse(state, n, 0, 0, current);
 

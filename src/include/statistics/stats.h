@@ -24,8 +24,8 @@
 typedef struct MVNDistinctItem
 {
 	double		ndistinct;
-	AttrNumber	nattrs;
-	AttrNumber *attrs;
+	int16		nattrs;
+	int16	   *attrs;
 } MVNDistinctItem;
 
 typedef struct MVNDistinctData
