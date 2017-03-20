@@ -1284,7 +1284,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 		HeapTuple	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
 
 		/* unavailable stats are not interesting for the planner */
-		if (stats_are_built(htup, STATS_EXT_NDISTINCT))
+		if (statext_is_kind_built(htup, STATS_EXT_NDISTINCT))
 		{
 			StatisticExtInfo *info = makeNode(StatisticExtInfo);
 

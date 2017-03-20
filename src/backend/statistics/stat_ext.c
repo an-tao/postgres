@@ -139,7 +139,7 @@ list_ext_stats(Oid relid)
 		info->stakeys = buildint2vector(stats->stakeys.values, stats->stakeys.dim1);
 
 		info->ndist_enabled = stats_are_enabled(htup, STATS_EXT_NDISTINCT);
-		info->ndist_built = stats_are_built(htup, STATS_EXT_NDISTINCT);
+		info->ndist_built = statext_is_kind_built(htup, STATS_EXT_NDISTINCT);
 
 		result = lappend(result, info);
 	}
@@ -154,6 +154,28 @@ list_ext_stats(Oid relid)
 	 */
 
 	return result;
+}
+
+/*
+ * statext_is_kind_built
+ *		Is this stat kind built in the given pg_statistic_ext tuple?
+ */
+bool
+statext_is_kind_built(HeapTuple htup, char type)
+{
+	AttrNumber  attnum;
+
+	switch (type)
+	{
+		case STATS_EXT_NDISTINCT:
+			attnum = Anum_pg_statistic_ext_standistinct;
+			break;
+
+		default:
+			elog(ERROR, "unexpected statistics type requested: %d", type);
+	}
+
+	return !heap_attisnull(htup, attnum);
 }
 
 /*
@@ -431,23 +453,4 @@ stats_are_enabled(HeapTuple htup, char type)
 			return true;
 
 	return false;
-}
-
-bool
-stats_are_built(HeapTuple htup, char type)
-{
-	bool		isnull;
-
-	switch (type)
-	{
-		case STATS_EXT_NDISTINCT:
-			SysCacheGetAttr(STATEXTOID, htup,
-							Anum_pg_statistic_ext_standistinct, &isnull);
-			break;
-
-		default:
-			elog(ERROR, "unexpected statistics type requested: %d", type);
-	}
-
-	return !isnull;
 }

@@ -115,7 +115,6 @@ statext_ndistinct_load(Oid mvoid)
 	HeapTuple	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
 
 	Assert(stats_are_enabled(htup, STATS_EXT_NDISTINCT));
-	Assert(stats_are_built(htup, STATS_EXT_NDISTINCT));
 
 	ndist = SysCacheGetAttr(STATEXTOID, htup,
 							Anum_pg_statistic_ext_standistinct, &isnull);
