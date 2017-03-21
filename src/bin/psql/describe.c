@@ -2325,7 +2325,7 @@ describeOneTableDetails(const char *schemaname,
 		{
 			printfPQExpBuffer(&buf,
 							  "SELECT oid, stanamespace::regnamespace AS nsp, staname, stakeys,\n"
-							  "  (SELECT string_agg(attname::text,', ') \n"
+							  "  (SELECT string_agg(pg_catalog.quote_ident(attname::text),', ') \n"
 						   "    FROM ((SELECT unnest(stakeys) AS attnum) s\n"
 			   "         JOIN pg_attribute a ON (starelid = a.attrelid AND\n"
 							  "a.attnum = s.attnum AND not attisdropped))) AS columns,\n"
