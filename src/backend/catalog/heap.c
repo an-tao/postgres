@@ -2773,40 +2773,20 @@ RemoveStatistics(Oid relid, AttrNumber attnum)
 /*
  * RemoveStatisticsExt --- remove entries in pg_statistic_ext for a relation
  *
- * If attnum is zero, remove all entries for rel; else remove only the one(s)
- * involving that column.
+ * If attnum is zero, remove all entries for rel; else remove only the
+ * one(s) involving that column.
  */
 void
 RemoveStatisticsExt(Oid relid, AttrNumber attnum)
 {
 	Relation	pgstatisticext;
-	TupleDesc	tupdesc = NULL;
 	SysScanDesc scan;
 	ScanKeyData key;
 	HeapTuple	tuple;
 
 	/*
-	 * When dropping a column, we'll drop statistics with a single remaining
-	 * (undropped column). To do that, we need the tuple descriptor.
-	 *
-	 * We already have the relation locked (as we're running ALTER TABLE ...
-	 * DROP COLUMN), so we'll just get the descriptor here.
+	 * Scan pg_statistic_ext to delete relevant tuples
 	 */
-	if (attnum != 0)
-	{
-		Relation	rel = relation_open(relid, NoLock);
-
-		/* extended stats are supported on tables and matviews */
-		if (rel->rd_rel->relkind == RELKIND_RELATION ||
-			rel->rd_rel->relkind == RELKIND_MATVIEW)
-			tupdesc = RelationGetDescr(rel);
-
-		relation_close(rel, NoLock);
-	}
-
-	if (tupdesc == NULL)
-		return;
-
 	pgstatisticext = heap_open(StatisticExtRelationId, RowExclusiveLock);
 
 	ScanKeyInit(&key,
@@ -2818,7 +2798,6 @@ RemoveStatisticsExt(Oid relid, AttrNumber attnum)
 							  StatisticExtRelidIndexId,
 							  true, NULL, 1, &key);
 
-	/* we must loop even when attnum != 0, in case of inherited stats */
 	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
 	{
 		bool		delete = false;
@@ -2827,22 +2806,22 @@ RemoveStatisticsExt(Oid relid, AttrNumber attnum)
 			delete = true;
 		else if (attnum != 0)
 		{
-			Datum		adatum;
-			bool		isnull;
+			Form_pg_statistic_ext	staForm;
 			int			i;
-			ArrayType  *arr;
-			int16	   *attnums;
 
-			/* get the column list */
-			adatum = SysCacheGetAttr(STATEXTOID, tuple,
-									 Anum_pg_statistic_ext_stakeys, &isnull);
-			Assert(!isnull);
-			arr = DatumGetArrayTypeP(adatum);
-			attnums = (int16 *) ARR_DATA_PTR(arr);
-
-			for (i = 0; i < ARR_DIMS(arr)[0]; i++)
-				if (attnums[i] == attnum)
+			/*
+			 * Decode the stakeys array and delete any stats that involve the
+			 * specified column.
+			 */
+			staForm = (Form_pg_statistic_ext) GETSTRUCT(tuple);
+			for (i = 0; i < staForm->stakeys.dim1; i++)
+			{
+				if (staForm->stakeys.values[i] == attnum)
+				{
 					delete = true;
+					break;
+				}
+			}
 		}
 
 		if (delete)
