@@ -3699,7 +3699,6 @@ find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
 {
 	ListCell   *lc;
 	Bitmapset  *attnums = NULL;
-	int			nattnums;
 	VariableStatData vardata;
 
 	/* assume we haven't found any suitable ndistinct statistics */
@@ -3737,15 +3736,11 @@ find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
 			ReleaseVariableStats(vardata);
 		}
 	}
-	nattnums = bms_num_members(attnums);
 
 	/* look for a matching ndistinct statistics */
 	foreach(lc, rel->statlist)
 	{
 		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
-		int			i,
-					k;
-		bool		matches;
 		int			j;
 		MVNDistinct stat;
 
@@ -3754,38 +3749,9 @@ find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
 			continue;
 
 		/*
-		 * Only ndistinct stats covering all Vars are acceptable, which can't
-		 * happen if the statistics has fewer attributes than we have Vars.
+		 * We can only use stats that cover all the columns we need
 		 */
-		if (nattnums > info->keys->dim1)
-			continue;
-
-		/* check that all Vars are covered by the statistic */
-		matches = true;			/* assume match until we find unmatched
-								 * attribute */
-		k = -1;
-		while ((k = bms_next_member(attnums, k)) >= 0)
-		{
-			bool		attr_found = false;
-
-			for (i = 0; i < info->keys->dim1; i++)
-			{
-				if (info->keys->values[i] == k)
-				{
-					attr_found = true;
-					break;
-				}
-			}
-
-			/* found attribute not covered by this ndistinct stats, skip */
-			if (!attr_found)
-			{
-				matches = false;
-				break;
-			}
-		}
-
-		if (!matches)
+		if (!bms_is_subset(attnums, info->keys))
 			continue;
 
 		/* hey, this statistics matches! great, let's extract the value */

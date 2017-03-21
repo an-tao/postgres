@@ -2275,7 +2275,7 @@ _outStatisticExtInfo(StringInfo str, const StatisticExtInfo *node)
 	WRITE_OID_FIELD(statOid);
 	/* don't write rel, leads to infinite recursion in plan tree dump */
 	WRITE_CHAR_FIELD(kind);
-	/* XXX missing a way to print keys */
+	WRITE_BITMAPSET_FIELD(keys);
 }
 
 static void

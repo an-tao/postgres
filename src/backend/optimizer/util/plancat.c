@@ -1277,26 +1277,23 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 	foreach(l, statoidlist)
 	{
 		Oid			statOid = lfirst_oid(l);
-		ArrayType  *arr;
-		int2vector *keys;
-		Datum		adatum;
-		bool		isnull;
+		Form_pg_statistic_ext staForm;
 		HeapTuple	htup;
+		Bitmapset  *keys = NULL;
+		int			i;
 
 		htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
 		if (!htup)
 			elog(ERROR, "cache lookup failed for statistics %u", statOid);
+		staForm = (Form_pg_statistic_ext) GETSTRUCT(htup);
 
 		/*
 		 * First, build the array of columns covered.  This is ultimately
 		 * wasted if no stats are actually built, but it doesn't seem worth
 		 * troubling over that case.
 		 */
-		adatum = SysCacheGetAttr(STATEXTOID, htup,
-								 Anum_pg_statistic_ext_stakeys, &isnull);
-		Assert(!isnull);
-		arr = DatumGetArrayTypeP(adatum);
-		keys = buildint2vector((int16 *) ARR_DATA_PTR(arr), ARR_DIMS(arr)[0]);
+		for (i = 0; i < staForm->stakeys.dim1; i++)
+			keys = bms_add_member(keys, staForm->stakeys.values[i]);
 
 		/* add one StatisticExtInfo for each kind built */
 		if (statext_is_kind_built(htup, STATS_EXT_NDISTINCT))
@@ -1306,12 +1303,13 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			info->statOid = statOid;
 			info->rel = rel;
 			info->kind = STATS_EXT_NDISTINCT;
-			info->keys = keys;
+			info->keys = bms_copy(keys);
 
 			stainfos = lcons(info, stainfos);
 		}
 
 		ReleaseSysCache(htup);
+		bms_free(keys);
 	}
 
 	list_free(statoidlist);
