@@ -37,6 +37,7 @@ static int	num_combinations(int n);
 typedef struct CombinationGenerator
 {
 	int		k;				/* size of the combination */
+	int		n;				/* total number of elements */
 	int		current;		/* index of the next combination to return */
 	int		ncombinations;	/* number of combinations (size of array) */
 	int16  *combinations;	/* array of pre-built combinations */
@@ -45,13 +46,15 @@ typedef struct CombinationGenerator
 static CombinationGenerator *generator_init(int n, int k);
 static void generator_free(CombinationGenerator *state);
 static int16 *generator_next(CombinationGenerator *state, int2vector *attrs);
-static void generate_combinations(CombinationGenerator *state, int n);
+static void generate_combinations(CombinationGenerator *state);
 
 
 /*
- * Compute ndistinct coefficient for the combination of attributes. This
- * computes the ndistinct estimate using the same estimator used in analyze.c
- * and then computes the coefficient.
+ * statext_ndistinct_build
+ *		Compute ndistinct coefficient for the combination of attributes.
+ *
+ * This computes the ndistinct estimate using the same estimator used
+ * in analyze.c and then computes the coefficient.
  */
 MVNDistinct
 statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
@@ -263,10 +266,11 @@ statext_ndistinct_deserialize(bytea *data)
 }
 
 /*
- * pg_ndistinct_in		- input routine for type pg_ndistinct.
+ * pg_ndistinct_in
+ * 		input routine for type pg_ndistinct
  *
- * pg_ndistinct is real enough to be a table column, but it has no operations
- * of its own, and disallows input too.
+ * pg_ndistinct is real enough to be a table column, but it has no
+ * operations of its own, and disallows input (jus like pg_node_tree).
  */
 Datum
 pg_ndistinct_in(PG_FUNCTION_ARGS)
@@ -279,7 +283,8 @@ pg_ndistinct_in(PG_FUNCTION_ARGS)
 }
 
 /*
- * pg_ndistinct		- output routine for type pg_ndistinct.
+ * pg_ndistinct
+ * 		output routine for type pg_ndistinct
  *
  * Produces a human-readable representation of the value.
  */
@@ -323,7 +328,8 @@ pg_ndistinct_out(PG_FUNCTION_ARGS)
 }
 
 /*
- * pg_ndistinct_recv		- binary input routine for type pg_ndistinct.
+ * pg_ndistinct_recv
+ * 		binary input routine for type pg_ndistinct
  */
 Datum
 pg_ndistinct_recv(PG_FUNCTION_ARGS)
@@ -336,7 +342,8 @@ pg_ndistinct_recv(PG_FUNCTION_ARGS)
 }
 
 /*
- * pg_ndistinct_send		- binary output routine for type pg_ndistinct.
+ * pg_ndistinct_send
+ * 		binary output routine for type pg_ndistinct
  *
  * n-distinct is serialized into a bytea value, so let's send that.
  */
@@ -348,7 +355,7 @@ pg_ndistinct_send(PG_FUNCTION_ARGS)
 
 /*
  * ndistinct_for_combination
- *	Estimates number of distinct values in a combination of columns.
+ *		Estimates number of distinct values in a combination of columns.
  *
  * This uses the same ndistinct estimator as compute_scalar_stats() in
  * ANALYZE, i.e.,
@@ -454,7 +461,7 @@ estimate_ndistinct(double totalrows, int numrows, int d, int f1)
 				denom,
 				ndistinct;
 
-	numer = (double) numrows *(double) d;
+	numer = (double) numrows * (double) d;
 
 	denom = (double) (numrows - f1) +
 		(double) f1 *(double) numrows / totalrows;
@@ -499,7 +506,7 @@ n_choose_k(int n, int k)
 
 /*
  * num_combinations
- *		computes number of combinations, excluding single-value combinations
+ *		number of combinations, excluding single-value combinations
  */
 static int
 num_combinations(int n)
@@ -516,10 +523,12 @@ num_combinations(int n)
 }
 
 /*
- * initialize the generator of combinations, and prebuild them.
+ * generator_init
+ *		initialize the generator of combinations
  *
- * This pre-builds all the combinations. We could also generate them in
- * generator_next(), but this seems simpler.
+ * The generator produces combinations of K elements from the attribute
+ * numbers. We do prebuild all the combinations in this method, as it
+ * seems somewhat simpler than generating them on the fly.
  */
 static CombinationGenerator *
 generator_init(int n, int k)
@@ -539,9 +548,10 @@ generator_init(int n, int k)
 
 	state->current = 0;
 	state->k = k;
+	state->n = n;
 
 	/* now actually pre-generate all the combinations of K elements */
-	generate_combinations(state, n);
+	generate_combinations(state);
 
 	/* make sure we got the expected number of combinations */
 	Assert(state->current == state->ncombinations);
@@ -552,7 +562,13 @@ generator_init(int n, int k)
 	return state;
 }
 
-/* generate next combination */
+/*
+ * generator_next
+ * 		returns the next combination from the prebuilt list
+ *
+ * Returns a combination of K attribute numbers (as specified in the
+ * call to generator_init), or NULL when there are no more combination.
+ */
 static int16 *
 generator_next(CombinationGenerator *state, int2vector *attrs)
 {
@@ -562,7 +578,12 @@ generator_next(CombinationGenerator *state, int2vector *attrs)
 	return &state->combinations[state->k * state->current++];
 }
 
-/* free the generator state */
+/*
+ * genrator_free
+ * 		free the internal state of the generator
+ *
+ * Releases the generator internal state (pre-built combinations).
+ */
 static void
 generator_free(CombinationGenerator *state)
 {
@@ -571,10 +592,16 @@ generator_free(CombinationGenerator *state)
 }
 
 /*
- * generate all combinations (k elements from n)
+ * generate_combinations_recurse
+ *		given a prefix, generate all possible combinations
+ *
+ * Given a prefix (first few elements of the combination), generate
+ * following elements recursively. We generate the combinations in
+ * lexicographic order, which eliminates permutations of the same
+ * combination.
  */
 static void
-generate_combinations_recurse(CombinationGenerator *state, int n,
+generate_combinations_recurse(CombinationGenerator *state,
 							  int index, int start, int16 *current)
 {
 	/* If we haven't filled all the elements, simply recurse. */
@@ -587,10 +614,10 @@ generate_combinations_recurse(CombinationGenerator *state, int n,
 		 * with the value passed by parameter.
 		 */
 
-		for (i = start; i < n; i++)
+		for (i = start; i < state->n; i++)
 		{
 			current[index] = i;
-			generate_combinations_recurse(state, n, (index + 1), (i + 1), current);
+			generate_combinations_recurse(state, (index + 1), (i + 1), current);
 		}
 
 		return;
@@ -604,13 +631,16 @@ generate_combinations_recurse(CombinationGenerator *state, int n,
 	}
 }
 
-/* generate all k-combinations of n elements */
+/*
+ * generate_combinations
+ * 		generate all k-combinations of N elements
+ */
 static void
-generate_combinations(CombinationGenerator *state, int n)
+generate_combinations(CombinationGenerator *state)
 {
 	int16 *current = (int16 *) palloc0(sizeof(int16) * state->k);
 
-	generate_combinations_recurse(state, n, 0, 0, current);
+	generate_combinations_recurse(state, 0, 0, current);
 
 	pfree(current);
 }
