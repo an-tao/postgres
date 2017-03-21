@@ -56,9 +56,9 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_na
     <listitem>
      <para>
       Do not throw an error if a statistics with the same name already exists.
-      A notice is issued in this case.  Note that there is no guarantee that
-      the existing statistics is anything like the one that would have been
-      created.
+      A notice is issued in this case.  Note that only the name of the
+      statistics object is considered here. The definition of the statistics is
+      not considered.
      </para>
     </listitem>
    </varlistentry>
