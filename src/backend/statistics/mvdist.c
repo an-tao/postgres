@@ -420,7 +420,7 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 
 	/* count number of distinct combinations */
 
-	f1 = 0;
+	summultiple = nmultiple = f1 = 0;
 	cnt = 1;
 	d = 1;
 	for (i = 1; i < numrows; i++)
