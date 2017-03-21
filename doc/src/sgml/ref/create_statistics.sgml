@@ -33,7 +33,8 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_na
 
   <para>
    <command>CREATE STATISTICS</command> will create a new extended statistics
-   on the table. The statistics will be created in the current database and
+   object on the specified table.
+   The statistics will be created in the current database and
    will be owned by the user issuing the command.
   </para>
 
@@ -41,7 +42,7 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_na
    If a schema name is given (for example, <literal>CREATE STATISTICS
    myschema.mystat ...</>) then the statistics is created in the specified
    schema.  Otherwise it is created in the current schema.  The name of
-   the table must be distinct from the name of any other statistics in the
+   the statistics must be distinct from the name of any other statistics in the
    same schema.
   </para>
  </refsect1>
@@ -73,20 +74,20 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_na
    </varlistentry>
 
    <varlistentry>
-    <term><replaceable class="PARAMETER">table_name</replaceable></term>
+    <term><replaceable class="PARAMETER">column_name</replaceable></term>
     <listitem>
      <para>
-      The name (optionally schema-qualified) of the table the statistics should
-      be created on.
+      The name of a column to be included in the statistics.
      </para>
     </listitem>
    </varlistentry>
 
    <varlistentry>
-    <term><replaceable class="PARAMETER">column_name</replaceable></term>
+    <term><replaceable class="PARAMETER">table_name</replaceable></term>
     <listitem>
      <para>
-      The name of a column to be included in the statistics.
+      The name (optionally schema-qualified) of the table the statistics should
+      be created on.
      </para>
     </listitem>
    </varlistentry>
