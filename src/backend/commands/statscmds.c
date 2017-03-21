@@ -106,7 +106,8 @@ CreateStatistics(CreateStatsStmt *stmt)
 
 	/*
 	 * Transform column names to array of attnums. While doing that, we also
-	 * enforce the maximum number of keys.
+	 * enforce the maximum number of keys, and make sure no system columns
+	 * are used.
 	 */
 	foreach(l, stmt->keys)
 	{
@@ -120,6 +121,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 					(errcode(ERRCODE_UNDEFINED_COLUMN),
 			  errmsg("column \"%s\" referenced in statistics does not exist",
 					 attname)));
+		if (((Form_pg_attribute) GETSTRUCT(atttuple))->attnum < 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("statistic creation on system columns is not supported")));
 
 		/* more than STATS_MAX_DIMENSIONS columns not allowed */
 		if (numcols >= STATS_MAX_DIMENSIONS)
