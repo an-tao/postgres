@@ -60,22 +60,22 @@ MVNDistinct
 statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 						int2vector *attrs, VacAttrStats **stats)
 {
-	int			i,
-				k;
+	MVNDistinct result;
+	int			k;
+	int			itemcnt;
 	int			numattrs = attrs->dim1;
 	int			numcombs = num_combinations(numattrs);
 
-	MVNDistinct result;
-
-	result = palloc0(offsetof(MVNDistinctData, items) +
-					 numcombs * sizeof(MVNDistinctItem));
-
+	result = palloc(offsetof(MVNDistinctData, items) +
+					numcombs * sizeof(MVNDistinctItem));
+	result->magic = STATS_NDISTINCT_MAGIC;
+	result->type = STATS_NDISTINCT_TYPE_BASIC;
 	result->nitems = numcombs;
 
-	i = 0;
+	itemcnt = 0;
 	for (k = 2; k <= numattrs; k++)
 	{
-		int16 *combination;
+		int16	   *combination;
 		CombinationGenerator *generator;
 
 		/* generate combinations of K out of N elements */
@@ -83,25 +83,26 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 
 		while ((combination = generator_next(generator, attrs)))
 		{
-			MVNDistinctItem *item = &result->items[i++];
+			MVNDistinctItem *item = &result->items[itemcnt];
+			int		j;
 
-			item->nattrs = k;
-			item->ndistinct = ndistinct_for_combination(totalrows, numrows, rows,
-											   attrs, stats, k, combination);
+			item->attrs = NULL;
+			for (j = 0; j < k; j++)
+				item->attrs = bms_add_member(item->attrs,
+											 stats[combination[j]]->attr->attnum);
+			item->ndistinct =
+				ndistinct_for_combination(totalrows, numrows, rows,
+										  attrs, stats, k, combination);
 
-			/* copy the indexes in place */
-			item->attrs = palloc(k * sizeof(int16));
-			memcpy(item->attrs, combination, k * sizeof(int16));
-
-			/* must not overflow the output array */
-			Assert(i <= result->nitems);
+			itemcnt++;
+			Assert(itemcnt <= result->nitems);
 		}
 
 		generator_free(generator);
 	}
 
 	/* must consume exactly the whole output array */
-	Assert(i == result->nitems);
+	Assert(itemcnt == result->nitems);
 
 	return result;
 }
@@ -145,23 +146,32 @@ statext_ndistinct_serialize(MVNDistinct ndistinct)
 	char	   *tmp;
 	Size		len;
 
-	/* we need to store nitems */
+	Assert(ndistinct->magic == STATS_NDISTINCT_MAGIC);
+	Assert(ndistinct->type == STATS_NDISTINCT_TYPE_BASIC);
+
+	/*
+	 * Base size is base struct size, plus one base struct for each items,
+	 * including number of items for each.
+	 */
 	len = VARHDRSZ + offsetof(MVNDistinctData, items) +
-		ndistinct->nitems * offsetof(MVNDistinctItem, attrs);
+		ndistinct->nitems * (offsetof(MVNDistinctItem, attrs) + sizeof(int));
 
 	/* and also include space for the actual attribute numbers */
 	for (i = 0; i < ndistinct->nitems; i++)
-		len += (sizeof(int16) * ndistinct->items[i].nattrs);
+	{
+		int		nmembers;
+
+		nmembers = bms_num_members(ndistinct->items[i].attrs);
+		Assert(nmembers >= 2);
+		len += sizeof(AttrNumber) * nmembers;
+	}
 
 	output = (bytea *) palloc(len);
 	SET_VARSIZE(output, len);
 
 	tmp = VARDATA(output);
 
-	ndistinct->magic = STATS_NDISTINCT_MAGIC;
-	ndistinct->type = STATS_NDISTINCT_TYPE_BASIC;
-
-	/* first, store the number of items */
+	/* Store the base struct values */
 	memcpy(tmp, ndistinct, offsetof(MVNDistinctData, items));
 	tmp += offsetof(MVNDistinctData, items);
 
@@ -172,12 +182,22 @@ statext_ndistinct_serialize(MVNDistinct ndistinct)
 	for (i = 0; i < ndistinct->nitems; i++)
 	{
 		MVNDistinctItem item = ndistinct->items[i];
+		int		nmembers = bms_num_members(item.attrs);
+		int		x;
 
-		memcpy(tmp, &item, offsetof(MVNDistinctItem, attrs));
-		tmp += offsetof(MVNDistinctItem, attrs);
+		memcpy(tmp, &item.ndistinct, sizeof(double));
+		tmp += sizeof(double);
+		memcpy(tmp, &nmembers, sizeof(int));
+		tmp += sizeof(int);
 
-		memcpy(tmp, item.attrs, sizeof(int16) * item.nattrs);
-		tmp += sizeof(int16) * item.nattrs;
+		x = -1;
+		while ((x = bms_next_member(item.attrs, x)) >= 0)
+		{
+			AttrNumber	value = (AttrNumber) x;
+
+			memcpy(tmp, &value, sizeof(AttrNumber));
+			tmp += sizeof(AttrNumber);
+		}
 
 		Assert(tmp <= ((char *) output + len));
 	}
@@ -227,7 +247,7 @@ statext_ndistinct_deserialize(bytea *data)
 	/* what minimum bytea size do we expect for those parameters */
 	expected_size = offsetof(MVNDistinctData, items) +
 		ndistinct->nitems * (offsetof(MVNDistinctItem, attrs) +
-							 sizeof(int16) * 2);
+							 sizeof(AttrNumber) * 2);
 
 	if (VARSIZE_ANY_EXHDR(data) < expected_size)
 		elog(ERROR, "invalid dependencies size %ld (expected at least %ld)",
@@ -240,20 +260,27 @@ statext_ndistinct_deserialize(bytea *data)
 	for (i = 0; i < ndistinct->nitems; i++)
 	{
 		MVNDistinctItem *item = &ndistinct->items[i];
+		int			nelems;
+
+		item->attrs = NULL;
+
+		/* ndistinct value */
+		memcpy(&item->ndistinct, tmp, sizeof(double));
+		tmp += sizeof(double);
 
 		/* number of attributes */
-		memcpy(item, tmp, offsetof(MVNDistinctItem, attrs));
-		tmp += offsetof(MVNDistinctItem, attrs);
+		memcpy(&nelems, tmp, sizeof(int));
+		tmp += sizeof(int);
+		Assert((nelems >= 2) && (nelems <= STATS_MAX_DIMENSIONS));
 
-		/* is the number of attributes valid? */
-		Assert((item->nattrs >= 2) && (item->nattrs <= STATS_MAX_DIMENSIONS));
+		while (nelems-- > 0)
+		{
+			AttrNumber	attno;
 
-		/* now that we know the number of attributes, allocate the attribute */
-		item->attrs = (int16 *) palloc(item->nattrs * sizeof(int16));
-
-		/* copy attribute numbers */
-		memcpy(item->attrs, tmp, sizeof(int16) * item->nattrs);
-		tmp += sizeof(int16) * item->nattrs;
+			memcpy(&attno, tmp, sizeof(AttrNumber));
+			tmp += sizeof(AttrNumber);
+			item->attrs = bms_add_member(item->attrs, attno);
+		}
 
 		/* still within the bytea */
 		Assert(tmp <= ((char *) data + VARSIZE_ANY(data)));
@@ -293,8 +320,7 @@ pg_ndistinct_out(PG_FUNCTION_ARGS)
 {
 	bytea	   *data = PG_GETARG_BYTEA_PP(0);
 	MVNDistinct ndist = statext_ndistinct_deserialize(data);
-	int			i,
-				j;
+	int			i;
 	StringInfoData str;
 
 	initStringInfo(&str);
@@ -308,18 +334,8 @@ pg_ndistinct_out(PG_FUNCTION_ARGS)
 			appendStringInfoString(&str, ", ");
 
 		appendStringInfoChar(&str, '{');
-
-		for (j = 0; j < item.nattrs; j++)
-		{
-			if (j > 0)
-				appendStringInfoString(&str, ", ");
-
-			appendStringInfo(&str, "%d", item.attrs[j]);
-		}
-
-		appendStringInfo(&str, ", %f", item.ndistinct);
-
-		appendStringInfoChar(&str, '}');
+		outBitmapset(&str, item.attrs);
+		appendStringInfo(&str, ", %f}", item.ndistinct);
 	}
 
 	appendStringInfoChar(&str, ']');

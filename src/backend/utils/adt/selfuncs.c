@@ -3789,45 +3789,19 @@ find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
 			continue;
 
 		/* hey, this statistics matches! great, let's extract the value */
-		*found = true;
 
 		stat = statext_ndistinct_load(info->statOid);
 
+		/* Find the specific item that exactly matches the combination */
 		for (j = 0; j < stat->nitems; j++)
 		{
-			bool		item_matches = true;
 			MVNDistinctItem *item = &stat->items[j];
 
-			/* not the right item (different number of attributes) */
-			if (item->nattrs != nattnums)
-				continue;
-
-			/* check the attribute numbers */
-			k = -1;
-			while ((k = bms_next_member(attnums, k)) >= 0)
+			if (bms_subset_compare(item->attrs, attnums) == BMS_EQUAL)
 			{
-				bool		attr_found = false;
-
-				for (i = 0; i < item->nattrs; i++)
-				{
-					if (info->keys->values[item->attrs[i]] == k)
-					{
-						attr_found = true;
-						break;
-					}
-				}
-
-				if (!attr_found)
-				{
-					item_matches = false;
-					break;
-				}
+				*found = true;
+				return item->ndistinct;
 			}
-
-			if (!item_matches)
-				continue;
-
-			return item->ndistinct;
 		}
 	}
 

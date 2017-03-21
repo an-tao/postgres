@@ -17,17 +17,18 @@
 
 #define STATS_MAX_DIMENSIONS	8		/* max number of attributes */
 
-#define STATS_NDISTINCT_MAGIC		0xA352BFA4	/* marks serialized bytea */
-#define STATS_NDISTINCT_TYPE_BASIC	1	/* basic MCV list type */
+/* Multivariate distinct coefficients */
+#define STATS_NDISTINCT_MAGIC		0xA352BFA4	/* struct identifier */
+#define STATS_NDISTINCT_TYPE_BASIC	1	/* struct version */
 
-/* Multivariate distinct coefficients. */
+/* MVDistinctItem represents a single combination of columns */
 typedef struct MVNDistinctItem
 {
-	double		ndistinct;
-	int16		nattrs;
-	int16	   *attrs;
+	double		ndistinct;		/* ndistinct value for this combination */
+	Bitmapset  *attrs;			/* attr numbers of items */
 } MVNDistinctItem;
 
+/* A MVNDistinct object, comprising all possible combinations of columns */
 typedef struct MVNDistinctData
 {
 	uint32		magic;			/* magic constant marker */
