@@ -153,7 +153,7 @@ statext_ndistinct_serialize(MVNDistinct ndistinct)
 	for (i = 0; i < ndistinct->nitems; i++)
 		len += (sizeof(int16) * ndistinct->items[i].nattrs);
 
-	output = (bytea *) palloc0(len);
+	output = (bytea *) palloc(len);
 	SET_VARSIZE(output, len);
 
 	tmp = VARDATA(output);
@@ -205,7 +205,7 @@ statext_ndistinct_deserialize(bytea *data)
 			 VARSIZE_ANY_EXHDR(data), offsetof(MVNDistinctData, items));
 
 	/* read the MVNDistinct header */
-	ndistinct = (MVNDistinct) palloc0(sizeof(MVNDistinctData));
+	ndistinct = (MVNDistinct) palloc(sizeof(MVNDistinctData));
 
 	/* initialize pointer to the data part (skip the varlena header) */
 	tmp = VARDATA_ANY(data);
@@ -249,7 +249,7 @@ statext_ndistinct_deserialize(bytea *data)
 		Assert((item->nattrs >= 2) && (item->nattrs <= STATS_MAX_DIMENSIONS));
 
 		/* now that we know the number of attributes, allocate the attribute */
-		item->attrs = (int16 *) palloc0(item->nattrs * sizeof(int16));
+		item->attrs = (int16 *) palloc(item->nattrs * sizeof(int16));
 
 		/* copy attribute numbers */
 		memcpy(item->attrs, tmp, sizeof(int16) * item->nattrs);
@@ -388,7 +388,7 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 	 * (not just CPU, but especially memory bloat).
 	 */
 	mss = multi_sort_init(k);
-	items = (SortItem *) palloc0(numrows * sizeof(SortItem));
+	items = (SortItem *) palloc(numrows * sizeof(SortItem));
 	values = (Datum *) palloc0(sizeof(Datum) * numrows * k);
 	isnull = (bool *) palloc0(sizeof(bool) * numrows * k);
 
@@ -538,7 +538,7 @@ generator_init(int n, int k)
 	Assert((n >= k) && (k > 0));
 
 	/* allocate the generator state as a single chunk of memory */
-	state = (CombinationGenerator *) palloc0(sizeof(CombinationGenerator));
+	state = (CombinationGenerator *) palloc(sizeof(CombinationGenerator));
 
 	state->ncombinations = n_choose_k(n, k);
 
