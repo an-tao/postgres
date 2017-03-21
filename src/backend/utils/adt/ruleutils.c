@@ -1490,7 +1490,7 @@ pg_get_statisticsext_worker(Oid statextid, bool missing_ok)
 
 		attname = get_relid_attribute_name(statextrec->starelid, attnum);
 
-		appendStringInfoString(&buf, attname);
+		appendStringInfoString(&buf, quote_identifier(attname));
 	}
 
 	appendStringInfo(&buf, ") FROM %s",
