@@ -2573,6 +2573,18 @@ _outIndexStmt(StringInfo str, const IndexStmt *node)
 }
 
 static void
+_outCreateStatsStmt(StringInfo str, const CreateStatsStmt *node)
+{
+	WRITE_NODE_TYPE("CREATESTATSSTMT");
+
+	WRITE_NODE_FIELD(defnames);
+	WRITE_NODE_FIELD(relation);
+	WRITE_NODE_FIELD(keys);
+	WRITE_NODE_FIELD(options);
+	WRITE_BOOL_FIELD(if_not_exists);
+}
+
+static void
 _outNotifyStmt(StringInfo str, const NotifyStmt *node)
 {
 	WRITE_NODE_TYPE("NOTIFY");
@@ -3947,6 +3959,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_IndexStmt:
 				_outIndexStmt(str, obj);
+				break;
+			case T_CreateStatsStmt:
+				_outCreateStatsStmt(str, obj);
 				break;
 			case T_NotifyStmt:
 				_outNotifyStmt(str, obj);
