@@ -6588,7 +6588,6 @@ getExtendedStatistics(Archive *fout, TableInfo tblinfo[], int numTables)
 		TableInfo  *tbinfo = &tblinfo[i];
 
 		/* Only plain tables and materialized views can have extended statistics. */
-		/* XXX ensure this is true. It was broken in v25 0002 */
 		if (tbinfo->relkind != RELKIND_RELATION &&
 			tbinfo->relkind != RELKIND_MATVIEW)
 			continue;
