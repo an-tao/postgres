@@ -17042,11 +17042,10 @@ SELECT pg_type_is_visible('myschema.widget'::regtype);
 
   <para>
    <function>pg_get_constraintdef</function>,
-   <function>pg_get_indexdef</function>,
-   <function>pg_get_statisticsextdef</function>,
-   <function>pg_get_ruledef</function>, and
+   <function>pg_get_indexdef</function>, <function>pg_get_ruledef</function>,
+   <function>pg_get_statisticsextdef</function>, and
    <function>pg_get_triggerdef</function>, respectively reconstruct the
-   creating command for a constraint, index, extended statistics object, rule,
+   creating command for a constraint, index, rule, extended statistics object,
    or trigger. (Note that this is a decompiled reconstruction, not the
    original text of the command.) <function>pg_get_expr</function> decompiles
    the internal form of an individual expression, such as the default value

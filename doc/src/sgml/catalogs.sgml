@@ -4311,7 +4311,7 @@
       <entry><type>pg_ndistinct</type></entry>
       <entry></entry>
       <entry>
-       Ndistict coefficients, serialized as <structname>pg_ndistinct</> type.
+       N-distinct coefficients, serialized as <structname>pg_ndistinct</> type.
       </entry>
      </row>
 
