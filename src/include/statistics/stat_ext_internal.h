@@ -46,11 +46,11 @@ typedef struct SortItem
 	bool	   *isnull;
 } SortItem;
 
-extern MVNDistinct statext_ndistinct_build(double totalrows,
+extern MVNDistinct *statext_ndistinct_build(double totalrows,
 						int numrows, HeapTuple *rows,
 						int2vector *attrs, VacAttrStats **stats);
-extern bytea *statext_ndistinct_serialize(MVNDistinct ndistinct);
-extern MVNDistinct statext_ndistinct_deserialize(bytea *data);
+extern bytea *statext_ndistinct_serialize(MVNDistinct *ndistinct);
+extern MVNDistinct *statext_ndistinct_deserialize(bytea *data);
 
 extern MultiSortSupport multi_sort_init(int ndims);
 extern void multi_sort_add_dimension(MultiSortSupport mss, int sortdim,

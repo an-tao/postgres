@@ -3742,7 +3742,7 @@ find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
 	{
 		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
 		int			j;
-		MVNDistinct stat;
+		MVNDistinct *stat;
 
 		/* skip statistics of other kinds */
 		if (info->kind != STATS_EXT_NDISTINCT)

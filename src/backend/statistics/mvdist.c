@@ -56,17 +56,17 @@ static void generate_combinations(CombinationGenerator *state);
  * This computes the ndistinct estimate using the same estimator used
  * in analyze.c and then computes the coefficient.
  */
-MVNDistinct
+MVNDistinct *
 statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 						int2vector *attrs, VacAttrStats **stats)
 {
-	MVNDistinct result;
+	MVNDistinct *result;
 	int			k;
 	int			itemcnt;
 	int			numattrs = attrs->dim1;
 	int			numcombs = num_combinations(numattrs);
 
-	result = palloc(offsetof(MVNDistinctData, items) +
+	result = palloc(offsetof(MVNDistinct, items) +
 					numcombs * sizeof(MVNDistinctItem));
 	result->magic = STATS_NDISTINCT_MAGIC;
 	result->type = STATS_NDISTINCT_TYPE_BASIC;
@@ -111,7 +111,7 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
  * statext_ndistinct_load
  *		Load the ndistinct value for the indicated pg_statistic_ext tuple
  */
-MVNDistinct
+MVNDistinct *
 statext_ndistinct_load(Oid mvoid)
 {
 	bool		isnull = false;
@@ -139,7 +139,7 @@ statext_ndistinct_load(Oid mvoid)
  *		serialize ndistinct to the on-disk bytea format
  */
 bytea *
-statext_ndistinct_serialize(MVNDistinct ndistinct)
+statext_ndistinct_serialize(MVNDistinct *ndistinct)
 {
 	int			i;
 	bytea	   *output;
@@ -153,7 +153,7 @@ statext_ndistinct_serialize(MVNDistinct ndistinct)
 	 * Base size is base struct size, plus one base struct for each items,
 	 * including number of items for each.
 	 */
-	len = VARHDRSZ + offsetof(MVNDistinctData, items) +
+	len = VARHDRSZ + offsetof(MVNDistinct, items) +
 		ndistinct->nitems * (offsetof(MVNDistinctItem, attrs) + sizeof(int));
 
 	/* and also include space for the actual attribute numbers */
@@ -172,8 +172,8 @@ statext_ndistinct_serialize(MVNDistinct ndistinct)
 	tmp = VARDATA(output);
 
 	/* Store the base struct values */
-	memcpy(tmp, ndistinct, offsetof(MVNDistinctData, items));
-	tmp += offsetof(MVNDistinctData, items);
+	memcpy(tmp, ndistinct, offsetof(MVNDistinct, items));
+	tmp += offsetof(MVNDistinct, items);
 
 	/*
 	 * store number of attributes and attribute numbers for each ndistinct
@@ -209,30 +209,30 @@ statext_ndistinct_serialize(MVNDistinct ndistinct)
  * statext_ndistinct_deserialize
  *		Read an on-disk bytea format MVNDistinct to in-memory format
  */
-MVNDistinct
+MVNDistinct *
 statext_ndistinct_deserialize(bytea *data)
 {
 	int			i;
 	Size		expected_size;
-	MVNDistinct ndistinct;
+	MVNDistinct *ndistinct;
 	char	   *tmp;
 
 	if (data == NULL)
 		return NULL;
 
-	if (VARSIZE_ANY_EXHDR(data) < offsetof(MVNDistinctData, items))
+	if (VARSIZE_ANY_EXHDR(data) < offsetof(MVNDistinct, items))
 		elog(ERROR, "invalid MVNDistinct size %ld (expected at least %ld)",
-			 VARSIZE_ANY_EXHDR(data), offsetof(MVNDistinctData, items));
+			 VARSIZE_ANY_EXHDR(data), offsetof(MVNDistinct, items));
 
 	/* read the MVNDistinct header */
-	ndistinct = (MVNDistinct) palloc(sizeof(MVNDistinctData));
+	ndistinct = (MVNDistinct *) palloc(sizeof(MVNDistinct));
 
 	/* initialize pointer to the data part (skip the varlena header) */
 	tmp = VARDATA_ANY(data);
 
 	/* get the header and perform basic sanity checks */
-	memcpy(ndistinct, tmp, offsetof(MVNDistinctData, items));
-	tmp += offsetof(MVNDistinctData, items);
+	memcpy(ndistinct, tmp, offsetof(MVNDistinct, items));
+	tmp += offsetof(MVNDistinct, items);
 
 	if (ndistinct->magic != STATS_NDISTINCT_MAGIC)
 		elog(ERROR, "invalid ndistinct magic %d (expected %d)",
@@ -245,7 +245,7 @@ statext_ndistinct_deserialize(bytea *data)
 	Assert(ndistinct->nitems > 0);
 
 	/* what minimum bytea size do we expect for those parameters */
-	expected_size = offsetof(MVNDistinctData, items) +
+	expected_size = offsetof(MVNDistinct, items) +
 		ndistinct->nitems * (offsetof(MVNDistinctItem, attrs) +
 							 sizeof(AttrNumber) * 2);
 
@@ -254,7 +254,7 @@ statext_ndistinct_deserialize(bytea *data)
 			 VARSIZE_ANY_EXHDR(data), expected_size);
 
 	/* allocate space for the ndistinct items */
-	ndistinct = repalloc(ndistinct, offsetof(MVNDistinctData, items) +
+	ndistinct = repalloc(ndistinct, offsetof(MVNDistinct, items) +
 						 (ndistinct->nitems * sizeof(MVNDistinctItem)));
 
 	for (i = 0; i < ndistinct->nitems; i++)
@@ -319,7 +319,7 @@ Datum
 pg_ndistinct_out(PG_FUNCTION_ARGS)
 {
 	bytea	   *data = PG_GETARG_BYTEA_PP(0);
-	MVNDistinct ndist = statext_ndistinct_deserialize(data);
+	MVNDistinct *ndist = statext_ndistinct_deserialize(data);
 	int			i;
 	StringInfoData str;
 

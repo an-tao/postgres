@@ -29,17 +29,15 @@ typedef struct MVNDistinctItem
 } MVNDistinctItem;
 
 /* A MVNDistinct object, comprising all possible combinations of columns */
-typedef struct MVNDistinctData
+typedef struct MVNDistinct
 {
 	uint32		magic;			/* magic constant marker */
 	uint32		type;			/* type of ndistinct (BASIC) */
 	uint32		nitems;			/* number of items in the statistic */
 	MVNDistinctItem items[FLEXIBLE_ARRAY_MEMBER];
-} MVNDistinctData;
+} MVNDistinct;
 
-typedef MVNDistinctData *MVNDistinct;
-
-extern MVNDistinct statext_ndistinct_load(Oid mvoid);
+extern MVNDistinct *statext_ndistinct_load(Oid mvoid);
 
 extern void BuildRelationExtStatistics(Relation onerel, double totalrows,
 						   int numrows, HeapTuple *rows,
