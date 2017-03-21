@@ -224,9 +224,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 	recordDependencyOn(&childobject, &parentobject, DEPENDENCY_AUTO);
 
 	/*
-	 * Also add dependency on the schema (to drop statistics on DROP SCHEMA).
-	 * This is not handled automatically by DROP TABLE because statistics are
-	 * on their own schema.
+	 * Also add dependency on the schema.  This is required to ensure that we
+	 * drop the statistics on DROP SCHEMA.  This is not handled automatically
+	 * by DROP TABLE because the statistics are not an object in the table's
+	 * schema.
 	 */
 	ObjectAddressSet(parentobject, NamespaceRelationId, namespaceId);
 	recordDependencyOn(&childobject, &parentobject, DEPENDENCY_AUTO);
