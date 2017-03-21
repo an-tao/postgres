@@ -61,8 +61,4 @@ extern int multi_sort_compare_dim(int dim, const SortItem * a,
 extern int multi_sort_compare_dims(int start, int end, const SortItem * a,
 						const SortItem * b, MultiSortSupport mss);
 
-/* comparators, used when constructing extended stats */
-extern int	compare_scalars_simple(const void *a, const void *b, void *arg);
-extern int	compare_scalars_partition(const void *a, const void *b, void *arg);
-
 #endif   /* STAT_EXT_INTERNAL_H */

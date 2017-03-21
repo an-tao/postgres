@@ -294,36 +294,6 @@ statext_store(Relation pg_stext, Oid statOid,
 	heap_freetuple(stup);
 }
 
-/* multi-variate stats comparator */
-
-/*
- * qsort_arg comparator for sorting Datums (MV stats)
- *
- * This does not maintain the tupnoLink array.
- */
-int
-compare_scalars_simple(const void *a, const void *b, void *arg)
-{
-	Datum		da = *(Datum *) a;
-	Datum		db = *(Datum *) b;
-	SortSupport ssup = (SortSupport) arg;
-
-	return ApplySortComparator(da, false, db, false, ssup);
-}
-
-/*
- * qsort_arg comparator for sorting data when partitioning a MV bucket
- */
-int
-compare_scalars_partition(const void *a, const void *b, void *arg)
-{
-	Datum		da = ((ScalarItem *) a)->value;
-	Datum		db = ((ScalarItem *) b)->value;
-	SortSupport ssup = (SortSupport) arg;
-
-	return ApplySortComparator(da, false, db, false, ssup);
-}
-
 /* initialize multi-dimensional sort */
 MultiSortSupport
 multi_sort_init(int ndims)
