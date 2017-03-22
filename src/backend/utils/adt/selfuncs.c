@@ -3760,10 +3760,10 @@ match_ndistinct_to_vars(PlannerInfo *root, RelOptInfo * rel, List **varinfos)
 
 		if (HeapTupleIsValid(vardata.statsTuple))
 		{
-			Form_pg_statistic stats;
+			Form_pg_statistic statForm;
 
-			stats = (Form_pg_statistic) GETSTRUCT(vardata.statsTuple);
-			attnums = bms_add_member(attnums, stats->staattnum);
+			statForm = (Form_pg_statistic) GETSTRUCT(vardata.statsTuple);
+			attnums = bms_add_member(attnums, statForm->staattnum);
 
 			ReleaseVariableStats(vardata);
 		}
