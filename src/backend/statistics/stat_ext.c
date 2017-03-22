@@ -216,9 +216,8 @@ lookup_var_attr_stats(int2vector *attrs, int natts, VacAttrStats **vacattrstats)
 		}
 
 		/*
-		 * Check that we found a non-dropped column, that the attnum matches
-		 * and that there's the requested 'lt' operator and that the type is
-		 * 'passed-by-value'.
+		 * Check that we found a non-dropped column, that the attnum matches,
+		 * and that an less-than operator exists.
 		 */
 		Assert(!stats[i]->attr->attisdropped);
 		Assert(stats[i]->tupattnum == attrs->values[i]);
