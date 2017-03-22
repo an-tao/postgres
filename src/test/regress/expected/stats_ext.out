@@ -21,8 +21,11 @@ Statistics:
 DROP TABLE ab1;
 -- data type passed by value
 CREATE TABLE ndistinct (
+    filler1 TEXT,
+    filler2 NUMERIC,
     a INT,
     b INT,
+    filler3 DATE,
     c INT,
     d INT
 );
@@ -41,14 +44,15 @@ ERROR:  duplicate column name in statistics definition
 -- correct command
 CREATE STATISTICS s10 ON (a, b, c) FROM ndistinct;
 -- perfectly correlated groups
-INSERT INTO ndistinct
-     SELECT i/100, i/100, i/100 FROM generate_series(1,10000) s(i);
+INSERT INTO ndistinct (a, b, c, filler1)
+     SELECT i/100, i/100, i/100, cash_words(i::money)
+       FROM generate_series(1,10000) s(i);
 ANALYZE ndistinct;
 SELECT staenabled, standistinct
   FROM pg_statistic_ext WHERE starelid = 'ndistinct'::regclass;
  staenabled |                                          standistinct                                          
 ------------+------------------------------------------------------------------------------------------------
- {d}        | [{(b 1 2), 101.000000}, {(b 1 3), 101.000000}, {(b 2 3), 101.000000}, {(b 1 2 3), 101.000000}]
+ {d}        | [{(b 3 4), 101.000000}, {(b 3 6), 101.000000}, {(b 4 6), 101.000000}, {(b 3 4 6), 101.000000}]
 (1 row)
 
 EXPLAIN (COSTS off)
@@ -80,14 +84,14 @@ EXPLAIN (COSTS off)
 
 TRUNCATE TABLE ndistinct;
 -- partially correlated groups
-INSERT INTO ndistinct
+INSERT INTO ndistinct (a, b, c)
      SELECT i/50, i/100, i/200 FROM generate_series(1,10000) s(i);
 ANALYZE ndistinct;
 SELECT staenabled, standistinct
   FROM pg_statistic_ext WHERE starelid = 'ndistinct'::regclass;
  staenabled |                                          standistinct                                          
 ------------+------------------------------------------------------------------------------------------------
- {d}        | [{(b 1 2), 201.000000}, {(b 1 3), 201.000000}, {(b 2 3), 101.000000}, {(b 1 2 3), 201.000000}]
+ {d}        | [{(b 3 4), 201.000000}, {(b 3 6), 201.000000}, {(b 4 6), 101.000000}, {(b 3 4 6), 201.000000}]
 (1 row)
 
 EXPLAIN

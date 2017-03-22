@@ -19,8 +19,11 @@ DROP TABLE ab1;
 
 -- data type passed by value
 CREATE TABLE ndistinct (
+    filler1 TEXT,
+    filler2 NUMERIC,
     a INT,
     b INT,
+    filler3 DATE,
     c INT,
     d INT
 );
@@ -41,8 +44,9 @@ CREATE STATISTICS s10 ON (a, a, b) FROM ndistinct;
 CREATE STATISTICS s10 ON (a, b, c) FROM ndistinct;
 
 -- perfectly correlated groups
-INSERT INTO ndistinct
-     SELECT i/100, i/100, i/100 FROM generate_series(1,10000) s(i);
+INSERT INTO ndistinct (a, b, c, filler1)
+     SELECT i/100, i/100, i/100, cash_words(i::money)
+       FROM generate_series(1,10000) s(i);
 
 ANALYZE ndistinct;
 
@@ -61,7 +65,7 @@ EXPLAIN (COSTS off)
 TRUNCATE TABLE ndistinct;
 
 -- partially correlated groups
-INSERT INTO ndistinct
+INSERT INTO ndistinct (a, b, c)
      SELECT i/50, i/100, i/200 FROM generate_series(1,10000) s(i);
 
 ANALYZE ndistinct;
