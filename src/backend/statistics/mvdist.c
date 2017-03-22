@@ -304,7 +304,7 @@ statext_ndistinct_deserialize(bytea *data)
 
 /*
  * pg_ndistinct_in
- * 		input routine for type pg_ndistinct
+ *		input routine for type pg_ndistinct
  *
  * pg_ndistinct is real enough to be a table column, but it has no
  * operations of its own, and disallows input (jus like pg_node_tree).
@@ -321,7 +321,7 @@ pg_ndistinct_in(PG_FUNCTION_ARGS)
 
 /*
  * pg_ndistinct
- * 		output routine for type pg_ndistinct
+ *		output routine for type pg_ndistinct
  *
  * Produces a human-readable representation of the value.
  */
@@ -355,7 +355,7 @@ pg_ndistinct_out(PG_FUNCTION_ARGS)
 
 /*
  * pg_ndistinct_recv
- * 		binary input routine for type pg_ndistinct
+ *		binary input routine for type pg_ndistinct
  */
 Datum
 pg_ndistinct_recv(PG_FUNCTION_ARGS)
@@ -369,7 +369,7 @@ pg_ndistinct_recv(PG_FUNCTION_ARGS)
 
 /*
  * pg_ndistinct_send
- * 		binary output routine for type pg_ndistinct
+ *		binary output routine for type pg_ndistinct
  *
  * n-distinct is serialized into a bytea value, so let's send that.
  */
@@ -590,7 +590,7 @@ generator_init(int n, int k)
 
 /*
  * generator_next
- * 		returns the next combination from the prebuilt list
+ *		returns the next combination from the prebuilt list
  *
  * Returns a combination of K attribute numbers (as specified in the
  * call to generator_init), or NULL when there are no more combination.
@@ -606,7 +606,7 @@ generator_next(CombinationGenerator *state, int2vector *attrs)
 
 /*
  * genrator_free
- * 		free the internal state of the generator
+ *		free the internal state of the generator
  *
  * Releases the generator internal state (pre-built combinations).
  */
@@ -659,7 +659,7 @@ generate_combinations_recurse(CombinationGenerator *state,
 
 /*
  * generate_combinations
- * 		generate all k-combinations of N elements
+ *		generate all k-combinations of N elements
  */
 static void
 generate_combinations(CombinationGenerator *state)
