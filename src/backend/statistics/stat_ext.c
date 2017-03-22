@@ -31,7 +31,6 @@
 
 typedef struct StatExtEntry
 {
-	Oid			relid;		/* owning relation XXX useless? */
 	Oid			statOid;	/* OID of pg_statistic_ext entry */
 	int2vector *columns;	/* columns */
 	List	   *types;		/* enabled types */
@@ -149,16 +148,13 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 		int			i;
 		ArrayType  *arr;
 		char	   *enabled;
+		Form_pg_statistic_ext staForm;
 
 		entry = palloc0(sizeof(StatExtEntry));
-		entry->relid = relid;
 		entry->statOid = HeapTupleGetOid(htup);
-		datum = SysCacheGetAttr(STATEXTOID, htup,
-								Anum_pg_statistic_ext_stakeys, &isnull);
-		Assert(!isnull);
-		arr = DatumGetArrayTypeP(datum);
-		entry->columns = buildint2vector((int16 *) ARR_DATA_PTR(arr),
-										 ARR_DIMS(arr)[0]);
+		staForm = (Form_pg_statistic_ext) GETSTRUCT(htup);
+		entry->columns = buildint2vector((int16 *) staForm->stakeys.values,
+										 staForm->stakeys.dim1);
 
 		/* decode the staenabled char array into a list of chars */
 		datum = SysCacheGetAttr(STATEXTOID, htup,
@@ -215,17 +211,11 @@ lookup_var_attr_stats(int2vector *attrs, int natts, VacAttrStats **vacattrstats)
 		}
 
 		/*
-		 * Check that we found a non-dropped column, that the attnum matches,
-		 * and that an less-than operator exists.
+		 * Check that we found a non-dropped column and that the attnum
+		 * matches.
 		 */
 		Assert(!stats[i]->attr->attisdropped);
 		Assert(stats[i]->tupattnum == attrs->values[i]);
-
-		/*
-		 * FIXME This is rather ugly way to check for 'ltopr' (which is
-		 * defined for 'scalar' attributes).
-		 */
-		Assert(((StdAnalyzeData *) stats[i]->extra_data)->ltopr != InvalidOid);
 	}
 
 	return stats;
