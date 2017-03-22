@@ -550,15 +550,14 @@ EXPLAIN ANALYZE SELECT * FROM t WHERE a = 1 AND b = 1;
 
   <para>
    Overestimates, i.e., errors in the opposite direction, are also possible.
-   Consider for example the following combination of range conditions, each
-   matching 
+   Consider for example the following combination of range conditions:
 
 <programlisting>
 EXPLAIN ANALYZE SELECT * FROM t WHERE a <= 49 AND b > 49;
                                            QUERY PLAN                                           
 ------------------------------------------------------------------------------------------------
  Seq Scan on t  (cost=0.00..195.00 rows=2500 width=8) (actual time=1.607..1.607 rows=0 loops=1)
-   Filter: ((a <= 49) AND (b > 49))
+   Filter: ((a &lt;= 49) AND (b &gt; 49))
    Rows Removed by Filter: 10000
  Planning time: 0.050 ms
  Execution time: 1.623 ms
@@ -576,10 +575,11 @@ EXPLAIN ANALYZE SELECT * FROM t WHERE a <= 49 AND b > 49;
   </para>
 
   <para>
-   Both estimation errors are caused by violation of the independence
-   assumption, as the two columns contain exactly the same values, and are
-   therefore perfectly correlated. Providing additional information about
-   correlation between columns is the purpose of extended statistics,
+   Both under- and over-estimation errors are caused because the independence
+   assumption does not hold, as the two columns contain exactly the same values,
+   and are therefore perfectly correlated.
+   Providing additional information about correlation between columns
+   is the purpose of extended statistics,
    and the rest of this section explains in more detail how the planner
    leverages them to improve estimates.
   </para>
