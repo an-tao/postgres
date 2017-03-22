@@ -2155,6 +2155,7 @@ typedef struct CreateForeignServerStmt
 	char	   *servertype;		/* optional server type */
 	char	   *version;		/* optional server version */
 	char	   *fdwname;		/* FDW name */
+	bool		if_not_exists;	/* just do nothing if it already exists? */
 	List	   *options;		/* generic options to server */
 } CreateForeignServerStmt;
 
@@ -2189,6 +2190,7 @@ typedef struct CreateUserMappingStmt
 	NodeTag		type;
 	RoleSpec   *user;			/* user role */
 	char	   *servername;		/* server name */
+	bool		if_not_exists;	/* just do nothing if it already exists? */
 	List	   *options;		/* generic options to server */
 } CreateUserMappingStmt;
 

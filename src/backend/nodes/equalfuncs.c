@@ -896,6 +896,15 @@ _equalAppendRelInfo(const AppendRelInfo *a, const AppendRelInfo *b)
 }
 
 static bool
+_equalPartitionedChildRelInfo(const PartitionedChildRelInfo *a, const PartitionedChildRelInfo *b)
+{
+	COMPARE_SCALAR_FIELD(parent_relid);
+	COMPARE_NODE_FIELD(child_rels);
+
+	return true;
+}
+
+static bool
 _equalPlaceHolderInfo(const PlaceHolderInfo *a, const PlaceHolderInfo *b)
 {
 	COMPARE_SCALAR_FIELD(phid);
@@ -1840,6 +1849,7 @@ _equalCreateForeignServerStmt(const CreateForeignServerStmt *a, const CreateFore
 	COMPARE_STRING_FIELD(version);
 	COMPARE_STRING_FIELD(fdwname);
 	COMPARE_NODE_FIELD(options);
+	COMPARE_SCALAR_FIELD(if_not_exists);
 
 	return true;
 }
@@ -1861,6 +1871,7 @@ _equalCreateUserMappingStmt(const CreateUserMappingStmt *a, const CreateUserMapp
 	COMPARE_NODE_FIELD(user);
 	COMPARE_STRING_FIELD(servername);
 	COMPARE_NODE_FIELD(options);
+	COMPARE_SCALAR_FIELD(if_not_exists);
 
 	return true;
 }
@@ -3113,6 +3124,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_AppendRelInfo:
 			retval = _equalAppendRelInfo(a, b);
+			break;
+		case T_PartitionedChildRelInfo:
+			retval = _equalPartitionedChildRelInfo(a, b);
 			break;
 		case T_PlaceHolderInfo:
 			retval = _equalPlaceHolderInfo(a, b);
