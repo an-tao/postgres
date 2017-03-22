@@ -43,7 +43,7 @@ static VacAttrStats **lookup_var_attr_stats(int2vector *attrs,
 					  int natts, VacAttrStats **vacattrstats);
 static void statext_store(Relation pg_stext, Oid relid,
 			  MVNDistinct *ndistinct,
-			  int2vector *attrs, VacAttrStats **stats);
+			  VacAttrStats **stats);
 
 
 /*
@@ -90,8 +90,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		}
 
 		/* store the statistics in the catalog */
-		statext_store(pg_stext, stat->statOid, ndistinct,
-					  stat->columns, stats);
+		statext_store(pg_stext, stat->statOid, ndistinct, stats);
 	}
 
 	heap_close(pg_stext, RowExclusiveLock);
@@ -239,7 +238,7 @@ lookup_var_attr_stats(int2vector *attrs, int natts, VacAttrStats **vacattrstats)
 static void
 statext_store(Relation pg_stext, Oid statOid,
 			  MVNDistinct *ndistinct,
-			  int2vector *attrs, VacAttrStats **stats)
+			  VacAttrStats **stats)
 {
 	HeapTuple	stup,
 				oldtup;
@@ -252,8 +251,7 @@ statext_store(Relation pg_stext, Oid statOid,
 	memset(values, 0, Natts_pg_statistic_ext * sizeof(Datum));
 
 	/*
-	 * Construct a new pg_statistic_ext tuple - replace only the histogram and
-	 * MCV list, depending whether it actually was computed.
+	 * Construct a new pg_statistic_ext tuple, replacing the calculated stats.
 	 */
 	if (ndistinct != NULL)
 	{
@@ -266,18 +264,8 @@ statext_store(Relation pg_stext, Oid statOid,
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_statistic_ext_standistinct - 1] = true;
 
-	/* always change the availability flags */
-	nulls[Anum_pg_statistic_ext_stakeys - 1] = false;
-
-	/* use the new attnums, in case we removed some dropped ones */
-	replaces[Anum_pg_statistic_ext_stakeys - 1] = true;
-
-	values[Anum_pg_statistic_ext_stakeys - 1] = PointerGetDatum(attrs);
-
-	/* Is there already a pg_statistic_ext tuple for this attribute? */
-	oldtup = SearchSysCache1(STATEXTOID,
-							 ObjectIdGetDatum(statOid));
-
+	/* there should already be a pg_statistic_ext tuple */
+	oldtup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
 	if (!HeapTupleIsValid(oldtup))
 		elog(ERROR, "cache lookup failed for extended statistics %u", statOid);
 
