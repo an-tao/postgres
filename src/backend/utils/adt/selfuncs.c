@@ -166,8 +166,8 @@ static double eqjoinsel_inner(Oid operator,
 static double eqjoinsel_semi(Oid operator,
 			   VariableStatData *vardata1, VariableStatData *vardata2,
 			   RelOptInfo *inner_rel);
-static double find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos,
-			   bool *found);
+static MVNDistinctItem *match_ndistinct_to_vars(PlannerInfo *root,
+			   RelOptInfo *rel, List **varinfos);
 static bool convert_to_scalar(Datum value, Oid valuetypid, double *scaledvalue,
 				  Datum lobound, Datum hibound, Oid boundstypid,
 				  double *scaledlobound, double *scaledhibound);
@@ -3401,30 +3401,67 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 	{
 		GroupVarInfo *varinfo1 = (GroupVarInfo *) linitial(varinfos);
 		RelOptInfo *rel = varinfo1->rel;
-		double		reldistinct = varinfo1->ndistinct;
+		double		reldistinct = 1;
 		double		relmaxndistinct = reldistinct;
 		int			relvarcount = 1;
 		List	   *newvarinfos = NIL;
+		List	   *relvarinfos = NIL;
 
 		/*
-		 * Get the product of numdistinct estimates of the Vars for this rel.
-		 * Also, construct new varinfos list of remaining Vars.
+		 * Split the list of varinfos in two - one for the current rel,
+		 * one for remaining Vars on other rels.
 		 */
+		relvarinfos = lcons(varinfo1, relvarinfos);
 		for_each_cell(l, lnext(list_head(varinfos)))
 		{
 			GroupVarInfo *varinfo2 = (GroupVarInfo *) lfirst(l);
 
 			if (varinfo2->rel == varinfo1->rel)
 			{
-				reldistinct *= varinfo2->ndistinct;
-				if (relmaxndistinct < varinfo2->ndistinct)
-					relmaxndistinct = varinfo2->ndistinct;
-				relvarcount++;
+				/* varinfos on current rel */
+				relvarinfos = lcons(varinfo2, relvarinfos);
 			}
 			else
 			{
 				/* not time to process varinfo2 yet */
 				newvarinfos = lcons(varinfo2, newvarinfos);
+			}
+		}
+
+		/*
+		 * Get the product of numdistinct estimates of the Vars for this rel.
+		 * We match as many Vars to ndistinct statistics as possible, in a
+		 * greedy way, and use the estimate for the whole group of Vars.
+		 * Once no ndistinct statistics matches, we include the remaining
+		 * independent Vars.
+		 */
+		while (relvarinfos)
+		{
+			MVNDistinctItem *nditem;
+
+			nditem = match_ndistinct_to_vars(root, rel, &relvarinfos);
+
+			if (nditem)
+			{
+				reldistinct *= nditem->ndistinct;
+				if (relmaxndistinct < nditem->ndistinct)
+					relmaxndistinct = nditem->ndistinct;
+				relvarcount++;
+			}
+			else
+			{
+				foreach (l, relvarinfos)
+				{
+					GroupVarInfo *varinfo2 = (GroupVarInfo *) lfirst(l);
+
+					reldistinct *= varinfo2->ndistinct;
+					if (relmaxndistinct < varinfo2->ndistinct)
+						relmaxndistinct = varinfo2->ndistinct;
+					relvarcount++;
+				}
+
+				/* we're done with this relation */
+				relvarinfos = NIL;
 			}
 		}
 
@@ -3444,21 +3481,12 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 			 * However we don't need to do this if we have ndistinct stats on
 			 * the columns - in that case we can simply use the coefficient to
 			 * get the (probably way more accurate) estimate.
-			 *
-			 * XXX Might benefit from some refactoring, mixing the ndistinct
-			 * coefficients and clamp seems a bit unfortunate.
 			 */
 			double		clamp = rel->tuples;
 
 			if (relvarcount > 1)
 			{
-				bool		found;
-				double		ndist = find_ndistinct(root, rel, varinfos, &found);
-
-				if (found)
-					reldistinct = ndist;
-				else
-					clamp *= 0.1;
+				clamp *= 0.1;
 
 				if (clamp < relmaxndistinct)
 				{
@@ -3694,35 +3722,39 @@ estimate_hash_bucketsize(PlannerInfo *root, Node *hashkey, double nbuckets)
  * fixup according to any additional columns not covered by the ndistinct
  * stats.
  */
-static double
-find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
+static MVNDistinctItem *
+match_ndistinct_to_vars(PlannerInfo *root, RelOptInfo * rel, List **varinfos)
 {
 	ListCell   *lc;
 	Bitmapset  *attnums = NULL;
 	VariableStatData vardata;
+	List	   *tmp = (*varinfos); /* usual List pointer (for conveniences) */
 
-	/* assume we haven't found any suitable ndistinct statistics */
-	*found = false;
+	/* selected statistic/item */
+	int				nmatches;
+	MVNDistinct 	stats;
+	MVNDistinctItem *item;
 
 	/* bail out immediately if the table has no extended statistics */
 	if (!rel->statlist)
-		return 0.0;
+		return NULL;
 
-	foreach(lc, varinfos)
+	/* assume we haven't found any suitable ndistinct statistics */
+	item = NULL;
+
+	foreach(lc, tmp)
 	{
 		GroupVarInfo *varinfo = (GroupVarInfo *) lfirst(lc);
 
-		if (varinfo->rel != rel)
-			continue;
-
-		/* FIXME handle expressions in general only */
+		Assert(varinfo->rel == rel);
 
 		/*
 		 * examine the variable (or expression) so that we know which
 		 * attribute we're dealing with - we need this for matching the
 		 * ndistinct coefficient
 		 *
-		 * FIXME probably should remember this from estimate_num_groups
+		 * FIXME Can we remember this from estimate_num_groups?
+		 * XXX Do we actually need this? Isn't var->varattnum be enough?
 		 */
 		examine_variable(root, varinfo->var, 0, &vardata);
 
@@ -3737,43 +3769,95 @@ find_ndistinct(PlannerInfo *root, RelOptInfo *rel, List *varinfos, bool *found)
 		}
 	}
 
-	/* look for a matching ndistinct statistics */
+	/* look for the ndistinct statistics matching the most vars */
+	stats = NULL;
+	nmatches = 1; /* we require at least two matches */
 	foreach(lc, rel->statlist)
 	{
 		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
-		int			j;
-		MVNDistinct stat;
+		Bitmapset  *shared;
 
 		/* skip statistics of other kinds */
 		if (info->kind != STATS_EXT_NDISTINCT)
 			continue;
 
+		/* compute attnums shared by the vars and the statistic */
+		shared = bms_intersect(info->keys, attnums);
+
 		/*
-		 * We can only use stats that cover all the columns we need
+		 * Does this statistics matches more columns than the currently
+		 * best statistic? If yes, use this one instead.
+		 *
+		 * XXX This should tie-break using name of the statistic, or
+		 * something like that, to make the outcome stable.
 		 */
-		if (!bms_is_subset(attnums, info->keys))
-			continue;
-
-		/* hey, this statistics matches! great, let's extract the value */
-
-		stat = statext_ndistinct_load(info->statOid);
-
-		/* Find the specific item that exactly matches the combination */
-		for (j = 0; j < stat->nitems; j++)
+		if (bms_num_members(shared) > nmatches)
 		{
-			MVNDistinctItem *item = &stat->items[j];
-
-			if (bms_subset_compare(item->attrs, attnums) == BMS_EQUAL)
-			{
-				*found = true;
-				return item->ndistinct;
-			}
+			stats = statext_ndistinct_load(info->statOid);
+			nmatches = bms_num_members(shared);
 		}
 	}
 
-	/* Nothing usable :-( */
-	Assert(!(*found));
-	return 0.0;
+	/* either a match or no match */
+	Assert((stats && (nmatches > 1)) || (!stats && (nmatches == 1)));
+
+	/*
+	 * if we found a stat, find the largest item (we expect it to match
+	 * exactly nmatches attributes)
+	 */
+	if (stats)
+	{
+		int		j;
+		List   *newlist = NIL;
+
+		/* Find the specific item that exactly matches the combination */
+		for (j = 0; j < stats->nitems; j++)
+		{
+			MVNDistinctItem *tmpitem = &stats->items[j];
+
+			/* we expect the item to be matched exactly, i.e. it must
+			 * be a subset of the attnums, and all the attributes must
+			 * be matched */
+			if (bms_num_members(tmpitem->attrs) != nmatches)
+				continue;
+
+			/* and the whole item must be matched */
+			if (!bms_is_subset(tmpitem->attrs, attnums))
+				continue;
+
+			item = tmpitem;
+			break;
+		}
+
+		/* make sure we found an item */
+		Assert(item);
+
+		/* filter out vars matched by the item, keep only the remaining ones */
+		foreach(lc, tmp)
+		{
+			GroupVarInfo *varinfo = (GroupVarInfo *) lfirst(lc);
+
+			/*
+			 * FIXME We do the same thing a bit up, can we reuse that?
+			 */
+			examine_variable(root, varinfo->var, 0, &vardata);
+
+			if (HeapTupleIsValid(vardata.statsTuple))
+			{
+				Form_pg_statistic stats;
+
+				stats = (Form_pg_statistic) GETSTRUCT(vardata.statsTuple);
+				if (!bms_is_member(stats->staattnum, item->attrs))
+					newlist = lappend(newlist, varinfo);
+
+				ReleaseVariableStats(vardata);
+			}
+		}
+
+		*varinfos = newlist;
+	}
+
+	return item;
 }
 
 /*
