@@ -28,6 +28,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#include "utils/typcache.h"
 
 
 /* used for sorting the attnums in CreateStatistics */
@@ -105,28 +106,38 @@ CreateStatistics(CreateStatsStmt *stmt)
 						RelationGetRelationName(rel))));
 
 	/*
-	 * Transform column names to array of attnums. While doing that, we also
-	 * enforce the maximum number of keys, and make sure no system columns
-	 * are used.
+	 * Transform column names to array of attnums. While at it, enforce some
+	 * constraints.
 	 */
 	foreach(l, stmt->keys)
 	{
 		char	   *attname = strVal(lfirst(l));
 		HeapTuple	atttuple;
+		Form_pg_attribute attForm;
+		TypeCacheEntry *type;
 
 		atttuple = SearchSysCacheAttName(relid, attname);
-
 		if (!HeapTupleIsValid(atttuple))
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_COLUMN),
 			  errmsg("column \"%s\" referenced in statistics does not exist",
 					 attname)));
-		if (((Form_pg_attribute) GETSTRUCT(atttuple))->attnum < 0)
+		attForm = (Form_pg_attribute) GETSTRUCT(atttuple);
+
+		/* Disallow use of system attributes in extended stats */
+		if (attForm->attnum < 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("statistic creation on system columns is not supported")));
 
-		/* more than STATS_MAX_DIMENSIONS columns not allowed */
+		/* Disallow data types without a less-than operator */
+		type = lookup_type_cache(attForm->atttypid, TYPECACHE_LT_OPR);
+		if (type->lt_opr == InvalidOid)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("only scalar types can be used in extended statistics")));
+
+		/* Make sure no more than STATS_MAX_DIMENSIONS columns are used */
 		if (numcols >= STATS_MAX_DIMENSIONS)
 			ereport(ERROR,
 					(errcode(ERRCODE_TOO_MANY_COLUMNS),
