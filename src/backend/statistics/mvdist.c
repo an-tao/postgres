@@ -3,6 +3,16 @@
  * mvdist.c
  *	  POSTGRES multivariate ndistinct coefficients
  *
+ * Estimating number of groups in a combination of columns (e.g. for GROUP BY)
+ * is tricky, and the estimation error is often significant.
+
+ * The ndistinct coefficients address this by storing ndistinct estimates not
+ * only for individual columns, but also for (all) combinations of columns.
+ * So for example given three columns (a,b,c) the statistics will estimate
+ * ndistinct for (a,b), (a,c), (b,c) and (a,b,c). The per-column estimates are
+ * already available in pg_statistic.
+ *
+ *
  * Portions Copyright (c) 1996-2017, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
