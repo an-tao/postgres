@@ -298,31 +298,20 @@ multi_sort_init(int ndims)
 }
 
 /*
- * Prepare sort support info for dimension 'dim' (index into vacattrstats) to
- * 'mss', at the position 'sortdim'
+ * Prepare sort support info using the given sort operator
+ * at the position 'sortdim'
  */
 void
-multi_sort_add_dimension(MultiSortSupport mss, int sortdim,
-						 int dim, VacAttrStats **vacattrstats)
+multi_sort_add_dimension(MultiSortSupport mss, int sortdim, Oid oper)
 {
-	/* first, lookup StdAnalyzeData for the dimension (attribute) */
-	SortSupportData ssup;
-	StdAnalyzeData *tmp = (StdAnalyzeData *) vacattrstats[dim]->extra_data;
+	SortSupport		ssup = &mss->ssup[sortdim];
 
-	Assert(mss != NULL);
-	Assert(sortdim < mss->ndims);
+	ssup->ssup_cxt = CurrentMemoryContext;
+	ssup->ssup_collation = DEFAULT_COLLATION_OID;
+	ssup->ssup_nulls_first = false;
+	ssup->ssup_cxt = CurrentMemoryContext;
 
-	/* initialize sort support, etc. */
-	memset(&ssup, 0, sizeof(ssup));
-	ssup.ssup_cxt = CurrentMemoryContext;
-
-	/* We always use the default collation for statistics */
-	ssup.ssup_collation = DEFAULT_COLLATION_OID;
-	ssup.ssup_nulls_first = false;
-
-	PrepareSortSupportFromOrderingOp(tmp->ltopr, &ssup);
-
-	mss->ssup[sortdim] = ssup;
+	PrepareSortSupportFromOrderingOp(oper, ssup);
 }
 
 /* compare all the dimensions in the selected order */

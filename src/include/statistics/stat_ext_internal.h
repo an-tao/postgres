@@ -54,7 +54,7 @@ extern MVNDistinct *statext_ndistinct_deserialize(bytea *data);
 
 extern MultiSortSupport multi_sort_init(int ndims);
 extern void multi_sort_add_dimension(MultiSortSupport mss, int sortdim,
-						 int dim, VacAttrStats **vacattrstats);
+						 Oid oper);
 extern int	multi_sort_compare(const void *a, const void *b, void *arg);
 extern int multi_sort_compare_dim(int dim, const SortItem * a,
 					   const SortItem * b, MultiSortSupport mss);

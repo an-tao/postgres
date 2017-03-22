@@ -30,6 +30,7 @@
 #include "utils/lsyscache.h"
 #include "lib/stringinfo.h"
 #include "utils/syscache.h"
+#include "utils/typcache.h"
 #include "statistics/stat_ext_internal.h"
 #include "statistics/stats.h"
 
@@ -400,25 +401,24 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 	int			f1,
 				cnt,
 				d;
-	int			nmultiple,
-				summultiple;
 	bool	   *isnull;
 	Datum	   *values;
 	SortItem   *items;
 	MultiSortSupport mss;
 
-	/*
-	 * It's possible to sort the sample rows directly, but this seemed somehow
-	 * simpler / less error prone. Another option would be to allocate the
-	 * arrays for each SortItem separately, but that'd be significant overhead
-	 * (not just CPU, but especially memory bloat).
-	 */
+	AssertArg((k >= 2) && (k <= attrs->dim1));
+
 	mss = multi_sort_init(k);
+
+	/*
+	 * In order to determine the number of distinct elements, create separate
+	 * values[]/isnull[] arrays with all the data we have, then sort them
+	 * using the specified column combination as dimensions.  We could try to
+	 * sort in place, but it'd probably be more complex and bug-prone.
+	 */
 	items = (SortItem *) palloc(numrows * sizeof(SortItem));
 	values = (Datum *) palloc0(sizeof(Datum) * numrows * k);
 	isnull = (bool *) palloc0(sizeof(bool) * numrows * k);
-
-	Assert((k >= 2) && (k <= attrs->dim1));
 
 	for (i = 0; i < numrows; i++)
 	{
@@ -426,12 +426,24 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 		items[i].isnull = &isnull[i * k];
 	}
 
+	/*
+	 * For each dimension, set up sort-support and fill in the values from
+	 * the sample data.
+	 */
 	for (i = 0; i < k; i++)
 	{
-		/* prepare the sort function for the first dimension */
-		multi_sort_add_dimension(mss, i, combination[i], stats);
+		VacAttrStats   *colst = stats[combination[i]];
+		TypeCacheEntry *type;
 
-		/* accumulate all the data into the array and sort it */
+		type = lookup_type_cache(colst->attrtypid, TYPECACHE_LT_OPR);
+		if (type->lt_opr == InvalidOid)		/* shouldn't happen */
+			elog(ERROR, "cache lookup failed for ordering operator for type %u",
+				 colst->attrtypid);
+
+		/* prepare the sort function for this dimension */
+		multi_sort_add_dimension(mss, i, type->lt_opr);
+
+		/* accumulate all the data into the array */
 		for (j = 0; j < numrows; j++)
 		{
 			items[j].values[i] =
@@ -441,12 +453,13 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 		}
 	}
 
+	/* We can sort the array now ... */
 	qsort_arg((void *) items, numrows, sizeof(SortItem),
 			  multi_sort_compare, mss);
 
-	/* count number of distinct combinations */
+	/* ... and count the number of distinct combinations */
 
-	summultiple = nmultiple = f1 = 0;
+	f1 = 0;
 	cnt = 1;
 	d = 1;
 	for (i = 1; i < numrows; i++)
@@ -455,11 +468,6 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 		{
 			if (cnt == 1)
 				f1 += 1;
-			else
-			{
-				nmultiple += 1;
-				summultiple += cnt;
-			}
 
 			d++;
 			cnt = 0;
@@ -470,11 +478,6 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 
 	if (cnt == 1)
 		f1 += 1;
-	else
-	{
-		nmultiple += 1;
-		summultiple += cnt;
-	}
 
 	return estimate_ndistinct(totalrows, numrows, d, f1);
 }
