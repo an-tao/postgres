@@ -37,7 +37,7 @@
 
 static double ndistinct_for_combination(double totalrows, int numrows,
 					HeapTuple *rows, int2vector *attrs, VacAttrStats **stats,
-					int k, int16 *combination);
+					int k, int *combination);
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
 static int	n_choose_k(int n, int k);
 static int	num_combinations(int n);
@@ -51,12 +51,12 @@ typedef struct CombinationGenerator
 	int		n;				/* total number of elements */
 	int		current;		/* index of the next combination to return */
 	int		ncombinations;	/* number of combinations (size of array) */
-	int16  *combinations;	/* array of pre-built combinations */
+	int	   *combinations;	/* array of pre-built combinations */
 } CombinationGenerator;
 
 static CombinationGenerator *generator_init(int n, int k);
 static void generator_free(CombinationGenerator *state);
-static int16 *generator_next(CombinationGenerator *state, int2vector *attrs);
+static int *generator_next(CombinationGenerator *state);
 static void generate_combinations(CombinationGenerator *state);
 
 
@@ -86,13 +86,13 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 	itemcnt = 0;
 	for (k = 2; k <= numattrs; k++)
 	{
-		int16	   *combination;
+		int	   *combination;
 		CombinationGenerator *generator;
 
 		/* generate combinations of K out of N elements */
 		generator = generator_init(numattrs, k);
 
-		while ((combination = generator_next(generator, attrs)))
+		while ((combination = generator_next(generator)))
 		{
 			MVNDistinctItem *item = &result->items[itemcnt];
 			int		j;
@@ -394,7 +394,7 @@ pg_ndistinct_send(PG_FUNCTION_ARGS)
 static double
 ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 						  int2vector *attrs, VacAttrStats **stats,
-						  int k, int16 *combination)
+						  int k, int *combination)
 {
 	int			i,
 				j;
@@ -555,9 +555,9 @@ num_combinations(int n)
  * generator_init
  *		initialize the generator of combinations
  *
- * The generator produces combinations of K elements from the attribute
- * numbers. We do prebuild all the combinations in this method, as it
- * seems somewhat simpler than generating them on the fly.
+ * The generator produces combinations of K elements in the interval (0..N).
+ * We prebuild all the combinations in this method, which is simpler than
+ * generating them on the fly.
  */
 static CombinationGenerator *
 generator_init(int n, int k)
@@ -572,8 +572,7 @@ generator_init(int n, int k)
 	state->ncombinations = n_choose_k(n, k);
 
 	/* pre-allocate space for all combinations*/
-	state->combinations
-			= (int16 *) palloc(sizeof(int16) * k * state->ncombinations);
+	state->combinations = (int *) palloc(sizeof(int) * k * state->ncombinations);
 
 	state->current = 0;
 	state->k = k;
@@ -595,11 +594,11 @@ generator_init(int n, int k)
  * generator_next
  *		returns the next combination from the prebuilt list
  *
- * Returns a combination of K attribute numbers (as specified in the
- * call to generator_init), or NULL when there are no more combination.
+ * Returns a combination of K array indexes (0 .. N), as specified to
+ * generator_init), or NULL when there are no more combination.
  */
-static int16 *
-generator_next(CombinationGenerator *state, int2vector *attrs)
+static int *
+generator_next(CombinationGenerator *state)
 {
 	if (state->current == state->ncombinations)
 		return NULL;
@@ -608,7 +607,7 @@ generator_next(CombinationGenerator *state, int2vector *attrs)
 }
 
 /*
- * genrator_free
+ * generator_free
  *		free the internal state of the generator
  *
  * Releases the generator internal state (pre-built combinations).
@@ -624,19 +623,18 @@ generator_free(CombinationGenerator *state)
  * generate_combinations_recurse
  *		given a prefix, generate all possible combinations
  *
- * Given a prefix (first few elements of the combination), generate
- * following elements recursively. We generate the combinations in
- * lexicographic order, which eliminates permutations of the same
- * combination.
+ * Given a prefix (first few elements of the combination), generate following
+ * elements recursively. We generate the combinations in lexicographic order,
+ * which eliminates permutations of the same combination.
  */
 static void
 generate_combinations_recurse(CombinationGenerator *state,
-							  int index, int start, int16 *current)
+							  int index, int start, int *current)
 {
 	/* If we haven't filled all the elements, simply recurse. */
 	if (index < state->k)
 	{
-		int16	i;
+		int		i;
 
 		/*
 		 * The values have to be in ascending order, so make sure we start
@@ -655,7 +653,7 @@ generate_combinations_recurse(CombinationGenerator *state,
 	{
 		/* we got a valid combination, add it to the array */
 		memcpy(&state->combinations[(state->k * state->current)],
-			   current, state->k * sizeof(int16));
+			   current, state->k * sizeof(int));
 		state->current++;
 	}
 }
@@ -667,7 +665,7 @@ generate_combinations_recurse(CombinationGenerator *state,
 static void
 generate_combinations(CombinationGenerator *state)
 {
-	int16 *current = (int16 *) palloc0(sizeof(int16) * state->k);
+	int	   *current = (int *) palloc0(sizeof(int) * state->k);
 
 	generate_combinations_recurse(state, 0, 0, current);
 
