@@ -36,7 +36,7 @@
 
 
 static double ndistinct_for_combination(double totalrows, int numrows,
-					HeapTuple *rows, int2vector *attrs, VacAttrStats **stats,
+					HeapTuple *rows, VacAttrStats **stats,
 					int k, int *combination);
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
 static int	n_choose_k(int n, int k);
@@ -103,7 +103,7 @@ statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
 											 stats[combination[j]]->attr->attnum);
 			item->ndistinct =
 				ndistinct_for_combination(totalrows, numrows, rows,
-										  attrs, stats, k, combination);
+										  stats, k, combination);
 
 			itemcnt++;
 			Assert(itemcnt <= result->nitems);
@@ -393,8 +393,7 @@ pg_ndistinct_send(PG_FUNCTION_ARGS)
  */
 static double
 ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
-						  int2vector *attrs, VacAttrStats **stats,
-						  int k, int *combination)
+						  VacAttrStats **stats, int k, int *combination)
 {
 	int			i,
 				j;
@@ -405,8 +404,6 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 	Datum	   *values;
 	SortItem   *items;
 	MultiSortSupport mss;
-
-	AssertArg((k >= 2) && (k <= attrs->dim1));
 
 	mss = multi_sort_init(k);
 
@@ -447,8 +444,9 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 		for (j = 0; j < numrows; j++)
 		{
 			items[j].values[i] =
-				heap_getattr(rows[j], attrs->values[combination[i]],
-							 stats[combination[i]]->tupDesc,
+				heap_getattr(rows[j],
+							 colst->attr->attnum,
+							 colst->tupDesc,
 							 &items[j].isnull[i]);
 		}
 	}
