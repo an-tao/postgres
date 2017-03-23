@@ -1,6 +1,7 @@
 -- Generic extended statistics support
-CREATE TABLE ab1 (a INTEGER, b INTEGER, c INTEGER);
 
+-- Ensure stats are dropped sanely
+CREATE TABLE ab1 (a INTEGER, b INTEGER, c INTEGER);
 CREATE STATISTICS ab1_a_b_stats ON (a, b) FROM ab1;
 DROP STATISTICS ab1_a_b_stats;
 
@@ -8,16 +9,26 @@ CREATE SCHEMA regress_schema_2;
 CREATE STATISTICS regress_schema_2.ab1_a_b_stats ON (a, b) FROM ab1;
 DROP STATISTICS regress_schema_2.ab1_a_b_stats;
 
+-- Ensure statistics are dropped when columns are
 CREATE STATISTICS ab1_b_c_stats ON (b, c) FROM ab1;
 CREATE STATISTICS ab1_a_b_c_stats ON (a, b, c) FROM ab1;
 CREATE STATISTICS ab1_a_b_stats ON (a, b) FROM ab1;
 ALTER TABLE ab1 DROP COLUMN a;
 \d ab1
+DROP TABLE ab1;
 
+-- Ensure things work sanely with SET STATISTICS 0
+CREATE TABLE ab1 (a INTEGER, b INTEGER);
+ALTER TABLE ab1 ALTER a SET STATISTICS 0;
+INSERT INTO ab1 SELECT a, a%23 FROM generate_series(1, 1000) a;
+CREATE STATISTICS ab1_a_b_stats ON (a, b) FROM ab1;
+ANALYZE ab1;
+ALTER TABLE ab1 ALTER a SET STATISTICS -1;
+ANALYZE ab1;
 DROP TABLE ab1;
 
 
--- data type passed by value
+-- n-distinct tests
 CREATE TABLE ndistinct (
     filler1 TEXT,
     filler2 NUMERIC,

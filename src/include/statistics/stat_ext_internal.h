@@ -48,7 +48,7 @@ typedef struct SortItem
 
 extern MVNDistinct *statext_ndistinct_build(double totalrows,
 						int numrows, HeapTuple *rows,
-						int2vector *attrs, VacAttrStats **stats);
+						Bitmapset *attrs, VacAttrStats **stats);
 extern bytea *statext_ndistinct_serialize(MVNDistinct *ndistinct);
 extern MVNDistinct *statext_ndistinct_deserialize(bytea *data);
 

@@ -69,12 +69,12 @@ static void generate_combinations(CombinationGenerator *state);
  */
 MVNDistinct *
 statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
-						int2vector *attrs, VacAttrStats **stats)
+						Bitmapset *attrs, VacAttrStats **stats)
 {
 	MVNDistinct *result;
 	int			k;
 	int			itemcnt;
-	int			numattrs = attrs->dim1;
+	int			numattrs = bms_num_members(attrs);
 	int			numcombs = num_combinations(numattrs);
 
 	result = palloc(offsetof(MVNDistinct, items) +
@@ -429,24 +429,24 @@ ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
 	 */
 	for (i = 0; i < k; i++)
 	{
-		VacAttrStats   *colst = stats[combination[i]];
+		VacAttrStats   *colstat = stats[combination[i]];
 		TypeCacheEntry *type;
 
-		type = lookup_type_cache(colst->attrtypid, TYPECACHE_LT_OPR);
+		type = lookup_type_cache(colstat->attrtypid, TYPECACHE_LT_OPR);
 		if (type->lt_opr == InvalidOid)		/* shouldn't happen */
 			elog(ERROR, "cache lookup failed for ordering operator for type %u",
-				 colst->attrtypid);
+				 colstat->attrtypid);
 
 		/* prepare the sort function for this dimension */
 		multi_sort_add_dimension(mss, i, type->lt_opr);
 
-		/* accumulate all the data into the array */
+		/* accumulate all the data for this dimension into the arrays */
 		for (j = 0; j < numrows; j++)
 		{
 			items[j].values[i] =
 				heap_getattr(rows[j],
-							 colst->attr->attnum,
-							 colst->tupDesc,
+							 colstat->attr->attnum,
+							 colstat->tupDesc,
 							 &items[j].isnull[i]);
 		}
 	}

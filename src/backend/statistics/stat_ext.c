@@ -25,6 +25,7 @@
 #include "statistics/stats.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
@@ -32,13 +33,13 @@
 typedef struct StatExtEntry
 {
 	Oid			statOid;	/* OID of pg_statistic_ext entry */
-	int2vector *columns;	/* columns */
+	Bitmapset  *columns;	/* attribute numbers covered by the statistics */
 	List	   *types;		/* enabled types */
 } StatExtEntry;
 
 
 static List *fetch_statentries_for_relation(Relation pg_statext, Oid relid);
-static VacAttrStats **lookup_var_attr_stats(int2vector *attrs,
+static VacAttrStats **lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
 					  int natts, VacAttrStats **vacattrstats);
 static void statext_store(Relation pg_stext, Oid relid,
 			  MVNDistinct *ndistinct,
@@ -72,11 +73,12 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		ListCell	   *lc2;
 
 		/* filter only the interesting vacattrstats records */
-		stats = lookup_var_attr_stats(stat->columns, natts, vacattrstats);
+		stats = lookup_var_attr_stats(onerel, stat->columns,
+									  natts, vacattrstats);
 
 		/* check allowed number of dimensions */
-		Assert((stat->columns->dim1 >= 2) &&
-			   (stat->columns->dim1 <= STATS_MAX_DIMENSIONS));
+		Assert(bms_num_members(stat->columns) >= 2 &&
+			   bms_num_members(stat->columns) <= STATS_MAX_DIMENSIONS);
 
 		/* compute statistic of each type */
 		foreach(lc2, stat->types)
@@ -118,7 +120,7 @@ statext_is_kind_built(HeapTuple htup, char type)
 }
 
 /*
- * Return a list (of StatExtEntry) of statistics enabled for the given relation.
+ * Return a list (of StatExtEntry) of statistics for the given relation.
  */
 static List *
 fetch_statentries_for_relation(Relation pg_statext, Oid relid)
@@ -153,8 +155,11 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 		entry = palloc0(sizeof(StatExtEntry));
 		entry->statOid = HeapTupleGetOid(htup);
 		staForm = (Form_pg_statistic_ext) GETSTRUCT(htup);
-		entry->columns = buildint2vector((int16 *) staForm->stakeys.values,
-										 staForm->stakeys.dim1);
+		for (i = 0; i < staForm->stakeys.dim1; i++)
+		{
+			entry->columns = bms_add_member(entry->columns,
+											staForm->stakeys.values[i]);
+		}
 
 		/* decode the staenabled char array into a list of chars */
 		datum = SysCacheGetAttr(STATEXTOID, htup,
@@ -181,42 +186,61 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 }
 
 /*
- * Lookup the VacAttrStats info for the selected columns, with indexes
- * matching the attrs vector (to make it easy to work with when
- * computing extended stats).
+ * Using 'vacattrstats' of size 'natts' as input data, return a newly built
+ * VacAttrStats array which includes only the items corresponding to attributes
+ * indicated by 'attrs'.
  */
 static VacAttrStats **
-lookup_var_attr_stats(int2vector *attrs, int natts, VacAttrStats **vacattrstats)
+lookup_var_attr_stats(Relation rel, Bitmapset *attrs, int natts,
+					  VacAttrStats **vacattrstats)
 {
-	int			i;
-	int			numattrs;
+	int			i = 0;
+	int			x = -1;
 	VacAttrStats **stats;
+	Bitmapset  *matched = NULL;
 
-	numattrs = attrs->dim1;
-	stats = (VacAttrStats **) palloc0(numattrs * sizeof(VacAttrStats *));
+	stats = (VacAttrStats **)
+		palloc(bms_num_members(attrs) * sizeof(VacAttrStats *));
 
 	/* lookup VacAttrStats info for the requested columns (same attnum) */
-	for (i = 0; i < numattrs; i++)
+	while ((x = bms_next_member(attrs, x)) >= 0)
 	{
 		int		j;
 
 		stats[i] = NULL;
 		for (j = 0; j < natts; j++)
 		{
-			if (attrs->values[i] == vacattrstats[j]->tupattnum)
+			if (x == vacattrstats[j]->tupattnum)
 			{
 				stats[i] = vacattrstats[j];
 				break;
 			}
 		}
 
+		if (!stats[i])
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					 errmsg("extended statistics could not be collected for column \"%s\" of relation %s.%s",
+							NameStr(RelationGetDescr(rel)->attrs[x - 1]->attname),
+							get_namespace_name(rel->rd_rel->relnamespace),
+							RelationGetRelationName(rel)),
+					 errhint("Consider ALTER TABLE \"%s\".\"%s\" ALTER \"%s\" SET STATISTICS -1",
+							 get_namespace_name(rel->rd_rel->relnamespace),
+							 RelationGetRelationName(rel),
+							 NameStr(RelationGetDescr(rel)->attrs[x - 1]->attname))));
+
 		/*
 		 * Check that we found a non-dropped column and that the attnum
 		 * matches.
 		 */
 		Assert(!stats[i]->attr->attisdropped);
-		Assert(stats[i]->tupattnum == attrs->values[i]);
+		matched = bms_add_member(matched, stats[i]->tupattnum);
+
+		i++;
 	}
+	if (bms_subset_compare(matched, attrs) != BMS_EQUAL)
+		elog(ERROR, "could not find all attributes in attribute stats array");
+	bms_free(matched);
 
 	return stats;
 }
@@ -308,11 +332,10 @@ multi_sort_add_dimension(MultiSortSupport mss, int sortdim, Oid oper)
 int
 multi_sort_compare(const void *a, const void *b, void *arg)
 {
-	int			i;
+	MultiSortSupport mss = (MultiSortSupport) arg;
 	SortItem   *ia = (SortItem *) a;
 	SortItem   *ib = (SortItem *) b;
-
-	MultiSortSupport mss = (MultiSortSupport) arg;
+	int			i;
 
 	for (i = 0; i < mss->ndims; i++)
 	{
