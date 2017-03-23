@@ -2325,12 +2325,13 @@ describeOneTableDetails(const char *schemaname,
 		{
 			printfPQExpBuffer(&buf,
 							  "SELECT oid, stanamespace::regnamespace AS nsp, staname, stakeys,\n"
-							  "  (SELECT string_agg(pg_catalog.quote_ident(attname::text),', ') \n"
-						   "    FROM ((SELECT unnest(stakeys) AS attnum) s\n"
-			   "         JOIN pg_attribute a ON (starelid = a.attrelid AND\n"
+							  "  (SELECT pg_catalog.string_agg(pg_catalog.quote_ident(attname::text),', ') \n"
+						   "    FROM ((SELECT pg_catalog.unnest(stakeys) AS attnum) s\n"
+			   "         JOIN pg_catalog.pg_attribute a ON (starelid = a.attrelid AND\n"
 							  "a.attnum = s.attnum AND not attisdropped))) AS columns,\n"
 							  "  (staenabled::char[] @> '{d}'::char[]) AS ndist_enabled\n"
-			  "FROM pg_statistic_ext stat WHERE starelid  = '%s' ORDER BY 1;",
+			  "FROM pg_catalog.pg_statistic_ext stat WHERE starelid  = '%s'\n"
+			  "ORDER BY 1;",
 							  oid);
 
 			result = PSQLexec(buf.data);
