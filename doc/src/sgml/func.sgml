@@ -18355,7 +18355,7 @@ SELECT set_config('log_statement_stats', 'off', false);
       </row>
       <row>
        <entry>
-        <literal><function>pg_stop_backup(<parameter>exclusive</> <type>boolean</>)</function></literal>
+        <literal><function>pg_stop_backup(<parameter>exclusive</> <type>boolean</> <optional>, <parameter>wait_for_archive</> <type>boolean</> </optional>)</function></literal>
         </entry>
        <entry><type>setof record</type></entry>
        <entry>Finish performing exclusive or non-exclusive on-line backup (restricted to superusers by default, but other users can be granted EXECUTE to run the function)</entry>
@@ -18439,7 +18439,13 @@ postgres=# select pg_start_backup('label_goes_here');
     <function>pg_start_backup</>. In a non-exclusive backup, the contents of
     the <filename>backup_label</> and <filename>tablespace_map</> are returned
     in the result of the function, and should be written to files in the
-    backup (and not in the data directory).
+    backup (and not in the data directory).  There is an optional second
+    parameter of type boolean.  If false, the <function>pg_stop_backup</>
+    will return immediately after the backup is completed without waiting for
+    WAL to be archived.  This behavior is only useful for backup
+    software which independently monitors WAL archiving. Otherwise, WAL
+    required to make the backup consistent might be missing and make the backup
+    useless.
    </para>
 
    <para>
@@ -19541,6 +19547,14 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
      <tbody>
       <row>
        <entry>
+        <indexterm><primary>pg_collation_actual_version</primary></indexterm>
+        <literal><function>pg_collation_actual_version(<type>oid</>)</function></literal>
+       </entry>
+       <entry><type>text</type></entry>
+       <entry>Return actual version of collation from operating system</entry>
+      </row>
+      <row>
+       <entry>
         <indexterm><primary>pg_import_system_collations</primary></indexterm>
         <literal><function>pg_import_system_collations(<parameter>if_not_exists</> <type>boolean</>, <parameter>schema</> <type>regnamespace</>)</function></literal>
        </entry>
@@ -19550,6 +19564,15 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
      </tbody>
     </tgroup>
    </table>
+
+   <para>
+    <function>pg_collation_actual_version</function> returns the actual
+    version of the collation object as it is currently installed in the
+    operating system.  If this is different from the value
+    in <literal>pg_collation.collversion</literal>, then objects depending on
+    the collation might need to be rebuilt.  See also
+    <xref linkend="sql-altercollation">.
+   </para>
 
    <para>
     <function>pg_import_system_collations</> populates the system

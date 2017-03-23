@@ -896,6 +896,15 @@ _equalAppendRelInfo(const AppendRelInfo *a, const AppendRelInfo *b)
 }
 
 static bool
+_equalPartitionedChildRelInfo(const PartitionedChildRelInfo *a, const PartitionedChildRelInfo *b)
+{
+	COMPARE_SCALAR_FIELD(parent_relid);
+	COMPARE_NODE_FIELD(child_rels);
+
+	return true;
+}
+
+static bool
 _equalPlaceHolderInfo(const PlaceHolderInfo *a, const PlaceHolderInfo *b)
 {
 	COMPARE_SCALAR_FIELD(phid);
@@ -1082,6 +1091,14 @@ _equalAlterTableCmd(const AlterTableCmd *a, const AlterTableCmd *b)
 	COMPARE_NODE_FIELD(def);
 	COMPARE_SCALAR_FIELD(behavior);
 	COMPARE_SCALAR_FIELD(missing_ok);
+
+	return true;
+}
+
+static bool
+_equalAlterCollationStmt(const AlterCollationStmt *a, const AlterCollationStmt *b)
+{
+	COMPARE_NODE_FIELD(collname);
 
 	return true;
 }
@@ -1828,6 +1845,7 @@ _equalCreateForeignServerStmt(const CreateForeignServerStmt *a, const CreateFore
 	COMPARE_STRING_FIELD(version);
 	COMPARE_STRING_FIELD(fdwname);
 	COMPARE_NODE_FIELD(options);
+	COMPARE_SCALAR_FIELD(if_not_exists);
 
 	return true;
 }
@@ -1849,6 +1867,7 @@ _equalCreateUserMappingStmt(const CreateUserMappingStmt *a, const CreateUserMapp
 	COMPARE_NODE_FIELD(user);
 	COMPARE_STRING_FIELD(servername);
 	COMPARE_NODE_FIELD(options);
+	COMPARE_SCALAR_FIELD(if_not_exists);
 
 	return true;
 }
@@ -2188,7 +2207,10 @@ static bool
 _equalAlterSubscriptionStmt(const AlterSubscriptionStmt *a,
 							const AlterSubscriptionStmt *b)
 {
+	COMPARE_SCALAR_FIELD(kind);
 	COMPARE_STRING_FIELD(subname);
+	COMPARE_STRING_FIELD(conninfo);
+	COMPARE_NODE_FIELD(publication);
 	COMPARE_NODE_FIELD(options);
 
 	return true;
@@ -3102,6 +3124,9 @@ equal(const void *a, const void *b)
 		case T_AppendRelInfo:
 			retval = _equalAppendRelInfo(a, b);
 			break;
+		case T_PartitionedChildRelInfo:
+			retval = _equalPartitionedChildRelInfo(a, b);
+			break;
 		case T_PlaceHolderInfo:
 			retval = _equalPlaceHolderInfo(a, b);
 			break;
@@ -3156,6 +3181,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_AlterTableCmd:
 			retval = _equalAlterTableCmd(a, b);
+			break;
+		case T_AlterCollationStmt:
+			retval = _equalAlterCollationStmt(a, b);
 			break;
 		case T_AlterDomainStmt:
 			retval = _equalAlterDomainStmt(a, b);

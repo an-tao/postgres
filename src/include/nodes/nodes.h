@@ -275,6 +275,7 @@ typedef enum NodeTag
 	T_PlaceHolderVar,
 	T_SpecialJoinInfo,
 	T_AppendRelInfo,
+	T_PartitionedChildRelInfo,
 	T_PlaceHolderInfo,
 	T_MinMaxAggInfo,
 	T_PlannerParamItem,
@@ -423,6 +424,7 @@ typedef enum NodeTag
 	T_CreateSubscriptionStmt,
 	T_AlterSubscriptionStmt,
 	T_DropSubscriptionStmt,
+	T_AlterCollationStmt,
 
 	/*
 	 * TAGS FOR PARSE TREE NODES (parsenodes.h)
@@ -487,6 +489,7 @@ typedef enum NodeTag
 	T_DropReplicationSlotCmd,
 	T_StartReplicationCmd,
 	T_TimeLineHistoryCmd,
+	T_SQLCmd,
 
 	/*
 	 * TAGS FOR RANDOM OTHER STUFF
