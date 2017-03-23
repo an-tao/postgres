@@ -63,6 +63,7 @@
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_subscription.h"
+#include "catalog/pg_subscription_rel.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_transform.h"
 #include "catalog/pg_ts_config.h"
@@ -694,7 +695,7 @@ static const struct cachedesc cacheinfo[] = {
 		64
 	},
 	{PublicationRelRelationId,		/* PUBLICATIONRELMAP */
-		PublicationRelMapIndexId,
+		PublicationRelPrrelidPrpubidIndexId,
 		2,
 		{
 			Anum_pg_publication_rel_prrelid,
@@ -780,6 +781,17 @@ static const struct cachedesc cacheinfo[] = {
 			0
 		},
 		4
+	},
+	{SubscriptionRelRelationId,		/* SUBSCRIPTIONRELMAP */
+		SubscriptionRelSrrelidSrsubidIndexId,
+		2,
+		{
+			Anum_pg_subscription_rel_srrelid,
+			Anum_pg_subscription_rel_srsubid,
+			0,
+			0
+		},
+		64
 	},
 	{TableSpaceRelationId,		/* TABLESPACEOID */
 		TablespaceOidIndexId,

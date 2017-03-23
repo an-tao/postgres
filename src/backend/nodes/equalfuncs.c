@@ -1096,6 +1096,14 @@ _equalAlterTableCmd(const AlterTableCmd *a, const AlterTableCmd *b)
 }
 
 static bool
+_equalAlterCollationStmt(const AlterCollationStmt *a, const AlterCollationStmt *b)
+{
+	COMPARE_NODE_FIELD(collname);
+
+	return true;
+}
+
+static bool
 _equalAlterDomainStmt(const AlterDomainStmt *a, const AlterDomainStmt *b)
 {
 	COMPARE_SCALAR_FIELD(subtype);
@@ -2211,7 +2219,10 @@ static bool
 _equalAlterSubscriptionStmt(const AlterSubscriptionStmt *a,
 							const AlterSubscriptionStmt *b)
 {
+	COMPARE_SCALAR_FIELD(kind);
 	COMPARE_STRING_FIELD(subname);
+	COMPARE_STRING_FIELD(conninfo);
+	COMPARE_NODE_FIELD(publication);
 	COMPARE_NODE_FIELD(options);
 
 	return true;
@@ -3182,6 +3193,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_AlterTableCmd:
 			retval = _equalAlterTableCmd(a, b);
+			break;
+		case T_AlterCollationStmt:
+			retval = _equalAlterCollationStmt(a, b);
 			break;
 		case T_AlterDomainStmt:
 			retval = _equalAlterDomainStmt(a, b);

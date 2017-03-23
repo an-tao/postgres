@@ -1734,6 +1734,17 @@ typedef struct AlterTableCmd	/* one subcommand of an ALTER TABLE */
 
 
 /* ----------------------
+ * Alter Collation
+ * ----------------------
+ */
+typedef struct AlterCollationStmt
+{
+	NodeTag		type;
+	List	   *collname;
+} AlterCollationStmt;
+
+
+/* ----------------------
  *	Alter Domain
  *
  * The fields are used in different ways by the different variants of
@@ -3334,10 +3345,23 @@ typedef struct CreateSubscriptionStmt
 	List	   *options;		/* List of DefElem nodes */
 } CreateSubscriptionStmt;
 
+typedef enum AlterSubscriptionType
+{
+	ALTER_SUBSCRIPTION_OPTIONS,
+	ALTER_SUBSCRIPTION_CONNECTION,
+	ALTER_SUBSCRIPTION_PUBLICATION,
+	ALTER_SUBSCRIPTION_PUBLICATION_REFRESH,
+	ALTER_SUBSCRIPTION_REFRESH,
+	ALTER_SUBSCRIPTION_ENABLED
+} AlterSubscriptionType;
+
 typedef struct AlterSubscriptionStmt
 {
 	NodeTag		type;
+	AlterSubscriptionType kind;	/* ALTER_SUBSCRIPTION_OPTIONS, etc */
 	char	   *subname;		/* Name of of the subscription */
+	char	   *conninfo;		/* Connection string to publisher */
+	List	   *publication;	/* One or more publication to subscribe to */
 	List	   *options;		/* List of DefElem nodes */
 } AlterSubscriptionStmt;
 

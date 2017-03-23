@@ -236,10 +236,8 @@
 
    &clusterdb;
    &createdb;
-   &createlang;
    &createuser;
    &dropdb;
-   &droplang;
    &dropuser;
    &ecpgRef;
    &pgBasebackup;

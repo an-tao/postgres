@@ -1623,8 +1623,12 @@ ProcessUtilitySlow(ParseState *pstate,
 				commandCollected = true;
 				break;
 
-			case T_CreateStatsStmt:		/* CREATE STATISTICS */
+			case T_CreateStatsStmt:
 				address = CreateStatistics((CreateStatsStmt *) parsetree);
+				break;
+
+			case T_AlterCollationStmt:
+				address = AlterCollation((AlterCollationStmt *) parsetree);
 				break;
 
 			default:
@@ -2679,6 +2683,10 @@ CreateCommandTag(Node *parsetree)
 
 		case T_DropSubscriptionStmt:
 			tag = "DROP SUBSCRIPTION";
+			break;
+
+		case T_AlterCollationStmt:
+			tag = "ALTER COLLATION";
 			break;
 
 		case T_PrepareStmt:
