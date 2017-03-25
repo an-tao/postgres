@@ -3404,7 +3404,7 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		RelOptInfo *rel = varinfo1->rel;
 		double		reldistinct = 1;
 		double		relmaxndistinct = reldistinct;
-		int			relvarcount = 1;
+		int			relvarcount = 0;
 		List	   *newvarinfos = NIL;
 		List	   *relvarinfos = NIL;
 
