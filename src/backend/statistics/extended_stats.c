@@ -182,7 +182,8 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
 		enabled = (char *) ARR_DATA_PTR(arr);
 		for (i = 0; i < ARR_DIMS(arr)[0]; i++)
 		{
-			Assert(enabled[i] == STATS_EXT_NDISTINCT);
+			Assert((enabled[i] == STATS_EXT_NDISTINCT) ||
+				   (enabled[i] == STATS_EXT_DEPENDENCIES));
 			entry->types = lappend_int(entry->types, (int) enabled[i]);
 		}
 

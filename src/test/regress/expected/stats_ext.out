@@ -18,7 +18,7 @@ ALTER TABLE ab1 DROP COLUMN a;
  b      | integer |           |          | 
  c      | integer |           |          | 
 Statistics:
-    "public.ab1_b_c_stats" WITH (ndistinct) ON (b, c)
+    "public.ab1_b_c_stats" WITH (ndistinct, dependencies) ON (b, c)
 
 DROP TABLE ab1;
 -- Ensure things work sanely with SET STATISTICS 0
@@ -65,7 +65,7 @@ SELECT staenabled, standistinct
   FROM pg_statistic_ext WHERE starelid = 'ndistinct'::regclass;
  staenabled |                                          standistinct                                          
 ------------+------------------------------------------------------------------------------------------------
- {d}        | [{(b 3 4), 101.000000}, {(b 3 6), 101.000000}, {(b 4 6), 101.000000}, {(b 3 4 6), 101.000000}]
+ {d,f}      | [{(b 3 4), 101.000000}, {(b 3 6), 101.000000}, {(b 4 6), 101.000000}, {(b 3 4 6), 101.000000}]
 (1 row)
 
 EXPLAIN (COSTS off)
@@ -104,7 +104,7 @@ SELECT staenabled, standistinct
   FROM pg_statistic_ext WHERE starelid = 'ndistinct'::regclass;
  staenabled |                                          standistinct                                          
 ------------+------------------------------------------------------------------------------------------------
- {d}        | [{(b 3 4), 201.000000}, {(b 3 6), 201.000000}, {(b 4 6), 101.000000}, {(b 3 4 6), 201.000000}]
+ {d,f}      | [{(b 3 4), 201.000000}, {(b 3 6), 201.000000}, {(b 4 6), 101.000000}, {(b 3 4 6), 201.000000}]
 (1 row)
 
 EXPLAIN

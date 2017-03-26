@@ -176,37 +176,6 @@ CreateStatistics(CreateStatsStmt *stmt)
 					(errcode(ERRCODE_UNDEFINED_COLUMN),
 				  errmsg("duplicate column name in statistics definition")));
 
-	/*
-	 * Parse the statistics options - currently only statistics types are
-	 * recognized (ndistinct, dependencies).
-	 */
-	foreach(l, stmt->options)
-	{
-		DefElem    *opt = (DefElem *) lfirst(l);
-
-		if (strcmp(opt->defname, "ndistinct") == 0)
-		{
-			build_ndistinct = defGetBoolean(opt);
-			types[ntypes++] = CharGetDatum(STATS_EXT_NDISTINCT);
-		}
-		else if (strcmp(opt->defname, "dependencies") == 0)
-		{
-			build_dependencies = defGetBoolean(opt);
-			types[ntypes++] = CharGetDatum(STATS_EXT_DEPENDENCIES);
-		}
-		else
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("unrecognized STATISTICS option \"%s\"",
-							opt->defname)));
-	}
-
-	/* Make sure there's at least one statistics type specified. */
-	if (! (build_ndistinct || build_dependencies))
-		ereport(ERROR,
-				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("no statistics type (ndistinct, dependencies) requested")));
-
 	stakeys = buildint2vector(attnums, numcols);
 
 	/*
