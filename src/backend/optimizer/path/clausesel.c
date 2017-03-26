@@ -16,6 +16,7 @@
 
 #include "access/sysattr.h"
 #include "catalog/pg_operator.h"
+#include "catalog/pg_statistic_ext.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
@@ -25,7 +26,7 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
-#include "statistics/stats.h"
+#include "statistics/statistics.h"
 #include "utils/typcache.h"
 
 
@@ -927,8 +928,7 @@ find_strongest_dependency(StatisticExtInfo *stats, MVDependencies dependencies,
 		 * If the dependency is not fully matched by clauses, we can't use
 		 * it for the estimation.
 		 */
-		if (! dependency_is_fully_matched(dependency, attnums,
-										  stats->stakeys->values))
+		if (! dependency_is_fully_matched(dependency, attnums))
 			continue;
 
 		/*
@@ -972,10 +972,10 @@ clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
 	Selectivity		s1 = 1.0;
 	MVDependencies	dependencies;
 
-	Assert(stats->deps_enabled && stats->deps_built);
+	Assert(stats->kind == STATS_EXT_DEPENDENCIES);
 
 	/* load the dependency items stored in the statistics */
-	dependencies = load_ext_dependencies(stats->statOid);
+	dependencies = staext_dependencies_load(stats->statOid);
 
 	Assert(dependencies);
 
@@ -1036,8 +1036,7 @@ clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
 			 * of filtered clauses (for the next round) and continue with the
 			 * next one.
 			 */
-			if (! dependency_implies_attribute(dependency, attnum_clause,
-											   stats->stakeys->values))
+			if (! dependency_implies_attribute(dependency, attnum_clause))
 			{
 				clauses_filtered = lappend(clauses_filtered, clause);
 				continue;
@@ -1162,16 +1161,11 @@ count_varnos(List *clauses, Index *relid)
 static int
 count_attnums_covered_by_stats(StatisticExtInfo *info, Bitmapset *attnums)
 {
-	int i;
-	int matches = 0;
-	int2vector *attrs = info->stakeys;
+	Bitmapset *covered;
 
-	/* count columns covered by the statistics */
-	for (i = 0; i < attrs->dim1; i++)
-		if (bms_is_member(attrs->values[i], attnums))
-			matches++;
+	covered = bms_intersect(attnums, info->keys);
 
-	return matches;
+	return bms_num_members(covered);
 }
 
 /*
@@ -1260,10 +1254,10 @@ choose_ext_statistics(List *stats, Bitmapset *attnums, int types)
 		int			matches = 0;
 
 		/* size (number of dimensions) of this statistics */
-		int			numattrs = info->stakeys->dim1;
+		int			numattrs = bms_num_members(info->keys);
 
 		/* skip statistics not matching any of the requested types */
-		if (! (info->deps_built && (STATS_TYPE_FDEPS & types)))
+		if (! ((info->kind == STATS_EXT_DEPENDENCIES) && (STATS_TYPE_FDEPS & types)))
 			continue;
 
 		/* count columns covered by the statistics */
@@ -1297,19 +1291,8 @@ clauselist_ext_split(PlannerInfo *root, Index relid,
 					List *clauses, List **mvclauses,
 					StatisticExtInfo *stats, int types)
 {
-	int			i;
 	ListCell   *l;
 	List	   *non_mvclauses = NIL;
-
-	/* FIXME is there a better way to get info on int2vector? */
-	int2vector *attrs = stats->stakeys;
-	int			numattrs = stats->stakeys->dim1;
-
-	Bitmapset  *mvattnums = NULL;
-
-	/* build bitmap of attributes, so we can do bms_is_subset later */
-	for (i = 0; i < numattrs; i++)
-		mvattnums = bms_add_member(mvattnums, attrs->values[i]);
 
 	/* erase the list of mv-compatible clauses */
 	*mvclauses = NIL;
@@ -1323,7 +1306,7 @@ clauselist_ext_split(PlannerInfo *root, Index relid,
 		if (clause_is_ext_compatible(clause, relid, &attnum))
 		{
 			/* are all the attributes part of the selected stats? */
-			if (bms_is_member(attnum, mvattnums))
+			if (bms_is_member(attnum, stats->keys))
 				match = true;
 		}
 
@@ -1502,7 +1485,7 @@ clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum)
 static bool
 stats_type_matches(StatisticExtInfo *stat, int type)
 {
-	if ((type & STATS_TYPE_FDEPS) && stat->deps_built)
+	if ((type & STATS_TYPE_FDEPS) && (stat->kind == STATS_EXT_DEPENDENCIES))
 		return true;
 
 	return false;

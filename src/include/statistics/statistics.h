@@ -64,9 +64,9 @@ typedef struct MVDependenciesData
 typedef MVDependenciesData *MVDependencies;
 
 extern bool dependency_implies_attribute(MVDependency dependency,
-						AttrNumber attnum, int16 *attmap);
+						AttrNumber attnum);
 extern bool dependency_is_fully_matched(MVDependency dependency,
-						Bitmapset *attnums, int16 *attmap);
+						Bitmapset *attnums);
 
 extern MVNDistinct *statext_ndistinct_load(Oid mvoid);
 extern MVDependencies staext_dependencies_load(Oid mvoid);

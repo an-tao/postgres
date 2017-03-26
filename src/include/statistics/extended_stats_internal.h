@@ -53,8 +53,7 @@ extern bytea *statext_ndistinct_serialize(MVNDistinct *ndistinct);
 extern MVNDistinct *statext_ndistinct_deserialize(bytea *data);
 
 extern MVDependencies statext_dependencies_build(int numrows, HeapTuple *rows,
-						int2vector *attrs,
-						VacAttrStats **stats);
+						Bitmapset *attrs, VacAttrStats **stats);
 extern bytea *statext_dependencies_serialize(MVDependencies dependencies);
 extern MVDependencies statext_dependencies_deserialize(bytea *data);
 

@@ -95,7 +95,8 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 				ndistinct = statext_ndistinct_build(totalrows, numrows, rows,
 													stat->columns, stats);
 			else if (t == STATS_EXT_DEPENDENCIES)
-				deps = build_ext_dependencies(numrows, rows, attrs, stats);
+				dependencies = statext_dependencies_build(numrows, rows,
+														  stat->columns, stats);
 		}
 
 		/* store the statistics in the catalog */

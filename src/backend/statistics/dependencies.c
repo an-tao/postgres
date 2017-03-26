@@ -16,12 +16,13 @@
 #include "access/htup_details.h"
 #include "catalog/pg_statistic_ext.h"
 #include "lib/stringinfo.h"
-#include "statistics/stat_ext_internal.h"
-#include "statistics/stats.h"
+#include "statistics/extended_stats_internal.h"
+#include "statistics/statistics.h"
 #include "utils/bytea.h"
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
+#include "utils/typcache.h"
 
 /*
  * Internal state for DependencyGenerator of dependencies. Dependencies are similar to
@@ -31,6 +32,7 @@
 typedef struct DependencyGeneratorData
 {
 	int				k;				/* size of the dependency */
+	int				n;				/* number of possible attributes */
 	int				current;		/* next dependency to return (index) */
 	AttrNumber		ndependencies;	/* number of dependencies generated */
 	AttrNumber	   *dependencies;	/* array of pre-generated dependencies  */
@@ -39,7 +41,7 @@ typedef struct DependencyGeneratorData
 typedef DependencyGeneratorData *DependencyGenerator;
 
 static void
-generate_dependencies_recurse(DependencyGenerator state, AttrNumber n, int index,
+generate_dependencies_recurse(DependencyGenerator state, int index,
 							  AttrNumber start, AttrNumber *current)
 {
 	/*
@@ -55,10 +57,10 @@ generate_dependencies_recurse(DependencyGenerator state, AttrNumber n, int index
 		 * generate recursively.
 		 */
 
-		for (i = start; i < n; i++)
+		for (i = start; i < state->n; i++)
 		{
 			current[index] = i;
-			generate_dependencies_recurse(state, n, (index+1), (i+1), current);
+			generate_dependencies_recurse(state, (index+1), (i+1), current);
 		}
 	}
 	else
@@ -71,7 +73,7 @@ generate_dependencies_recurse(DependencyGenerator state, AttrNumber n, int index
 		 * first (k-1) elements.
 		 */
 
-		for (i = 0; i < n; i++)
+		for (i = 0; i < state->n; i++)
 		{
 			int		j;
 			bool	match = false;
@@ -105,11 +107,11 @@ generate_dependencies_recurse(DependencyGenerator state, AttrNumber n, int index
 
 /* generate all dependencies (k-permutations of n elements) */
 static void
-generate_dependencies(DependencyGenerator state, int n)
+generate_dependencies(DependencyGenerator state)
 {
 	AttrNumber *current = (AttrNumber *) palloc0(sizeof(AttrNumber) * state->k);
 
-	generate_dependencies_recurse(state, n, 0, 0, current);
+	generate_dependencies_recurse(state, 0, 0, current);
 
 	pfree(current);
 }
@@ -121,9 +123,8 @@ generate_dependencies(DependencyGenerator state, int n)
  * DependencyGenerator_next(), but this seems simpler.
  */
 static DependencyGenerator
-DependencyGenerator_init(int2vector *attrs, int k)
+DependencyGenerator_init(int n, int k)
 {
-	int			n = attrs->dim1;
 	DependencyGenerator state;
 
 	Assert((n >= k) && (k > 0));
@@ -135,9 +136,10 @@ DependencyGenerator_init(int2vector *attrs, int k)
 	state->ndependencies = 0;
 	state->current = 0;
 	state->k = k;
+	state->n = n;
 
 	/* now actually pre-generate all the variations */
-	generate_dependencies(state, n);
+	generate_dependencies(state);
 
 	return state;
 }
@@ -152,7 +154,7 @@ DependencyGenerator_free(DependencyGenerator state)
 
 /* generate next combination */
 static AttrNumber *
-DependencyGenerator_next(DependencyGenerator state, int2vector *attrs)
+DependencyGenerator_next(DependencyGenerator state)
 {
 	if (state->current == state->ndependencies)
 		return NULL;
@@ -170,7 +172,7 @@ DependencyGenerator_next(DependencyGenerator state, int2vector *attrs)
  */
 static double
 dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
-				  VacAttrStats **stats, int2vector *attrs)
+				  VacAttrStats **stats, Bitmapset *attrs)
 {
 	int			i,
 				j;
@@ -179,6 +181,8 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	SortItem   *items;
 	Datum	   *values;
 	bool	   *isnull;
+
+	int		   *attnums;
 
 	/*
 	 * XXX Maybe the threshold should be somehow related to the number of
@@ -214,6 +218,15 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	}
 
 	/*
+	 * Transform the bms into an array, to make accessing i-th member easier.
+	 */
+	attnums = palloc(sizeof(int) * bms_num_members(attrs));
+	i = 0;
+	j = -1;
+	while ((j = bms_next_member(attrs, j)) >= 0)
+		attnums[i++] = j;
+
+	/*
 	 * Verify the dependency (a,b,...)->z, using a rather simple algorithm:
 	 *
 	 * (a) sort the data lexicographically
@@ -226,13 +239,22 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	/* prepare the sort function for the first dimension, and SortItem array */
 	for (i = 0; i < k; i++)
 	{
-		multi_sort_add_dimension(mss, i, dependency[i], stats);
+		VacAttrStats   *colstat = stats[dependency[i]];
+		TypeCacheEntry *type;
+
+		type = lookup_type_cache(colstat->attrtypid, TYPECACHE_LT_OPR);
+		if (type->lt_opr == InvalidOid)		/* shouldn't happen */
+			elog(ERROR, "cache lookup failed for ordering operator for type %u",
+				 colstat->attrtypid);
+
+		/* prepare the sort function for this dimension */
+		multi_sort_add_dimension(mss, i, type->lt_opr);
 
 		/* accumulate all the data for both columns into an array and sort it */
 		for (j = 0; j < numrows; j++)
 		{
 			items[j].values[i] =
-				heap_getattr(rows[j], attrs->values[dependency[i]],
+				heap_getattr(rows[j], attnums[dependency[i]],
 							 stats[i]->tupDesc, &items[j].isnull[i]);
 		}
 	}
@@ -319,15 +341,18 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
  * and stored in the statistics.
  */
 MVDependencies
-build_ext_dependencies(int numrows, HeapTuple *rows, int2vector *attrs,
-					  VacAttrStats **stats)
+statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
+						   VacAttrStats **stats)
 {
 	int			i;
 	int			k;
-	int			numattrs = attrs->dim1;
+	int			numattrs;
+	
 
 	/* result */
 	MVDependencies dependencies = NULL;
+
+	numattrs = bms_num_members(attrs);
 
 	Assert(numattrs >= 2);
 
@@ -342,10 +367,10 @@ build_ext_dependencies(int numrows, HeapTuple *rows, int2vector *attrs,
 		AttrNumber *dependency; /* array with k elements */
 
 		/* prepare a DependencyGenerator of variation */
-		DependencyGenerator DependencyGenerator = DependencyGenerator_init(attrs, k);
+		DependencyGenerator DependencyGenerator = DependencyGenerator_init(numattrs, k);
 
 		/* generate all possible variations of k values (out of n) */
-		while ((dependency = DependencyGenerator_next(DependencyGenerator, attrs)))
+		while ((dependency = DependencyGenerator_next(DependencyGenerator)))
 		{
 			double			degree;
 			MVDependency	d;
@@ -397,7 +422,7 @@ build_ext_dependencies(int numrows, HeapTuple *rows, int2vector *attrs,
  * serialize list of dependencies into a bytea
  */
 bytea *
-serialize_ext_dependencies(MVDependencies dependencies)
+statext_dependencies_serialize(MVDependencies dependencies)
 {
 	int			i;
 	bytea	   *output;
@@ -442,7 +467,7 @@ serialize_ext_dependencies(MVDependencies dependencies)
  * Reads serialized dependencies into MVDependencies structure.
  */
 MVDependencies
-deserialize_ext_dependencies(bytea *data)
+statext_dependencies_deserialize(bytea *data)
 {
 	int			i;
 	Size		expected_size;
@@ -535,8 +560,7 @@ deserialize_ext_dependencies(bytea *data)
  * 		attributes (assuming the clauses are suitable equality clauses)
  */
 bool
-dependency_is_fully_matched(MVDependency dependency, Bitmapset *attnums,
-							int16 *attmap)
+dependency_is_fully_matched(MVDependency dependency, Bitmapset *attnums)
 {
 	int j;
 
@@ -546,7 +570,7 @@ dependency_is_fully_matched(MVDependency dependency, Bitmapset *attnums,
 	 */
 	for (j = 0; j < dependency->nattributes; j++)
 	{
-		int attnum = attmap[dependency->attributes[j]];
+		int attnum = dependency->attributes[j];
 
 		if (! bms_is_member(attnum, attnums))
 			return false;
@@ -560,17 +584,16 @@ dependency_is_fully_matched(MVDependency dependency, Bitmapset *attnums,
  *		check that the attnum matches is implied by the functional dependency
  */
 bool
-dependency_implies_attribute(MVDependency dependency, AttrNumber attnum,
-							 int16 *attmap)
+dependency_implies_attribute(MVDependency dependency, AttrNumber attnum)
 {
-	if (attnum == attmap[dependency->attributes[dependency->nattributes-1]])
+	if (attnum == dependency->attributes[dependency->nattributes-1])
 		return true;
 
 	return false;
 }
 
 MVDependencies
-load_ext_dependencies(Oid mvoid)
+staext_dependencies_load(Oid mvoid)
 {
 	bool		isnull = false;
 	Datum		deps;
@@ -590,7 +613,7 @@ load_ext_dependencies(Oid mvoid)
 
 	ReleaseSysCache(htup);
 
-	return deserialize_ext_dependencies(DatumGetByteaP(deps));
+	return statext_dependencies_deserialize(DatumGetByteaP(deps));
 }
 
 /*
@@ -631,7 +654,7 @@ pg_dependencies_out(PG_FUNCTION_ARGS)
 
 	bytea	   *data = PG_GETARG_BYTEA_PP(0);
 
-	MVDependencies dependencies = deserialize_ext_dependencies(data);
+	MVDependencies dependencies = statext_dependencies_deserialize(data);
 
 	initStringInfo(&str);
 	appendStringInfoString(&str, "[");
