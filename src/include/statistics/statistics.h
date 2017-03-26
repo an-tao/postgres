@@ -37,6 +37,32 @@ typedef struct MVNDistinct
 	MVNDistinctItem items[FLEXIBLE_ARRAY_MEMBER];
 } MVNDistinct;
 
+#define STATS_DEPS_MAGIC		0xB4549A2C		/* marks serialized bytea */
+#define STATS_DEPS_TYPE_BASIC	1		/* basic dependencies type */
+
+/*
+ * Functional dependencies, tracking column-level relationships (values
+ * in one column determine values in another one).
+ */
+typedef struct MVDependencyData
+{
+	double		degree;			/* degree of validity (0-1) */
+	AttrNumber	nattributes;	/* number of attributes */
+	AttrNumber	attributes[FLEXIBLE_ARRAY_MEMBER];	/* attribute numbers */
+} MVDependencyData;
+
+typedef MVDependencyData *MVDependency;
+
+typedef struct MVDependenciesData
+{
+	uint32		magic;			/* magic constant marker */
+	uint32		type;			/* type of MV Dependencies (BASIC) */
+	uint32		ndeps;			/* number of dependencies */
+	MVDependency deps[FLEXIBLE_ARRAY_MEMBER];	/* dependencies */
+} MVDependenciesData;
+
+typedef MVDependenciesData *MVDependencies;
+
 extern MVNDistinct *statext_ndistinct_load(Oid mvoid);
 
 extern void BuildRelationExtStatistics(Relation onerel, double totalrows,

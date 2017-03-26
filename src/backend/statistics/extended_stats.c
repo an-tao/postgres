@@ -47,7 +47,7 @@ static List *fetch_statentries_for_relation(Relation pg_statext, Oid relid);
 static VacAttrStats **lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
 					  int natts, VacAttrStats **vacattrstats);
 static void statext_store(Relation pg_stext, Oid relid,
-			  MVNDistinct *ndistinct,
+			  MVNDistinct *ndistinct, MVDependencies dependencies,
 			  VacAttrStats **stats);
 
 
@@ -74,6 +74,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 	{
 		StatExtEntry   *stat = (StatExtEntry *) lfirst(lc);
 		MVNDistinct	   *ndistinct = NULL;
+		MVDependencies	dependencies = NULL;
 		VacAttrStats  **stats;
 		ListCell	   *lc2;
 
@@ -93,10 +94,12 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 			if (t == STATS_EXT_NDISTINCT)
 				ndistinct = statext_ndistinct_build(totalrows, numrows, rows,
 													stat->columns, stats);
+			else if (t == STATS_EXT_DEPENDENCIES)
+				deps = build_ext_dependencies(numrows, rows, attrs, stats);
 		}
 
 		/* store the statistics in the catalog */
-		statext_store(pg_stext, stat->statOid, ndistinct, stats);
+		statext_store(pg_stext, stat->statOid, ndistinct, dependencies, stats);
 	}
 
 	heap_close(pg_stext, RowExclusiveLock);
@@ -256,7 +259,7 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs, int natts,
  */
 static void
 statext_store(Relation pg_stext, Oid statOid,
-			  MVNDistinct *ndistinct,
+			  MVNDistinct *ndistinct, MVDependencies dependencies,
 			  VacAttrStats **stats)
 {
 	HeapTuple	stup,
@@ -280,8 +283,17 @@ statext_store(Relation pg_stext, Oid statOid,
 		values[Anum_pg_statistic_ext_standistinct - 1] = PointerGetDatum(data);
 	}
 
+	if (dependencies != NULL)
+	{
+		bytea	   *data = statext_dependencies_serialize(dependencies);
+
+		nulls[Anum_pg_statistic_ext_stadependencies - 1] = (data == NULL);
+		values[Anum_pg_statistic_ext_stadependencies - 1] = PointerGetDatum(data);
+	}
+
 	/* always replace the value (either by bytea or NULL) */
 	replaces[Anum_pg_statistic_ext_standistinct - 1] = true;
+	replaces[Anum_pg_statistic_ext_stadependencies - 1] = true;
 
 	/* there should already be a pg_statistic_ext tuple */
 	oldtup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));

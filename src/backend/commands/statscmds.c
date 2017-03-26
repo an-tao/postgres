@@ -62,10 +62,11 @@ CreateStatistics(CreateStatsStmt *stmt)
 	Oid			relid;
 	ObjectAddress parentobject,
 				childobject;
-	Datum		types[1];		/* only ndistinct defined now */
+	Datum		types[2];		/* only ndistinct defined now */
 	int			ntypes;
 	ArrayType  *staenabled;
 	bool		build_ndistinct;
+	bool		build_dependencies;
 	bool		requested_type = false;
 
 	Assert(IsA(stmt, CreateStatsStmt));
@@ -175,6 +176,37 @@ CreateStatistics(CreateStatsStmt *stmt)
 					(errcode(ERRCODE_UNDEFINED_COLUMN),
 				  errmsg("duplicate column name in statistics definition")));
 
+	/*
+	 * Parse the statistics options - currently only statistics types are
+	 * recognized (ndistinct, dependencies).
+	 */
+	foreach(l, stmt->options)
+	{
+		DefElem    *opt = (DefElem *) lfirst(l);
+
+		if (strcmp(opt->defname, "ndistinct") == 0)
+		{
+			build_ndistinct = defGetBoolean(opt);
+			types[ntypes++] = CharGetDatum(STATS_EXT_NDISTINCT);
+		}
+		else if (strcmp(opt->defname, "dependencies") == 0)
+		{
+			build_dependencies = defGetBoolean(opt);
+			types[ntypes++] = CharGetDatum(STATS_EXT_DEPENDENCIES);
+		}
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("unrecognized STATISTICS option \"%s\"",
+							opt->defname)));
+	}
+
+	/* Make sure there's at least one statistics type specified. */
+	if (! (build_ndistinct || build_dependencies))
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("no statistics type (ndistinct, dependencies) requested")));
+
 	stakeys = buildint2vector(attnums, numcols);
 
 	/*
@@ -191,6 +223,11 @@ CreateStatistics(CreateStatsStmt *stmt)
 			build_ndistinct = defGetBoolean(opt);
 			requested_type = true;
 		}
+		else if (strcmp(opt->defname, "dependencies") == 0)
+		{
+			build_dependencies = defGetBoolean(opt);
+			requested_type = true;;
+		}
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -199,12 +236,17 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 	/* If no statistic type was specified, build them all. */
 	if (!requested_type)
+	{
 		build_ndistinct = true;
+		build_dependencies = true;
+	}
 
 	/* construct the char array of enabled statistic types */
 	ntypes = 0;
 	if (build_ndistinct)
 		types[ntypes++] = CharGetDatum(STATS_EXT_NDISTINCT);
+	if (build_dependencies)
+		types[ntypes++] = CharGetDatum(STATS_EXT_DEPENDENCIES);
 	Assert(ntypes > 0);
 	staenabled = construct_array(types, ntypes, CHAROID, 1, true, 'c');
 
@@ -222,6 +264,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 
 	/* no statistics build yet */
 	nulls[Anum_pg_statistic_ext_standistinct - 1] = true;
+	nulls[Anum_pg_statistic_ext_stadependencies - 1] = true;
 
 	/* insert it into pg_statistic_ext */
 	statrel = heap_open(StatisticExtRelationId, RowExclusiveLock);

@@ -2329,7 +2329,8 @@ describeOneTableDetails(const char *schemaname,
 						   "    FROM ((SELECT pg_catalog.unnest(stakeys) AS attnum) s\n"
 			   "         JOIN pg_catalog.pg_attribute a ON (starelid = a.attrelid AND\n"
 							  "a.attnum = s.attnum AND not attisdropped))) AS columns,\n"
-							  "  (staenabled::char[] @> '{d}'::char[]) AS ndist_enabled\n"
+							  "  (staenabled::char[] @> '{d}'::char[]) AS ndist_enabled,\n"
+							  "  (staenabled::char[] @> '{f}'::char[]) AS deps_enabled\n"
 			  "FROM pg_catalog.pg_statistic_ext stat WHERE starelid  = '%s'\n"
 			  "ORDER BY 1;",
 							  oid);
@@ -2359,6 +2360,12 @@ describeOneTableDetails(const char *schemaname,
 					if (strcmp(PQgetvalue(result, i, 5), "t") == 0)
 					{
 						appendPQExpBufferStr(&buf, "ndistinct");
+						cnt++;
+					}
+
+					if (strcmp(PQgetvalue(result, i, 6), "t") == 0)
+					{
+						appendPQExpBufferStr(&buf, "%sdependencies", cnt++ > 0 ? ", " : "");
 						cnt++;
 					}
 
