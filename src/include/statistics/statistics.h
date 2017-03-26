@@ -63,7 +63,13 @@ typedef struct MVDependenciesData
 
 typedef MVDependenciesData *MVDependencies;
 
+extern bool dependency_implies_attribute(MVDependency dependency,
+						AttrNumber attnum, int16 *attmap);
+extern bool dependency_is_fully_matched(MVDependency dependency,
+						Bitmapset *attnums, int16 *attmap);
+
 extern MVNDistinct *statext_ndistinct_load(Oid mvoid);
+extern MVDependencies staext_dependencies_load(Oid mvoid);
 
 extern void BuildRelationExtStatistics(Relation onerel, double totalrows,
 						   int numrows, HeapTuple *rows,
