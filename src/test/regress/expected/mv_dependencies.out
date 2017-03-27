@@ -4,18 +4,6 @@ CREATE TABLE functional_dependencies (
     b INT,
     c INT
 );
--- unknown column
-CREATE STATISTICS s1 WITH (dependencies) ON (unknown_column) FROM functional_dependencies;
-ERROR:  column "unknown_column" referenced in statistics does not exist
--- single column
-CREATE STATISTICS s1 WITH (dependencies) ON (a) FROM functional_dependencies;
-ERROR:  statistics require at least 2 columns
--- single column, duplicated
-CREATE STATISTICS s1 WITH (dependencies) ON (a,a) FROM functional_dependencies;
-ERROR:  duplicate column name in statistics definition
--- two columns, one duplicated
-CREATE STATISTICS s1 WITH (dependencies) ON (a, a, b) FROM functional_dependencies;
-ERROR:  duplicate column name in statistics definition
 -- correct command
 CREATE STATISTICS s1 WITH (dependencies) ON (a, b, c) FROM functional_dependencies;
 -- random data (no functional dependencies)

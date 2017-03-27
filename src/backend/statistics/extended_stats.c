@@ -121,6 +121,10 @@ statext_is_kind_built(HeapTuple htup, char type)
 			attnum = Anum_pg_statistic_ext_standistinct;
 			break;
 
+		case STATS_EXT_DEPENDENCIES:
+			attnum = Anum_pg_statistic_ext_stadependencies;
+			break;
+
 		default:
 			elog(ERROR, "unexpected statistics type requested: %d", type);
 	}

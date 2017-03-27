@@ -1448,11 +1448,17 @@ static char *
 pg_get_statisticsext_worker(Oid statextid, bool missing_ok)
 {
 	Form_pg_statistic_ext	statextrec;
-	Form_pg_class			pgclassrec;
 	HeapTuple	statexttup;
-	HeapTuple	pgclasstup;
 	StringInfoData buf;
 	int			colno;
+	char	   *nsp;
+	ArrayType  *arr;
+	char	   *enabled;
+	Datum		datum;
+	bool		isnull;
+	bool		ndistinct_enabled;
+	bool		dependencies_enabled;
+	int			i;
 
 	statexttup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statextid));
 
@@ -1465,20 +1471,57 @@ pg_get_statisticsext_worker(Oid statextid, bool missing_ok)
 
 	statextrec = (Form_pg_statistic_ext) GETSTRUCT(statexttup);
 
-	pgclasstup = SearchSysCache1(RELOID, ObjectIdGetDatum(statextrec->starelid));
-
-	if (!HeapTupleIsValid(statexttup))
-	{
-		ReleaseSysCache(statexttup);
-		elog(ERROR, "cache lookup failed for relation %u", statextrec->starelid);
-	}
-
-	pgclassrec = (Form_pg_class) GETSTRUCT(pgclasstup);
-
 	initStringInfo(&buf);
 
-	appendStringInfo(&buf, "CREATE STATISTICS %s ON (",
-							quote_identifier(NameStr(statextrec->staname)));
+	nsp = get_namespace_name(statextrec->stanamespace);
+	appendStringInfo(&buf, "CREATE STATISTICS %s",
+					 quote_qualified_identifier(nsp,
+												NameStr(statextrec->staname)));
+
+	/*
+	 * Lookup the staenabled column so that we know how to handle the WITH
+	 * clause.
+	 */
+	datum = SysCacheGetAttr(STATEXTOID, statexttup,
+							Anum_pg_statistic_ext_staenabled, &isnull);
+	Assert(!isnull);
+	arr = DatumGetArrayTypeP(datum);
+	if (ARR_NDIM(arr) != 1 ||
+		ARR_HASNULL(arr) ||
+		ARR_ELEMTYPE(arr) != CHAROID)
+		elog(ERROR, "staenabled is not a 1-D char array");
+	enabled = (char *) ARR_DATA_PTR(arr);
+
+	ndistinct_enabled = false;
+	dependencies_enabled = false;
+
+	for (i = 0; i < ARR_DIMS(arr)[0]; i++)
+	{
+		if (enabled[i] == STATS_EXT_NDISTINCT)
+			ndistinct_enabled = true;
+		if (enabled[i] == STATS_EXT_DEPENDENCIES)
+			dependencies_enabled = true;
+	}
+
+	/*
+	 * If any option is disabled, then we'll need to append a WITH clause to
+	 * show which options are enabled.  We omit the WITH clause on purpose
+	 * when all options are enabled, so a pg_dump/pg_restore will create all
+	 * statistics types on a newer postgres version, if the statistics had all
+	 * options enabled on the original version.
+	 */
+	if (!ndistinct_enabled || !dependencies_enabled)
+	{
+		appendStringInfoString(&buf, " WITH (");
+		if (ndistinct_enabled)
+			appendStringInfoString(&buf, "ndistinct");
+		else if (dependencies_enabled)
+			appendStringInfoString(&buf, "dependencies");
+
+		appendStringInfoString(&buf, ")");
+	}
+
+	appendStringInfoString(&buf, " ON (");
 
 	for (colno = 0; colno < statextrec->stakeys.dim1; colno++)
 	{
@@ -1494,10 +1537,9 @@ pg_get_statisticsext_worker(Oid statextid, bool missing_ok)
 	}
 
 	appendStringInfo(&buf, ") FROM %s",
-							quote_identifier(NameStr(pgclassrec->relname)));
+					 generate_relation_name(statextrec->starelid, NIL));
 
 	ReleaseSysCache(statexttup);
-	ReleaseSysCache(pgclasstup);
 
 	return buf.data;
 }

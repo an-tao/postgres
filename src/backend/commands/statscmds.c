@@ -183,6 +183,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	 * recognized.
 	 */
 	build_ndistinct = false;
+	build_dependencies = false;
 	foreach(l, stmt->options)
 	{
 		DefElem    *opt = (DefElem *) lfirst(l);

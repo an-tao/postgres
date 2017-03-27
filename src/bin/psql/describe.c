@@ -2365,8 +2365,7 @@ describeOneTableDetails(const char *schemaname,
 
 					if (strcmp(PQgetvalue(result, i, 6), "t") == 0)
 					{
-						appendPQExpBuffer(&buf, "%sdependencies", cnt++ > 0 ? ", " : "");
-						cnt++;
+						appendPQExpBuffer(&buf, "%sdependencies", cnt > 0 ? ", " : "");
 					}
 
 					appendPQExpBuffer(&buf, ") ON (%s)",

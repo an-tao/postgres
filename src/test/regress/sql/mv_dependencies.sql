@@ -5,18 +5,6 @@ CREATE TABLE functional_dependencies (
     c INT
 );
 
--- unknown column
-CREATE STATISTICS s1 WITH (dependencies) ON (unknown_column) FROM functional_dependencies;
-
--- single column
-CREATE STATISTICS s1 WITH (dependencies) ON (a) FROM functional_dependencies;
-
--- single column, duplicated
-CREATE STATISTICS s1 WITH (dependencies) ON (a,a) FROM functional_dependencies;
-
--- two columns, one duplicated
-CREATE STATISTICS s1 WITH (dependencies) ON (a, a, b) FROM functional_dependencies;
-
 -- correct command
 CREATE STATISTICS s1 WITH (dependencies) ON (a, b, c) FROM functional_dependencies;
 

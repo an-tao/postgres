@@ -359,7 +359,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	/*
 	 * We'll try build functional dependencies starting from the smallest ones
 	 * covering just 2 columns, to the largest ones, covering all columns
-	 * included int the statistics. We start from the smallest ones because we
+	 * included in the statistics. We start from the smallest ones because we
 	 * want to be able to skip already implied ones.
 	 */
 	for (k = 2; k <= numattrs; k++)
@@ -649,7 +649,6 @@ Datum
 pg_dependencies_out(PG_FUNCTION_ARGS)
 {
 	int i, j;
-	char		   *ret;
 	StringInfoData	str;
 
 	bytea	   *data = PG_GETARG_BYTEA_PP(0);
@@ -657,7 +656,7 @@ pg_dependencies_out(PG_FUNCTION_ARGS)
 	MVDependencies dependencies = statext_dependencies_deserialize(data);
 
 	initStringInfo(&str);
-	appendStringInfoString(&str, "[");
+	appendStringInfoChar(&str, '[');
 
 	for (i = 0; i < dependencies->ndeps; i++)
 	{
@@ -666,7 +665,7 @@ pg_dependencies_out(PG_FUNCTION_ARGS)
 		if (i > 0)
 			appendStringInfoString(&str, ", ");
 
-		appendStringInfoString(&str, "{");
+		appendStringInfoChar(&str, '{');
 
 		for (j = 0; j < dependency->nattributes; j++)
 		{
@@ -680,15 +679,12 @@ pg_dependencies_out(PG_FUNCTION_ARGS)
 
 		appendStringInfo(&str, " : %f", dependency->degree);
 
-		appendStringInfoString(&str, "}");
+		appendStringInfoChar(&str, '}');
 	}
 
-	appendStringInfoString(&str, "]");
+	appendStringInfoChar(&str, ']');
 
-	ret = pstrdup(str.data);
-	pfree(str.data);
-
-	PG_RETURN_CSTRING(ret);
+	PG_RETURN_CSTRING(str.data);
 }
 
 /*
