@@ -2,7 +2,7 @@ Soft functional dependencies
 ============================
 
 Functional dependencies are a concept well described in relational theory,
-particularly in definition of normalization and "normal forms". Wikipedia
+particularly in the definition of normalization and "normal forms". Wikipedia
 has a nice definition of a functional dependency [1]:
 
     In a given table, an attribute Y is said to have a functional dependency
@@ -31,8 +31,8 @@ addresses, where the knowledge of a ZIP code (usually) determines city. Larger
 cities may have multiple ZIP codes, so the dependency can't be reversed.
 
 Many datasets might be normalized not to contain such dependencies, but often
-it's not practical for various reasons. In some cases it's actually a conscious
-design choice to model the dataset in denormalized way, either because of
+it's not practical for various reasons. In some cases, it's actually a conscious
+design choice to model the dataset in a denormalized way, either because of
 performance or to make querying easier.
 
 
@@ -48,17 +48,17 @@ rendering the approach mostly useless even for slightly noisy data sets, or
 result in sudden changes in behavior depending on minor differences between
 samples provided to ANALYZE.
 
-For this reason the statistics implements "soft" functional dependencies,
+For this reason, the statistics implements "soft" functional dependencies,
 associating each functional dependency with a degree of validity (a number
-number between 0 and 1). This degree is then used to combine selectivities
-in a smooth manner.
+between 0 and 1). This degree is then used to combine selectivities in a
+smooth manner.
 
 
 Mining dependencies (ANALYZE)
 -----------------------------
 
 The current algorithm is fairly simple - generate all possible functional
-dependencies, and for each one count the number of rows rows consistent it.
+dependencies, and for each one count the number of rows consistent with it.
 Then use the fraction of rows (supporting/total) as the degree.
 
 To count the rows consistent with the dependency (a => b):
@@ -69,7 +69,7 @@ To count the rows consistent with the dependency (a => b):
      distinct values in 'b'.
 
  (c) If there's a single distinct value in 'b', the rows are consistent with
-     the functional dependency. Otherwise they contradict it.
+     the functional dependency, otherwise they contradict it.
 
 The algorithm also requires a minimum size of the group to consider it
 consistent (currently 3 rows in the sample). Small groups make it less likely
@@ -79,7 +79,7 @@ to break the consistency.
 Clause reduction (planner/optimizer)
 ------------------------------------
 
-Apllying the functional dependencies is fairly simple - given a list of
+Applying the functional dependencies is fairly simple - given a list of
 equality clauses, we compute selectivities of each clause and then use the
 degree to combine them using this formula
 
@@ -105,11 +105,12 @@ dependency (a=>b), the value in (b=?) clause is the value determined by (a=?).
 If that's not the case, the clauses are "inconsistent" with the functional
 dependency and the result will be over-estimation.
 
-This may happen for example when using conditions on ZIP and city name with
-mismatching values (ZIP for a different city), etc. In such case the result
-set will be empty, but we'll estimate the selectivity using the ZIP condition.
+This may happen, for example, when using conditions on the ZIP code and city
+name with mismatching values (ZIP code for a different city), etc. In such a
+case, the result set will be empty, but we'll estimate the selectivity using
+the ZIP code condition.
 
-In this case the default estimation based on AVIA principle happens to work
+In this case, the default estimation based on AVIA principle happens to work
 better, but mostly by chance.
 
 This issue is the price for the simplicity of functional dependencies. If the
