@@ -62,7 +62,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	Oid			relid;
 	ObjectAddress parentobject,
 				childobject;
-	Datum		types[2];		/* only ndistinct defined now */
+	Datum		types[2];		/* one for each possible type of statistics */
 	int			ntypes;
 	ArrayType  *staenabled;
 	bool		build_ndistinct;
@@ -145,7 +145,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 					 errmsg("cannot have more than %d keys in statistics",
 							STATS_MAX_DIMENSIONS)));
 
-		attnums[numcols] = ((Form_pg_attribute) GETSTRUCT(atttuple))->attnum;
+		attnums[numcols] = attForm->attnum;
 		ReleaseSysCache(atttuple);
 		numcols++;
 	}
@@ -160,14 +160,14 @@ CreateStatistics(CreateStatsStmt *stmt)
 				 errmsg("statistics require at least 2 columns")));
 
 	/*
-	 * Sort the attnums, which makes detecting duplicies somewhat easier, and
+	 * Sort the attnums, which makes detecting duplication somewhat easier, and
 	 * it does not hurt (it does not affect the efficiency, unlike for
 	 * indexes, for example).
 	 */
 	qsort(attnums, numcols, sizeof(int16), compare_int16);
 
 	/*
-	 * Look for duplicities in the list of columns. The attnums are sorted so
+	 * Look for duplication in the list of columns. The attnums are sorted so
 	 * just check consecutive elements.
 	 */
 	for (i = 1; i < numcols; i++)
@@ -204,6 +204,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 					 errmsg("unrecognized STATISTICS option \"%s\"",
 							opt->defname)));
 	}
+
 	/* If no statistic type was specified, build them all. */
 	if (!requested_type)
 	{
