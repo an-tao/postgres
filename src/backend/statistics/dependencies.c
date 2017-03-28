@@ -344,14 +344,25 @@ MVDependencies *
 statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 						   VacAttrStats **stats)
 {
-	int			i;
-	int			k;
-	int			numattrs;
+	int		i,
+			j,
+			k;
+	int		numattrs;
+	int	   *attnums;
 
 	/* result */
 	MVDependencies *dependencies = NULL;
 
 	numattrs = bms_num_members(attrs);
+
+	/*
+	 * Transform the bms into an array, to make accessing i-th member easier.
+	 */
+	attnums = palloc(sizeof(int) * bms_num_members(attrs));
+	i = 0;
+	j = -1;
+	while ((j = bms_next_member(attrs, j)) >= 0)
+		attnums[i++] = j;
 
 	Assert(numattrs >= 2);
 
@@ -388,7 +399,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 			d->degree = degree;
 			d->nattributes = k;
 			for (i = 0; i < k; i++)
-				d->attributes[i] = dependency[i];
+				d->attributes[i] = attnums[dependency[i]];
 
 			/* initialize the list of dependencies */
 			if (dependencies == NULL)

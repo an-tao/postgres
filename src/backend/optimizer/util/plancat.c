@@ -1307,7 +1307,8 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 
 			stainfos = lcons(info, stainfos);
 		}
-		else if (statext_is_kind_built(htup, STATS_EXT_DEPENDENCIES))
+
+		if (statext_is_kind_built(htup, STATS_EXT_DEPENDENCIES))
 		{
 			StatisticExtInfo *info = makeNode(StatisticExtInfo);
 
