@@ -481,7 +481,8 @@ rows = (outer_cardinality * inner_cardinality) * selectivity
     the <command>CREATE STATISTICS</> command.
 
 <programlisting>
-CREATE STATISTICS s1 ON t (a,b) WITH (dependencies);
+
+CREATE STATISTICS s1 WITH (dependencies) ON (a, b) FROM t;
 ANALYZE t;
 EXPLAIN ANALYZE SELECT * FROM t WHERE a = 1 AND b = 1;
                                            QUERY PLAN
@@ -494,9 +495,10 @@ EXPLAIN ANALYZE SELECT * FROM t WHERE a = 1 AND b = 1;
 (5 rows)
 </programlisting>
 
-    As you can see, the estimate improved quite a bit, as the planner is now
-    aware of the functional dependencies and eliminates the second condition
-    when computing the estimates.
+    The planner is now aware of the functional dependencies and takes this
+    into account while applying the selectivity estimation for the second
+    condition.  Repeating the same query before having created the statistics
+    would have lead to some quite different row estimates.
    </para>
 
    <para>
@@ -513,7 +515,7 @@ EXPLAIN ANALYZE SELECT * FROM t WHERE a = 1 AND b = 1;
  a      | integer |
  b      | integer |
 Statistics:
-    "public.s1" (dependencies) ON (a, b)
+    "public.s1" WITH (dependencies) ON (a, b)
 </programlisting>
 
    </para>
@@ -528,14 +530,9 @@ Statistics:
 <programlisting>
 SELECT tablename, staname, attnums, depsbytes, depsinfo
   FROM pg_stats_ext WHERE staname = 's1';
-
- tablename | staname | attnums | depsbytes |    depsinfo
------------+---------+---------+-----------+----------------
- t         | s1      | 1 2     |        32 | dependencies=2
-(1 row)
 </programlisting>
 
-     This shows that the statistic is defined on table <structname>t</>,
+     This shows that the statistics are defined on table <structname>t</>,
      <structfield>attnums</structfield> lists attribute numbers of columns
      (references <structname>pg_attribute</structname>). It also shows
      <command>ANALYZE</> found two functional dependencies, and size when
@@ -544,7 +541,7 @@ SELECT tablename, staname, attnums, depsbytes, depsinfo
      function.
 
 <programlisting>
-SELECT pg_dependencies_show(stadeps)
+SELECT pg_dependencies_show(stadependencies)
   FROM pg_statistic_ext WHERE staname = 's1';
 
  pg_dependencies_show
