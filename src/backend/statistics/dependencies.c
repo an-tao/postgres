@@ -340,17 +340,16 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
  * (b,a => c) is exactly the same thing, but both versions are generated
  * and stored in the statistics.
  */
-MVDependencies
+MVDependencies *
 statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 						   VacAttrStats **stats)
 {
 	int			i;
 	int			k;
 	int			numattrs;
-	
 
 	/* result */
-	MVDependencies dependencies = NULL;
+	MVDependencies *dependencies = NULL;
 
 	numattrs = bms_num_members(attrs);
 
@@ -373,7 +372,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 		while ((dependency = DependencyGenerator_next(DependencyGenerator)))
 		{
 			double			degree;
-			MVDependency	d;
+			MVDependency   *d;
 
 			/* compute how valid the dependency seems */
 			degree = dependency_degree(numrows, rows, k, dependency, stats, attrs);
@@ -382,7 +381,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 			if (degree == 0.0)
 				continue;
 
-			d = (MVDependency) palloc0(offsetof(MVDependencyData, attributes)
+			d = (MVDependency *) palloc0(offsetof(MVDependency, attributes)
 									   + k * sizeof(AttrNumber));
 
 			/* copy the dependency (and keep the indexes into stakeys) */
@@ -395,7 +394,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 			if (dependencies == NULL)
 			{
 				dependencies
-					= (MVDependencies) palloc0(sizeof(MVDependenciesData));
+					= (MVDependencies *) palloc0(sizeof(MVDependencies));
 
 				dependencies->magic = STATS_DEPS_MAGIC;
 				dependencies->type = STATS_DEPS_TYPE_BASIC;
@@ -403,9 +402,9 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 			}
 
 			dependencies->ndeps++;
-			dependencies = (MVDependencies) repalloc(dependencies,
-										   offsetof(MVDependenciesData, deps)
-								+dependencies->ndeps * sizeof(MVDependency));
+			dependencies = (MVDependencies *) repalloc(dependencies,
+									   offsetof(MVDependencies, deps)
+						+ dependencies->ndeps * sizeof(MVDependency));
 
 			dependencies->deps[dependencies->ndeps - 1] = d;
 		}
@@ -422,7 +421,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
  * serialize list of dependencies into a bytea
  */
 bytea *
-statext_dependencies_serialize(MVDependencies dependencies)
+statext_dependencies_serialize(MVDependencies *dependencies)
 {
 	int			i;
 	bytea	   *output;
@@ -430,8 +429,8 @@ statext_dependencies_serialize(MVDependencies dependencies)
 	Size		len;
 
 	/* we need to store ndeps, with a number of attributes for each one */
-	len = VARHDRSZ + offsetof(MVDependenciesData, deps) +
-		  dependencies->ndeps * offsetof(MVDependencyData, attributes);
+	len = VARHDRSZ + SizeOfDependencies
+				   + dependencies->ndeps * SizeOfDependency;
 
 	/* and also include space for the actual attribute numbers and degrees */
 	for (i = 0; i < dependencies->ndeps; i++)
@@ -442,17 +441,21 @@ statext_dependencies_serialize(MVDependencies dependencies)
 
 	tmp = VARDATA(output);
 
-	/* first, store the number of dimensions / items */
-	memcpy(tmp, dependencies, offsetof(MVDependenciesData, deps));
-	tmp += offsetof(MVDependenciesData, deps);
+	/* Store the base struct values (magic, type, ndeps) */
+	memcpy(tmp, &dependencies->magic, sizeof(uint32));
+	tmp += sizeof(uint32);
+	memcpy(tmp, &dependencies->type, sizeof(uint32));
+	tmp += sizeof(uint32);
+	memcpy(tmp, &dependencies->ndeps, sizeof(uint32));
+	tmp += sizeof(uint32);
 
 	/* store number of attributes and attribute numbers for each dependency */
 	for (i = 0; i < dependencies->ndeps; i++)
 	{
-		MVDependency d = dependencies->deps[i];
+		MVDependency *d = dependencies->deps[i];
 
-		memcpy(tmp, d, offsetof(MVDependencyData, attributes));
-		tmp += offsetof(MVDependencyData, attributes);
+		memcpy(tmp, d, SizeOfDependency);
+		tmp += SizeOfDependency;
 
 		memcpy(tmp, d->attributes, sizeof(AttrNumber) * d->nattributes);
 		tmp += sizeof(AttrNumber) * d->nattributes;
@@ -466,30 +469,34 @@ statext_dependencies_serialize(MVDependencies dependencies)
 /*
  * Reads serialized dependencies into MVDependencies structure.
  */
-MVDependencies
+MVDependencies *
 statext_dependencies_deserialize(bytea *data)
 {
 	int			i;
-	Size		expected_size;
-	MVDependencies dependencies;
+	Size		min_expected_size;
+	MVDependencies *dependencies;
 	char	   *tmp;
 
 	if (data == NULL)
 		return NULL;
 
-	if (VARSIZE_ANY_EXHDR(data) < offsetof(MVDependenciesData, deps))
+	if (VARSIZE_ANY_EXHDR(data) < SizeOfDependencies)
 		elog(ERROR, "invalid MVDependencies size %ld (expected at least %ld)",
-			 VARSIZE_ANY_EXHDR(data), offsetof(MVDependenciesData, deps));
+			 VARSIZE_ANY_EXHDR(data), SizeOfDependencies);
 
 	/* read the MVDependencies header */
-	dependencies = (MVDependencies) palloc0(sizeof(MVDependenciesData));
+	dependencies = (MVDependencies *) palloc0(sizeof(MVDependencies));
 
 	/* initialize pointer to the data part (skip the varlena header) */
 	tmp = VARDATA_ANY(data);
 
-	/* get the header and perform basic sanity checks */
-	memcpy(dependencies, tmp, offsetof(MVDependenciesData, deps));
-	tmp += offsetof(MVDependenciesData, deps);
+	/* read the header fields and perform basic sanity checks */
+	memcpy(&dependencies->magic, tmp, sizeof(uint32));
+	tmp += sizeof(uint32);
+	memcpy(&dependencies->type, tmp, sizeof(uint32));
+	tmp += sizeof(uint32);
+	memcpy(&dependencies->ndeps, tmp, sizeof(uint32));
+	tmp += sizeof(uint32);
 
 	if (dependencies->magic != STATS_DEPS_MAGIC)
 		elog(ERROR, "invalid dependency magic %d (expected %dd)",
@@ -499,26 +506,29 @@ statext_dependencies_deserialize(bytea *data)
 		elog(ERROR, "invalid dependency type %d (expected %dd)",
 			 dependencies->type, STATS_DEPS_TYPE_BASIC);
 
-	Assert(dependencies->ndeps > 0);
+	if (dependencies->ndeps == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid zero-length item array in MVDependencies")));
 
 	/* what minimum bytea size do we expect for those parameters */
-	expected_size = offsetof(MVDependenciesData, deps) +
-		dependencies->ndeps * (offsetof(MVDependencyData, attributes) +
-							   sizeof(AttrNumber) * 2);
+	min_expected_size = SizeOfDependencies +
+							dependencies->ndeps * (SizeOfDependency +
+							sizeof(AttrNumber) * 2);
 
-	if (VARSIZE_ANY_EXHDR(data) < expected_size)
+	if (VARSIZE_ANY_EXHDR(data) < min_expected_size)
 		elog(ERROR, "invalid dependencies size %ld (expected at least %ld)",
-			 VARSIZE_ANY_EXHDR(data), expected_size);
+			 VARSIZE_ANY_EXHDR(data), min_expected_size);
 
 	/* allocate space for the MCV items */
-	dependencies = repalloc(dependencies, offsetof(MVDependenciesData, deps)
-							+(dependencies->ndeps * sizeof(MVDependency)));
+	dependencies = repalloc(dependencies, offsetof(MVDependencies, deps)
+						 + (dependencies->ndeps * sizeof(MVDependency *)));
 
 	for (i = 0; i < dependencies->ndeps; i++)
 	{
-		double		degree;
-		int			k;
-		MVDependency d;
+		double			degree;
+		AttrNumber		k;
+		MVDependency   *d;
 
 		/* degree of validity */
 		memcpy(&degree, tmp, sizeof(double));
@@ -532,8 +542,8 @@ statext_dependencies_deserialize(bytea *data)
 		Assert((k >= 2) && (k <= STATS_MAX_DIMENSIONS));
 
 		/* now that we know the number of attributes, allocate the dependency */
-		d = (MVDependency) palloc0(offsetof(MVDependencyData, attributes) +
-								   (k * sizeof(AttrNumber)));
+		d = (MVDependency *) palloc0(offsetof(MVDependency, attributes)
+									 + (k * sizeof(AttrNumber)));
 
 		d->degree = degree;
 		d->nattributes = k;
@@ -560,7 +570,7 @@ statext_dependencies_deserialize(bytea *data)
  * 		attributes (assuming the clauses are suitable equality clauses)
  */
 bool
-dependency_is_fully_matched(MVDependency dependency, Bitmapset *attnums)
+dependency_is_fully_matched(MVDependency *dependency, Bitmapset *attnums)
 {
 	int j;
 
@@ -584,7 +594,7 @@ dependency_is_fully_matched(MVDependency dependency, Bitmapset *attnums)
  *		check that the attnum matches is implied by the functional dependency
  */
 bool
-dependency_implies_attribute(MVDependency dependency, AttrNumber attnum)
+dependency_implies_attribute(MVDependency *dependency, AttrNumber attnum)
 {
 	if (attnum == dependency->attributes[dependency->nattributes-1])
 		return true;
@@ -592,7 +602,7 @@ dependency_implies_attribute(MVDependency dependency, AttrNumber attnum)
 	return false;
 }
 
-MVDependencies
+MVDependencies *
 staext_dependencies_load(Oid mvoid)
 {
 	bool		isnull = false;
@@ -653,20 +663,19 @@ pg_dependencies_out(PG_FUNCTION_ARGS)
 
 	bytea	   *data = PG_GETARG_BYTEA_PP(0);
 
-	MVDependencies dependencies = statext_dependencies_deserialize(data);
+	MVDependencies *dependencies = statext_dependencies_deserialize(data);
 
 	initStringInfo(&str);
 	appendStringInfoChar(&str, '[');
 
 	for (i = 0; i < dependencies->ndeps; i++)
 	{
-		MVDependency dependency = dependencies->deps[i];
+		MVDependency *dependency = dependencies->deps[i];
 
 		if (i > 0)
 			appendStringInfoString(&str, ", ");
 
 		appendStringInfoChar(&str, '{');
-
 		for (j = 0; j < dependency->nattributes; j++)
 		{
 			if (j == dependency->nattributes-1)
@@ -676,9 +685,7 @@ pg_dependencies_out(PG_FUNCTION_ARGS)
 
 			appendStringInfo(&str, "%d", dependency->attributes[j]);
 		}
-
 		appendStringInfo(&str, " : %f", dependency->degree);
-
 		appendStringInfoChar(&str, '}');
 	}
 

@@ -47,7 +47,7 @@ static List *fetch_statentries_for_relation(Relation pg_statext, Oid relid);
 static VacAttrStats **lookup_var_attr_stats(Relation rel, Bitmapset *attrs,
 					  int natts, VacAttrStats **vacattrstats);
 static void statext_store(Relation pg_stext, Oid relid,
-			  MVNDistinct *ndistinct, MVDependencies dependencies,
+			  MVNDistinct *ndistinct, MVDependencies *dependencies,
 			  VacAttrStats **stats);
 
 
@@ -74,7 +74,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 	{
 		StatExtEntry   *stat = (StatExtEntry *) lfirst(lc);
 		MVNDistinct	   *ndistinct = NULL;
-		MVDependencies	dependencies = NULL;
+		MVDependencies *dependencies = NULL;
 		VacAttrStats  **stats;
 		ListCell	   *lc2;
 
@@ -301,7 +301,7 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs, int natts,
  */
 static void
 statext_store(Relation pg_stext, Oid statOid,
-			  MVNDistinct *ndistinct, MVDependencies dependencies,
+			  MVNDistinct *ndistinct, MVDependencies *dependencies,
 			  VacAttrStats **stats)
 {
 	HeapTuple	stup,

@@ -50,32 +50,35 @@ typedef struct MVNDistinct
  * Functional dependencies, tracking column-level relationships (values
  * in one column determine values in another one).
  */
-typedef struct MVDependencyData
+typedef struct MVDependency
 {
 	double		degree;			/* degree of validity (0-1) */
 	AttrNumber	nattributes;	/* number of attributes */
 	AttrNumber	attributes[FLEXIBLE_ARRAY_MEMBER];	/* attribute numbers */
-} MVDependencyData;
+} MVDependency;
 
-typedef MVDependencyData *MVDependency;
+/* size of the struct excluding the deps array */
+#define SizeOfDependency \
+	(offsetof(MVDependency, nattributes) + sizeof(AttrNumber))
 
-typedef struct MVDependenciesData
+typedef struct MVDependencies
 {
 	uint32		magic;			/* magic constant marker */
 	uint32		type;			/* type of MV Dependencies (BASIC) */
 	uint32		ndeps;			/* number of dependencies */
-	MVDependency deps[FLEXIBLE_ARRAY_MEMBER];	/* dependencies */
-} MVDependenciesData;
+	MVDependency *deps[FLEXIBLE_ARRAY_MEMBER];	/* dependencies */
+} MVDependencies;
 
-typedef MVDependenciesData *MVDependencies;
+/* size of the struct excluding the deps array */
+#define SizeOfDependencies	(offsetof(MVDependencies, ndeps) + sizeof(uint32))
 
-extern bool dependency_implies_attribute(MVDependency dependency,
+extern bool dependency_implies_attribute(MVDependency *dependency,
 						AttrNumber attnum);
-extern bool dependency_is_fully_matched(MVDependency dependency,
+extern bool dependency_is_fully_matched(MVDependency *dependency,
 						Bitmapset *attnums);
 
 extern MVNDistinct *statext_ndistinct_load(Oid mvoid);
-extern MVDependencies staext_dependencies_load(Oid mvoid);
+extern MVDependencies *staext_dependencies_load(Oid mvoid);
 
 extern void BuildRelationExtStatistics(Relation onerel, double totalrows,
 						   int numrows, HeapTuple *rows,

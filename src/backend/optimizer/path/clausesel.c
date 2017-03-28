@@ -887,12 +887,12 @@ clause_selectivity(PlannerInfo *root,
  *
  * TODO Explain why we select the dependencies this way.
  */
-static MVDependency
-find_strongest_dependency(StatisticExtInfo *stats, MVDependencies dependencies,
+static MVDependency *
+find_strongest_dependency(StatisticExtInfo *stats, MVDependencies *dependencies,
 						  Bitmapset *attnums)
 {
 	int i;
-	MVDependency strongest = NULL;
+	MVDependency *strongest = NULL;
 
 	/* number of attnums in clauses */
 	int nattnums = bms_num_members(attnums);
@@ -904,7 +904,7 @@ find_strongest_dependency(StatisticExtInfo *stats, MVDependencies dependencies,
 	 */
 	for (i = 0; i < dependencies->ndeps; i++)
 	{
-		MVDependency	dependency = dependencies->deps[i];
+		MVDependency   *dependency = dependencies->deps[i];
 
 		/*
 		 * Skip dependencies referencing more attributes than available clauses,
@@ -970,7 +970,7 @@ clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
 {
 	ListCell	   *lc;
 	Selectivity		s1 = 1.0;
-	MVDependencies	dependencies;
+	MVDependencies *dependencies;
 
 	Assert(stats->kind == STATS_EXT_DEPENDENCIES);
 
@@ -989,7 +989,7 @@ clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
 	{
 		Selectivity		s2 = 1.0;
 		Bitmapset	   *attnums;
-		MVDependency	dependency;
+		MVDependency   *dependency;
 
 		/* clauses remaining after removing those on the "implied" attribute */
 		List		   *clauses_filtered = NIL;
