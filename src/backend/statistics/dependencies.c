@@ -186,6 +186,12 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	int		   *attnums;
 
 	/*
+	 * min_group_size defines how many matching sets of (k-1) attributes are
+	 * required to exist with the same k value before we count this towards
+	 * the functional dependencies. Having this set too low is more likely to
+	 * cause false positives of functional dependencies and too high a value
+	 * would be too strict, and may miss detection of functional dependencies.
+	 *
 	 * XXX Maybe the threshold should be somehow related to the number of
 	 * distinct values in the combination of columns we're analyzing. Assuming
 	 * the distribution is uniform, we can estimate the average group size and
