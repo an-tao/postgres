@@ -288,7 +288,7 @@ struct HeapTupleHeaderData
  * than MaxOffsetNumber, so that it can be distinguished from a valid
  * offset number in a regular item pointer.
  */
-#define SpecTokenOffsetNumber		0xfffe
+#define SpecTokenOffsetNumber		OffsetNumberPrev(OffsetNumberMask)
 
 /*
  * HeapTupleHeader accessor macros

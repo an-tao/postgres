@@ -26,7 +26,16 @@ typedef uint16 OffsetNumber;
 #define InvalidOffsetNumber		((OffsetNumber) 0)
 #define FirstOffsetNumber		((OffsetNumber) 1)
 #define MaxOffsetNumber			((OffsetNumber) (BLCKSZ / sizeof(ItemIdData)))
-#define OffsetNumberMask		(0xffff)		/* valid uint16 bits */
+
+/*
+ * The biggest BLCKSZ we support is 32kB, and each ItemId takes 6 bytes.
+ * That limits the number of line pointers in a page to 32kB/6B = 5461.
+ * Therefore, 13 bits in OffsetNumber are enough to represent all valid
+ * on-disk line pointers.  Hence, we can reserve the high-order bits in
+ * OffsetNumber for other purposes.
+ */
+#define OffsetNumberBits		13
+#define OffsetNumberMask		((((uint16) 1) << OffsetNumberBits) - 1)
 
 /* ----------------
  *		support macros

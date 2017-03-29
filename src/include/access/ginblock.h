@@ -135,7 +135,8 @@ typedef struct GinMetaPageData
 	(ItemPointerGetBlockNumberNoCheck(pointer))
 
 #define GinItemPointerGetOffsetNumber(pointer) \
-	(ItemPointerGetOffsetNumberNoCheck(pointer))
+	(ItemPointerGetOffsetNumberNoCheck(pointer) | \
+	 (ItemPointerGetFlags(pointer) << OffsetNumberBits))
 
 #define GinItemPointerSetBlockNumber(pointer, blkno) \
 	(ItemPointerSetBlockNumber((pointer), (blkno)))

@@ -57,7 +57,7 @@ typedef ItemPointerData *ItemPointer;
  *		True iff the disk item pointer is not NULL.
  */
 #define ItemPointerIsValid(pointer) \
-	((bool) (PointerIsValid(pointer) && ((pointer)->ip_posid != 0)))
+	((bool) (PointerIsValid(pointer) && (((pointer)->ip_posid & OffsetNumberMask) != 0)))
 
 /*
  * ItemPointerGetBlockNumberNoCheck
@@ -84,7 +84,7 @@ typedef ItemPointerData *ItemPointer;
  */
 #define ItemPointerGetOffsetNumberNoCheck(pointer) \
 ( \
-	(pointer)->ip_posid \
+	((pointer)->ip_posid & OffsetNumberMask) \
 )
 
 /*
@@ -98,6 +98,30 @@ typedef ItemPointerData *ItemPointer;
 )
 
 /*
+ * Get the flags stored in high order bits in the OffsetNumber.
+ */
+#define ItemPointerGetFlags(pointer) \
+( \
+	((pointer)->ip_posid & ~OffsetNumberMask) >> OffsetNumberBits \
+)
+
+/*
+ * Set the flag bits. We first left-shift since flags are defined starting 0x01
+ */
+#define ItemPointerSetFlags(pointer, flags) \
+( \
+	((pointer)->ip_posid |= ((flags) << OffsetNumberBits)) \
+)
+
+/*
+ * Clear all flags.
+ */
+#define ItemPointerClearFlags(pointer) \
+( \
+	((pointer)->ip_posid &= OffsetNumberMask) \
+)
+
+/*
  * ItemPointerSet
  *		Sets a disk item pointer to the specified block and offset.
  */
@@ -105,7 +129,7 @@ typedef ItemPointerData *ItemPointer;
 ( \
 	AssertMacro(PointerIsValid(pointer)), \
 	BlockIdSet(&((pointer)->ip_blkid), blockNumber), \
-	(pointer)->ip_posid = offNum \
+	(pointer)->ip_posid = (offNum) \
 )
 
 /*
