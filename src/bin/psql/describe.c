@@ -2347,7 +2347,7 @@ describeOneTableDetails(const char *schemaname,
 
 				for (i = 0; i < tuples; i++)
 				{
-					int		cnt = 0;
+					bool	gotone = false;
 
 					printfPQExpBuffer(&buf, "    ");
 
@@ -2360,12 +2360,12 @@ describeOneTableDetails(const char *schemaname,
 					if (strcmp(PQgetvalue(result, i, 5), "t") == 0)
 					{
 						appendPQExpBufferStr(&buf, "ndistinct");
-						cnt++;
+						gotone = true;
 					}
 
 					if (strcmp(PQgetvalue(result, i, 6), "t") == 0)
 					{
-						appendPQExpBuffer(&buf, "%sdependencies", cnt > 0 ? ", " : "");
+						appendPQExpBuffer(&buf, "%sdependencies", gotone ? ", " : "");
 					}
 
 					appendPQExpBuffer(&buf, ") ON (%s)",
