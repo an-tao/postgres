@@ -81,6 +81,13 @@ DROP DATABASE [ IF EXISTS ] <replaceable class="PARAMETER">name</replaceable>
    <xref linkend="app-dropdb"> instead,
    which is a wrapper around this command.
   </para>
+
+  <para>
+   Active <link linkend="logicaldecoding-replication-slots">logical
+   replication slots</> count as connections and will prevent a
+   database from being dropped. Inactive slots will be automatically
+   dropped when the database is dropped.
+  </para>
  </refsect1>
 
  <refsect1>
