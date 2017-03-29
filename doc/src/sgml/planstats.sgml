@@ -528,30 +528,15 @@ Statistics:
     you may do this:
 
 <programlisting>
-SELECT tablename, staname, attnums, depsbytes, depsinfo
+SELECT tablename, staname, attnums, depsbytes
   FROM pg_stats_ext WHERE staname = 's1';
 </programlisting>
 
      This shows that the statistics are defined on table <structname>t</>,
      <structfield>attnums</structfield> lists attribute numbers of columns
      (references <structname>pg_attribute</structname>). It also shows
-     <command>ANALYZE</> found two functional dependencies, and size when
-     serialized into a <literal>bytea</> column. Inspecting the functional
-     dependencies is possible using <function>pg_dependencies_show</>
-     function.
-
-<programlisting>
-SELECT pg_dependencies_show(stadependencies)
-  FROM pg_statistic_ext WHERE staname = 's1';
-
- pg_dependencies_show
-----------------------
- (1) => 2, (2) => 1
-(1 row)
-</programlisting>
-
-    Which confirms <literal>a</> is functionally dependent on <literal>b</> and
-    <literal>b</> is functionally dependent on <literal>a</literal>.
+     the length in bytes of the functional dependencies, as found by
+     <command>ANALYZE</> when serialized into a <literal>bytea</> column.
    </para>
 
    <para>
