@@ -34,8 +34,7 @@ ALTER TABLE ab1 ALTER a SET STATISTICS 0;
 INSERT INTO ab1 SELECT a, a%23 FROM generate_series(1, 1000) a;
 CREATE STATISTICS ab1_a_b_stats ON (a, b) FROM ab1;
 ANALYZE ab1;
-ERROR:  extended statistics could not be collected for column "a" of relation public.ab1
-HINT:  Consider ALTER TABLE "public"."ab1" ALTER "a" SET STATISTICS -1
+WARNING:  extended statistics public.ab1_a_b_stats on relation public.ab1 could not be collected
 ALTER TABLE ab1 ALTER a SET STATISTICS -1;
 ANALYZE ab1;
 DROP TABLE ab1;
