@@ -196,7 +196,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 		else if (strcmp(opt->defname, "dependencies") == 0)
 		{
 			build_dependencies = defGetBoolean(opt);
-			requested_type = true;;
+			requested_type = true;
 		}
 		else
 			ereport(ERROR,
