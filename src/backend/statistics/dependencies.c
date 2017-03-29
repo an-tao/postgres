@@ -665,9 +665,9 @@ pg_dependencies_in(PG_FUNCTION_ARGS)
 /*
  * pg_dependencies		- output routine for type pg_dependencies.
  *
- * histograms are serialized into a bytea value, so we simply call byteaout()
- * to serialize the value into text. But it'd be nice to serialize that into
- * a meaningful representation (e.g. for inspection by people).
+ * dependencies are serialized into a bytea value, so we simply call
+ * byteaout() to serialize the value into text. But it'd be nice to serialize
+ * that into a meaningful representation (e.g. for inspection by people).
  */
 Datum
 pg_dependencies_out(PG_FUNCTION_ARGS)
