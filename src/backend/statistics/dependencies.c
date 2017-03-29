@@ -129,9 +129,9 @@ DependencyGenerator_init(int n, int k)
 
 	Assert((n >= k) && (k > 0));
 
-	/* allocate the DependencyGenerator state as a single chunk of memory */
+	/* allocate the DependencyGenerator state */
 	state = (DependencyGenerator) palloc0(sizeof(DependencyGeneratorData));
-	state->dependencies = (AttrNumber *)palloc(k * sizeof(AttrNumber));
+	state->dependencies = (AttrNumber *) palloc(k * sizeof(AttrNumber));
 
 	state->ndependencies = 0;
 	state->current = 0;
