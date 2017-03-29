@@ -285,6 +285,53 @@ SELECT a, b FROM test_toast_warm WHERE b = 104.20;
 
 DROP TABLE test_toast_warm;
 
+-- Test VACUUM
+
+CREATE TABLE test_vacuum_warm (a int unique, b text, c int, d int, e int);
+CREATE INDEX test_vacuum_warm_index1 ON test_vacuum_warm(b);
+CREATE INDEX test_vacuum_warm_index2 ON test_vacuum_warm(c);
+CREATE INDEX test_vacuum_warm_index3 ON test_vacuum_warm(d);
+
+INSERT INTO test_vacuum_warm VALUES (1, 'a', 100, 200);
+INSERT INTO test_vacuum_warm VALUES (2, 'b', 100, 200);
+INSERT INTO test_vacuum_warm VALUES (3, 'c', 100, 200);
+INSERT INTO test_vacuum_warm VALUES (4, 'd', 100, 200);
+INSERT INTO test_vacuum_warm VALUES (5, 'e', 100, 200);
+INSERT INTO test_vacuum_warm VALUES (6, 'f', 100, 200);
+INSERT INTO test_vacuum_warm VALUES (7, 'g', 100, 200);
+
+UPDATE test_vacuum_warm SET b = 'u', c = 300 WHERE a = 1;
+UPDATE test_vacuum_warm SET b = 'v', c = 300 WHERE a = 2;
+UPDATE test_vacuum_warm SET c = 300 WHERE a = 3;
+UPDATE test_vacuum_warm SET c = 300 WHERE a = 4;
+UPDATE test_vacuum_warm SET c = 300 WHERE a = 5;
+UPDATE test_vacuum_warm SET c = 300 WHERE a = 6;
+
+-- a plain vacuum cannot clear WARM chains.
+SET enable_seqscan = false;
+SET enable_bitmapscan = false;
+SET seq_page_cost = 10000;
+VACUUM test_vacuum_warm;
+-- We expect non-zero heap-fetches here
+EXPLAIN (analyze, costs off, timing off, summary off) SELECT b FROM test_vacuum_warm WHERE b = 'u';
+
+-- Now set vacuum_warmcleanup_index_scale_factor such that only
+-- test_vacuum_warm_index2 can be cleaned up.
+SET vacuum_warmcleanup_index_scale_factor=0.5;
+VACUUM WARMCLEAN test_vacuum_warm;
+-- We expect non-zero heap-fetches here
+EXPLAIN (analyze, costs off, timing off, summary off) SELECT b FROM test_vacuum_warm WHERE b = 'u';
+
+
+-- All WARM chains cleaned up, so index-only scan should be used now without
+-- any heap fetches
+SET vacuum_warmcleanup_index_scale_factor=0;
+VACUUM WARMCLEAN test_vacuum_warm;
+-- We expect zero heap-fetches now
+EXPLAIN (analyze, costs off, timing off, summary off) SELECT b FROM test_vacuum_warm WHERE b = 'u';
+
+DROP TABLE test_vacuum_warm;
+
 -- Toasted heap attributes
 CREATE TABLE toasttest(descr text , cnt int DEFAULT 0, f1 text, f2 text);
 CREATE INDEX testindx1 ON toasttest(descr);

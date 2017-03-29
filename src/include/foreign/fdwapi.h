@@ -134,7 +134,8 @@ typedef void (*ExplainDirectModify_function) (ForeignScanState *node,
 typedef int (*AcquireSampleRowsFunc) (Relation relation, int elevel,
 											   HeapTuple *rows, int targrows,
 												  double *totalrows,
-												  double *totaldeadrows);
+												  double *totaldeadrows,
+												  double *totalwarmchains);
 
 typedef bool (*AnalyzeForeignTable_function) (Relation relation,
 												 AcquireSampleRowsFunc *func,

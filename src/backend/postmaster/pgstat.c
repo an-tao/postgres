@@ -226,9 +226,11 @@ typedef struct TwoPhasePgStatRecord
 	PgStat_Counter tuples_inserted;		/* tuples inserted in xact */
 	PgStat_Counter tuples_updated;		/* tuples updated in xact */
 	PgStat_Counter tuples_deleted;		/* tuples deleted in xact */
+	PgStat_Counter tuples_warm_updated;	/* tuples warm updated in xact */
 	PgStat_Counter inserted_pre_trunc;	/* tuples inserted prior to truncate */
 	PgStat_Counter updated_pre_trunc;	/* tuples updated prior to truncate */
 	PgStat_Counter deleted_pre_trunc;	/* tuples deleted prior to truncate */
+	PgStat_Counter warm_updated_pre_trunc;	/* tuples warm updated prior to truncate */
 	Oid			t_id;			/* table's OID */
 	bool		t_shared;		/* is it a shared catalog? */
 	bool		t_truncated;	/* was the relation truncated? */
@@ -1367,7 +1369,8 @@ pgstat_report_autovac(Oid dboid)
  */
 void
 pgstat_report_vacuum(Oid tableoid, bool shared,
-					 PgStat_Counter livetuples, PgStat_Counter deadtuples)
+					 PgStat_Counter livetuples, PgStat_Counter deadtuples,
+					 PgStat_Counter warmchains)
 {
 	PgStat_MsgVacuum msg;
 
@@ -1381,6 +1384,7 @@ pgstat_report_vacuum(Oid tableoid, bool shared,
 	msg.m_vacuumtime = GetCurrentTimestamp();
 	msg.m_live_tuples = livetuples;
 	msg.m_dead_tuples = deadtuples;
+	msg.m_warm_chains = warmchains;
 	pgstat_send(&msg, sizeof(msg));
 }
 
@@ -1396,7 +1400,7 @@ pgstat_report_vacuum(Oid tableoid, bool shared,
 void
 pgstat_report_analyze(Relation rel,
 					  PgStat_Counter livetuples, PgStat_Counter deadtuples,
-					  bool resetcounter)
+					  PgStat_Counter warmchains, bool resetcounter)
 {
 	PgStat_MsgAnalyze msg;
 
@@ -1421,12 +1425,14 @@ pgstat_report_analyze(Relation rel,
 		{
 			livetuples -= trans->tuples_inserted - trans->tuples_deleted;
 			deadtuples -= trans->tuples_updated + trans->tuples_deleted;
+			warmchains -= trans->tuples_warm_updated;
 		}
 		/* count stuff inserted by already-aborted subxacts, too */
 		deadtuples -= rel->pgstat_info->t_counts.t_delta_dead_tuples;
 		/* Since ANALYZE's counts are estimates, we could have underflowed */
 		livetuples = Max(livetuples, 0);
 		deadtuples = Max(deadtuples, 0);
+		warmchains = Max(warmchains, 0);
 	}
 
 	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_ANALYZE);
@@ -1437,6 +1443,7 @@ pgstat_report_analyze(Relation rel,
 	msg.m_analyzetime = GetCurrentTimestamp();
 	msg.m_live_tuples = livetuples;
 	msg.m_dead_tuples = deadtuples;
+	msg.m_warm_chains = warmchains;
 	pgstat_send(&msg, sizeof(msg));
 }
 
@@ -1907,7 +1914,10 @@ pgstat_count_heap_update(Relation rel, bool hot, bool warm)
 		if (hot)
 			pgstat_info->t_counts.t_tuples_hot_updated++;
 		else if (warm)
+		{
+			pgstat_info->trans->tuples_warm_updated++;
 			pgstat_info->t_counts.t_tuples_warm_updated++;
+		}
 	}
 }
 
@@ -2070,6 +2080,12 @@ AtEOXact_PgStat(bool isCommit)
 				/* update and delete each create a dead tuple */
 				tabstat->t_counts.t_delta_dead_tuples +=
 					trans->tuples_updated + trans->tuples_deleted;
+				/* 
+				 * commit or abort, a WARM update generates a WARM chain which
+				 * needs cleanup.
+				 */
+				tabstat->t_counts.t_delta_warm_chains +=
+					trans->tuples_warm_updated;
 				/* insert, update, delete each count as one change event */
 				tabstat->t_counts.t_changed_tuples +=
 					trans->tuples_inserted + trans->tuples_updated +
@@ -2080,6 +2096,12 @@ AtEOXact_PgStat(bool isCommit)
 				/* inserted tuples are dead, deleted tuples are unaffected */
 				tabstat->t_counts.t_delta_dead_tuples +=
 					trans->tuples_inserted + trans->tuples_updated;
+				/* 
+				 * commit or abort, a WARM update generates a WARM chain which
+				 * needs cleanup.
+				 */
+				tabstat->t_counts.t_delta_warm_chains +=
+					trans->tuples_warm_updated;
 				/* an aborted xact generates no changed_tuple events */
 			}
 			tabstat->trans = NULL;
@@ -2136,12 +2158,16 @@ AtEOSubXact_PgStat(bool isCommit, int nestDepth)
 						trans->upper->tuples_inserted = trans->tuples_inserted;
 						trans->upper->tuples_updated = trans->tuples_updated;
 						trans->upper->tuples_deleted = trans->tuples_deleted;
+						trans->upper->tuples_warm_updated =
+							trans->tuples_warm_updated;
 					}
 					else
 					{
 						trans->upper->tuples_inserted += trans->tuples_inserted;
 						trans->upper->tuples_updated += trans->tuples_updated;
 						trans->upper->tuples_deleted += trans->tuples_deleted;
+						trans->upper->tuples_warm_updated +=
+							trans->tuples_warm_updated;
 					}
 					tabstat->trans = trans->upper;
 					pfree(trans);
@@ -2177,9 +2203,13 @@ AtEOSubXact_PgStat(bool isCommit, int nestDepth)
 				tabstat->t_counts.t_tuples_inserted += trans->tuples_inserted;
 				tabstat->t_counts.t_tuples_updated += trans->tuples_updated;
 				tabstat->t_counts.t_tuples_deleted += trans->tuples_deleted;
+				tabstat->t_counts.t_tuples_warm_updated +=
+					trans->tuples_warm_updated;
 				/* inserted tuples are dead, deleted tuples are unaffected */
 				tabstat->t_counts.t_delta_dead_tuples +=
 					trans->tuples_inserted + trans->tuples_updated;
+				tabstat->t_counts.t_delta_warm_chains +=
+					trans->tuples_warm_updated;
 				tabstat->trans = trans->upper;
 				pfree(trans);
 			}
@@ -2221,9 +2251,11 @@ AtPrepare_PgStat(void)
 			record.tuples_inserted = trans->tuples_inserted;
 			record.tuples_updated = trans->tuples_updated;
 			record.tuples_deleted = trans->tuples_deleted;
+			record.tuples_warm_updated = trans->tuples_warm_updated;
 			record.inserted_pre_trunc = trans->inserted_pre_trunc;
 			record.updated_pre_trunc = trans->updated_pre_trunc;
 			record.deleted_pre_trunc = trans->deleted_pre_trunc;
+			record.warm_updated_pre_trunc = trans->warm_updated_pre_trunc;
 			record.t_id = tabstat->t_id;
 			record.t_shared = tabstat->t_shared;
 			record.t_truncated = trans->truncated;
@@ -2298,11 +2330,14 @@ pgstat_twophase_postcommit(TransactionId xid, uint16 info,
 		/* forget live/dead stats seen by backend thus far */
 		pgstat_info->t_counts.t_delta_live_tuples = 0;
 		pgstat_info->t_counts.t_delta_dead_tuples = 0;
+		pgstat_info->t_counts.t_delta_warm_chains = 0;
 	}
 	pgstat_info->t_counts.t_delta_live_tuples +=
 		rec->tuples_inserted - rec->tuples_deleted;
 	pgstat_info->t_counts.t_delta_dead_tuples +=
 		rec->tuples_updated + rec->tuples_deleted;
+	pgstat_info->t_counts.t_delta_warm_chains +=
+		rec->tuples_warm_updated;
 	pgstat_info->t_counts.t_changed_tuples +=
 		rec->tuples_inserted + rec->tuples_updated +
 		rec->tuples_deleted;
@@ -2330,12 +2365,16 @@ pgstat_twophase_postabort(TransactionId xid, uint16 info,
 		rec->tuples_inserted = rec->inserted_pre_trunc;
 		rec->tuples_updated = rec->updated_pre_trunc;
 		rec->tuples_deleted = rec->deleted_pre_trunc;
+		rec->tuples_warm_updated = rec->warm_updated_pre_trunc;
 	}
 	pgstat_info->t_counts.t_tuples_inserted += rec->tuples_inserted;
 	pgstat_info->t_counts.t_tuples_updated += rec->tuples_updated;
 	pgstat_info->t_counts.t_tuples_deleted += rec->tuples_deleted;
+	pgstat_info->t_counts.t_tuples_warm_updated += rec->tuples_warm_updated;
 	pgstat_info->t_counts.t_delta_dead_tuples +=
 		rec->tuples_inserted + rec->tuples_updated;
+	pgstat_info->t_counts.t_delta_warm_chains +=
+		rec->tuples_warm_updated;
 }
 
 
@@ -4526,6 +4565,7 @@ pgstat_get_tab_entry(PgStat_StatDBEntry *dbentry, Oid tableoid, bool create)
 		result->tuples_warm_updated = 0;
 		result->n_live_tuples = 0;
 		result->n_dead_tuples = 0;
+		result->n_warm_chains = 0;
 		result->changes_since_analyze = 0;
 		result->blocks_fetched = 0;
 		result->blocks_hit = 0;
@@ -5636,6 +5676,7 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			tabentry->tuples_warm_updated = tabmsg->t_counts.t_tuples_warm_updated;
 			tabentry->n_live_tuples = tabmsg->t_counts.t_delta_live_tuples;
 			tabentry->n_dead_tuples = tabmsg->t_counts.t_delta_dead_tuples;
+			tabentry->n_warm_chains = tabmsg->t_counts.t_delta_warm_chains;
 			tabentry->changes_since_analyze = tabmsg->t_counts.t_changed_tuples;
 			tabentry->blocks_fetched = tabmsg->t_counts.t_blocks_fetched;
 			tabentry->blocks_hit = tabmsg->t_counts.t_blocks_hit;
@@ -5667,9 +5708,11 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			{
 				tabentry->n_live_tuples = 0;
 				tabentry->n_dead_tuples = 0;
+				tabentry->n_warm_chains = 0;
 			}
 			tabentry->n_live_tuples += tabmsg->t_counts.t_delta_live_tuples;
 			tabentry->n_dead_tuples += tabmsg->t_counts.t_delta_dead_tuples;
+			tabentry->n_warm_chains += tabmsg->t_counts.t_delta_warm_chains;
 			tabentry->changes_since_analyze += tabmsg->t_counts.t_changed_tuples;
 			tabentry->blocks_fetched += tabmsg->t_counts.t_blocks_fetched;
 			tabentry->blocks_hit += tabmsg->t_counts.t_blocks_hit;
@@ -5679,6 +5722,7 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 		tabentry->n_live_tuples = Max(tabentry->n_live_tuples, 0);
 		/* Likewise for n_dead_tuples */
 		tabentry->n_dead_tuples = Max(tabentry->n_dead_tuples, 0);
+		tabentry->n_warm_chains = Max(tabentry->n_warm_chains, 0);
 
 		/*
 		 * Add per-table stats to the per-database entry, too.
@@ -5904,6 +5948,7 @@ pgstat_recv_vacuum(PgStat_MsgVacuum *msg, int len)
 
 	tabentry->n_live_tuples = msg->m_live_tuples;
 	tabentry->n_dead_tuples = msg->m_dead_tuples;
+	tabentry->n_warm_chains = msg->m_warm_chains;
 
 	if (msg->m_autovacuum)
 	{
@@ -5938,6 +5983,7 @@ pgstat_recv_analyze(PgStat_MsgAnalyze *msg, int len)
 
 	tabentry->n_live_tuples = msg->m_live_tuples;
 	tabentry->n_dead_tuples = msg->m_dead_tuples;
+	tabentry->n_warm_chains = msg->m_warm_chains;
 
 	/*
 	 * If commanded, reset changes_since_analyze to zero.  This forgets any

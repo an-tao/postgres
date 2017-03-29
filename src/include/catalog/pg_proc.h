@@ -2804,6 +2804,8 @@ DATA(insert OID = 2878 (  pg_stat_get_live_tuples	PGNSP PGUID 12 1 0 0 0 f f f f
 DESCR("statistics: number of live tuples");
 DATA(insert OID = 2879 (  pg_stat_get_dead_tuples	PGNSP PGUID 12 1 0 0 0 f f f f t f s r 1 0 20 "26" _null_ _null_ _null_ _null_ _null_ pg_stat_get_dead_tuples _null_ _null_ _null_ ));
 DESCR("statistics: number of dead tuples");
+DATA(insert OID = 3403 (  pg_stat_get_warm_chains	PGNSP PGUID 12 1 0 0 0 f f f f t f s r 1 0 20 "26" _null_ _null_ _null_ _null_ _null_ pg_stat_get_warm_chains _null_ _null_ _null_ ));
+DESCR("statistics: number of warm chains");
 DATA(insert OID = 3177 (  pg_stat_get_mod_since_analyze PGNSP PGUID 12 1 0 0 0 f f f f t f s r 1 0 20 "26" _null_ _null_ _null_ _null_ _null_ pg_stat_get_mod_since_analyze _null_ _null_ _null_ ));
 DESCR("statistics: number of tuples changed since last analyze");
 DATA(insert OID = 1934 (  pg_stat_get_blocks_fetched	PGNSP PGUID 12 1 0 0 0 f f f f t f s r 1 0 20 "26" _null_ _null_ _null_ _null_ _null_ pg_stat_get_blocks_fetched _null_ _null_ _null_ ));

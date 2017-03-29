@@ -361,6 +361,24 @@ static relopt_real realRelOpts[] =
 	},
 	{
 		{
+			"autovacuum_warmcleanup_scale_factor",
+			"Number of WARM chains prior to WARM cleanup as a fraction of reltuples",
+			RELOPT_KIND_HEAP | RELOPT_KIND_TOAST,
+			ShareUpdateExclusiveLock
+		},
+		-1, 0.0, 100.0
+	},
+	{
+		{
+			"autovacuum_warmcleanup_index_scale_factor",
+			"Number of WARM pointers in an index prior to WARM cleanup as a fraction of total WARM chains",
+			RELOPT_KIND_HEAP | RELOPT_KIND_TOAST,
+			ShareUpdateExclusiveLock
+		},
+		-1, 0.0, 100.0
+	},
+	{
+		{
 			"autovacuum_analyze_scale_factor",
 			"Number of tuple inserts, updates or deletes prior to analyze as a fraction of reltuples",
 			RELOPT_KIND_HEAP,
@@ -1362,6 +1380,10 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		offsetof(StdRdOptions, autovacuum) +offsetof(AutoVacOpts, vacuum_scale_factor)},
 		{"autovacuum_analyze_scale_factor", RELOPT_TYPE_REAL,
 		offsetof(StdRdOptions, autovacuum) +offsetof(AutoVacOpts, analyze_scale_factor)},
+		{"autovacuum_warmcleanup_scale_factor", RELOPT_TYPE_REAL,
+		offsetof(StdRdOptions, autovacuum) +offsetof(AutoVacOpts, warmcleanup_scale_factor)},
+		{"autovacuum_warmcleanup_index_scale_factor", RELOPT_TYPE_REAL,
+		offsetof(StdRdOptions, autovacuum) +offsetof(AutoVacOpts, warmcleanup_index_scale)},
 		{"user_catalog_table", RELOPT_TYPE_BOOL,
 		offsetof(StdRdOptions, user_catalog_table)},
 		{"parallel_workers", RELOPT_TYPE_INT,

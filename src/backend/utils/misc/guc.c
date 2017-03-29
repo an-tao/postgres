@@ -3017,6 +3017,36 @@ static struct config_real ConfigureNamesReal[] =
 	},
 
 	{
+		{"autovacuum_warmcleanup_scale_factor", PGC_SIGHUP, AUTOVACUUM,
+			gettext_noop("Number of WARM chains prior to cleanup as a fraction of reltuples."),
+			NULL
+		},
+		&autovacuum_warmcleanup_scale,
+		0.1, 0.0, 100.0,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"autovacuum_warmcleanup_index_scale_factor", PGC_SIGHUP, AUTOVACUUM,
+			gettext_noop("Number of WARM pointers prior to cleanup as a fraction of total WARM chains."),
+			NULL
+		},
+		&autovacuum_warmcleanup_index_scale,
+		0.2, 0.0, 100.0,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"vacuum_warmcleanup_index_scale_factor", PGC_USERSET, WARM_CLEANUP,
+			gettext_noop("Number of WARM pointers in the index prior to cleanup as a fraction of total WARM chains."),
+			NULL
+		},
+		&VacuumWarmCleanupIndexScale,
+		0.2, 0.0, 100.0,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"checkpoint_completion_target", PGC_SIGHUP, WAL_CHECKPOINTS,
 			gettext_noop("Time spent flushing dirty buffers during checkpoint, as fraction of checkpoint interval."),
 			NULL

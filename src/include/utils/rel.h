@@ -278,6 +278,8 @@ typedef struct AutoVacOpts
 	int			log_min_duration;
 	float8		vacuum_scale_factor;
 	float8		analyze_scale_factor;
+	float8		warmcleanup_scale_factor;
+	float8		warmcleanup_index_scale;
 } AutoVacOpts;
 
 typedef struct StdRdOptions

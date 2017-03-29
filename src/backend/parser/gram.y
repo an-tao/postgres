@@ -435,7 +435,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <node>	overlay_placing substr_from substr_for
 
 %type <boolean> opt_instead
-%type <boolean> opt_unique opt_concurrently opt_verbose opt_full
+%type <boolean> opt_unique opt_concurrently opt_verbose opt_full opt_warmclean
 %type <boolean> opt_freeze opt_default opt_recheck
 %type <defelt>	opt_binary opt_oids copy_delimiter
 
@@ -687,7 +687,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	VACUUM VALID VALIDATE VALIDATOR VALUE_P VALUES VARCHAR VARIADIC VARYING
 	VERBOSE VERSION_P VIEW VIEWS VOLATILE
 
-	WHEN WHERE WHITESPACE_P WINDOW WITH WITHIN WITHOUT WORK WRAPPER WRITE
+	WARMCLEAN WHEN WHERE WHITESPACE_P WINDOW WITH WITHIN WITHOUT WORK WRAPPER WRITE
 
 	XML_P XMLATTRIBUTES XMLCONCAT XMLELEMENT XMLEXISTS XMLFOREST XMLNAMESPACES
 	XMLPARSE XMLPI XMLROOT XMLSERIALIZE XMLTABLE
@@ -10164,7 +10164,7 @@ cluster_index_specification:
  *
  *****************************************************************************/
 
-VacuumStmt: VACUUM opt_full opt_freeze opt_verbose
+VacuumStmt: VACUUM opt_full opt_freeze opt_verbose opt_warmclean
 				{
 					VacuumStmt *n = makeNode(VacuumStmt);
 					n->options = VACOPT_VACUUM;
@@ -10174,11 +10174,13 @@ VacuumStmt: VACUUM opt_full opt_freeze opt_verbose
 						n->options |= VACOPT_FREEZE;
 					if ($4)
 						n->options |= VACOPT_VERBOSE;
+					if ($5)
+						n->options |= VACOPT_WARM_CLEANUP;
 					n->relation = NULL;
 					n->va_cols = NIL;
 					$$ = (Node *)n;
 				}
-			| VACUUM opt_full opt_freeze opt_verbose qualified_name
+			| VACUUM opt_full opt_freeze opt_verbose opt_warmclean qualified_name
 				{
 					VacuumStmt *n = makeNode(VacuumStmt);
 					n->options = VACOPT_VACUUM;
@@ -10188,13 +10190,15 @@ VacuumStmt: VACUUM opt_full opt_freeze opt_verbose
 						n->options |= VACOPT_FREEZE;
 					if ($4)
 						n->options |= VACOPT_VERBOSE;
-					n->relation = $5;
+					if ($5)
+						n->options |= VACOPT_WARM_CLEANUP;
+					n->relation = $6;
 					n->va_cols = NIL;
 					$$ = (Node *)n;
 				}
-			| VACUUM opt_full opt_freeze opt_verbose AnalyzeStmt
+			| VACUUM opt_full opt_freeze opt_verbose opt_warmclean AnalyzeStmt
 				{
-					VacuumStmt *n = (VacuumStmt *) $5;
+					VacuumStmt *n = (VacuumStmt *) $6;
 					n->options |= VACOPT_VACUUM;
 					if ($2)
 						n->options |= VACOPT_FULL;
@@ -10202,6 +10206,8 @@ VacuumStmt: VACUUM opt_full opt_freeze opt_verbose
 						n->options |= VACOPT_FREEZE;
 					if ($4)
 						n->options |= VACOPT_VERBOSE;
+					if ($5)
+						n->options |= VACOPT_WARM_CLEANUP;
 					$$ = (Node *)n;
 				}
 			| VACUUM '(' vacuum_option_list ')'
@@ -10234,6 +10240,7 @@ vacuum_option_elem:
 			| VERBOSE			{ $$ = VACOPT_VERBOSE; }
 			| FREEZE			{ $$ = VACOPT_FREEZE; }
 			| FULL				{ $$ = VACOPT_FULL; }
+			| WARMCLEAN			{ $$ = VACOPT_WARM_CLEANUP; }
 			| IDENT
 				{
 					if (strcmp($1, "disable_page_skipping") == 0)
@@ -10284,6 +10291,10 @@ opt_full:	FULL									{ $$ = TRUE; }
 		;
 
 opt_freeze: FREEZE									{ $$ = TRUE; }
+			| /*EMPTY*/								{ $$ = FALSE; }
+		;
+
+opt_warmclean: WARMCLEAN							{ $$ = TRUE; }
 			| /*EMPTY*/								{ $$ = FALSE; }
 		;
 
@@ -15012,6 +15023,7 @@ type_func_name_keyword:
 			| SIMILAR
 			| TABLESAMPLE
 			| VERBOSE
+			| WARMCLEAN
 		;
 
 /* Reserved keyword --- these keywords are usable only as a ColLabel.

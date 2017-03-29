@@ -110,6 +110,7 @@ typedef struct PgStat_TableCounts
 
 	PgStat_Counter t_delta_live_tuples;
 	PgStat_Counter t_delta_dead_tuples;
+	PgStat_Counter t_delta_warm_chains;
 	PgStat_Counter t_changed_tuples;
 
 	PgStat_Counter t_blocks_fetched;
@@ -167,11 +168,13 @@ typedef struct PgStat_TableXactStatus
 {
 	PgStat_Counter tuples_inserted;		/* tuples inserted in (sub)xact */
 	PgStat_Counter tuples_updated;		/* tuples updated in (sub)xact */
+	PgStat_Counter tuples_warm_updated;	/* tuples warm-updated in (sub)xact */
 	PgStat_Counter tuples_deleted;		/* tuples deleted in (sub)xact */
 	bool		truncated;		/* relation truncated in this (sub)xact */
 	PgStat_Counter inserted_pre_trunc;	/* tuples inserted prior to truncate */
 	PgStat_Counter updated_pre_trunc;	/* tuples updated prior to truncate */
 	PgStat_Counter deleted_pre_trunc;	/* tuples deleted prior to truncate */
+	PgStat_Counter warm_updated_pre_trunc;	/* tuples warm updated prior to truncate */
 	int			nest_level;		/* subtransaction nest level */
 	/* links to other structs for same relation: */
 	struct PgStat_TableXactStatus *upper;		/* next higher subxact if any */
@@ -370,6 +373,7 @@ typedef struct PgStat_MsgVacuum
 	TimestampTz m_vacuumtime;
 	PgStat_Counter m_live_tuples;
 	PgStat_Counter m_dead_tuples;
+	PgStat_Counter m_warm_chains;
 } PgStat_MsgVacuum;
 
 
@@ -388,6 +392,7 @@ typedef struct PgStat_MsgAnalyze
 	TimestampTz m_analyzetime;
 	PgStat_Counter m_live_tuples;
 	PgStat_Counter m_dead_tuples;
+	PgStat_Counter m_warm_chains;
 } PgStat_MsgAnalyze;
 
 
@@ -630,6 +635,7 @@ typedef struct PgStat_StatTabEntry
 
 	PgStat_Counter n_live_tuples;
 	PgStat_Counter n_dead_tuples;
+	PgStat_Counter n_warm_chains;
 	PgStat_Counter changes_since_analyze;
 
 	PgStat_Counter blocks_fetched;
@@ -1156,10 +1162,11 @@ extern void pgstat_reset_single_counter(Oid objectid, PgStat_Single_Reset_Type t
 
 extern void pgstat_report_autovac(Oid dboid);
 extern void pgstat_report_vacuum(Oid tableoid, bool shared,
-					 PgStat_Counter livetuples, PgStat_Counter deadtuples);
+					 PgStat_Counter livetuples, PgStat_Counter deadtuples,
+					 PgStat_Counter warmchains);
 extern void pgstat_report_analyze(Relation rel,
 					  PgStat_Counter livetuples, PgStat_Counter deadtuples,
-					  bool resetcounter);
+					  PgStat_Counter warmchains, bool resetcounter);
 
 extern void pgstat_report_recovery_conflict(int reason);
 extern void pgstat_report_deadlock(void);

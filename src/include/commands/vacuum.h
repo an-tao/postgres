@@ -145,6 +145,8 @@ typedef struct VacuumParams
 	int			log_min_duration;		/* minimum execution threshold in ms
 										 * at which  verbose logs are
 										 * activated, -1 to use default */
+	double		warmcleanup_index_scale; /* Fraction of WARM pointers to cause
+										  * index WARM cleanup */
 } VacuumParams;
 
 /* GUC parameters */

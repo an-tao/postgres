@@ -39,6 +39,8 @@ extern int	autovacuum_freeze_max_age;
 extern int	autovacuum_multixact_freeze_max_age;
 extern int	autovacuum_vac_cost_delay;
 extern int	autovacuum_vac_cost_limit;
+extern double autovacuum_warmcleanup_scale;
+extern double autovacuum_warmcleanup_index_scale;
 
 /* autovacuum launcher PID, only valid when worker is shutting down */
 extern int	AutovacuumLauncherPid;

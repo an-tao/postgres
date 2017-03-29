@@ -156,18 +156,23 @@ typedef struct LVRelStats
 	double		tuples_deleted;
 	BlockNumber nonempty_pages; /* actually, last nonempty page + 1 */
 
+	int			maxtuples;		/* maxtuples computed while allocating space */
+	Size		work_area_size;	/* working area size */
+	char		*work_area;		/* working area for storing dead tuples and
+								 * warm chains */
 	/* List of candidate WARM chains that can be converted into HOT chains */
-	/* NB: this list is ordered by TID of the root pointers */
+	/* 
+	 * NB: this list grows from bottom to top and is ordered by TID of the root
+	 * pointers, with the lowest entry at the bottom
+	 */
 	int				num_warm_chains;	/* current # of entries */
-	int				max_warm_chains;	/* # slots allocated in array */
 	LVWarmChain 	*warm_chains;		/* array of LVWarmChain */
 	double			num_non_convertible_warm_chains;
-
 	/* List of TIDs of tuples we intend to delete */
 	/* NB: this list is ordered by TID address */
 	int			num_dead_tuples;	/* current # of entries */
-	int			max_dead_tuples;	/* # slots allocated in array */
 	ItemPointer dead_tuples;	/* array of ItemPointerData */
+
 	int			num_index_scans;
 	TransactionId latestRemovedXid;
 	bool		lock_waiter_detected;
@@ -187,11 +192,12 @@ static BufferAccessStrategy vac_strategy;
 /* non-export function prototypes */
 static void lazy_scan_heap(Relation onerel, int options,
 			   LVRelStats *vacrelstats, Relation *Irel, int nindexes,
-			   bool aggressive);
+			   bool aggressive, double warmcleanup_index_scale);
 static void lazy_vacuum_heap(Relation onerel, LVRelStats *vacrelstats);
 static bool lazy_check_needs_freeze(Buffer buf, bool *hastup);
 static void lazy_vacuum_index(Relation indrel,
 				  bool clear_warm,
+				  double warmcleanup_index_scale,
 				  IndexBulkDeleteResult **stats,
 				  LVRelStats *vacrelstats);
 static void lazy_cleanup_index(Relation indrel,
@@ -207,7 +213,8 @@ static bool should_attempt_truncation(LVRelStats *vacrelstats);
 static void lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats);
 static BlockNumber count_nondeletable_pages(Relation onerel,
 						 LVRelStats *vacrelstats);
-static void lazy_space_alloc(LVRelStats *vacrelstats, BlockNumber relblocks);
+static void lazy_space_alloc(LVRelStats *vacrelstats, BlockNumber relblocks,
+					   bool dowarmcleanup);
 static void lazy_record_dead_tuple(LVRelStats *vacrelstats,
 					   ItemPointer itemptr);
 static void lazy_record_warm_chain(LVRelStats *vacrelstats,
@@ -283,6 +290,9 @@ lazy_vacuum_rel(Relation onerel, int options, VacuumParams *params,
 						  &OldestXmin, &FreezeLimit, &xidFullScanLimit,
 						  &MultiXactCutoff, &mxactFullScanLimit);
 
+	/* Use default if the caller hasn't specified any value */
+	if (params->warmcleanup_index_scale == -1)
+		params->warmcleanup_index_scale = VacuumWarmCleanupIndexScale;
 	/*
 	 * We request an aggressive scan if the table's frozen Xid is now older
 	 * than or equal to the requested Xid full-table scan limit; or if the
@@ -309,7 +319,8 @@ lazy_vacuum_rel(Relation onerel, int options, VacuumParams *params,
 	vacrelstats->hasindex = (nindexes > 0);
 
 	/* Do the vacuuming */
-	lazy_scan_heap(onerel, options, vacrelstats, Irel, nindexes, aggressive);
+	lazy_scan_heap(onerel, options, vacrelstats, Irel, nindexes, aggressive,
+			params->warmcleanup_index_scale);
 
 	/* Done with indexes */
 	vac_close_indexes(nindexes, Irel, NoLock);
@@ -396,7 +407,8 @@ lazy_vacuum_rel(Relation onerel, int options, VacuumParams *params,
 	pgstat_report_vacuum(RelationGetRelid(onerel),
 						 onerel->rd_rel->relisshared,
 						 new_live_tuples,
-						 vacrelstats->new_dead_tuples);
+						 vacrelstats->new_dead_tuples,
+						 vacrelstats->num_non_convertible_warm_chains);
 	pgstat_progress_end_command();
 
 	/* and log the action if appropriate */
@@ -507,10 +519,19 @@ vacuum_log_cleanup_info(Relation rel, LVRelStats *vacrelstats)
  *		If there are no indexes then we can reclaim line pointers on the fly;
  *		dead line pointers need only be retained until all index pointers that
  *		reference them have been killed.
+ *
+ *		warmcleanup_index_scale specifies the number of WARM pointers in an
+ *		index as a fraction of total candidate WARM chains. If we find less
+ *		WARM pointers in an index than the specified fraction, then we don't
+ *		invoke cleanup that index. If WARM cleanup is skipped for any one
+ *		index, the WARM chain can't be cleared in the heap and no further WARM
+ *		updates are possible to such chains. Such chains are also not
+ *		considered for WARM cleanup in other indexes.
  */
 static void
 lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
-			   Relation *Irel, int nindexes, bool aggressive)
+			   Relation *Irel, int nindexes, bool aggressive,
+			   double warmcleanup_index_scale)
 {
 	BlockNumber nblocks,
 				blkno;
@@ -536,6 +557,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 		PROGRESS_VACUUM_MAX_DEAD_TUPLES
 	};
 	int64		initprog_val[3];
+	bool		dowarmcleanup = ((options & VACOPT_WARM_CLEANUP) != 0);
 
 	pg_rusage_init(&ru0);
 
@@ -558,13 +580,13 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 	vacrelstats->nonempty_pages = 0;
 	vacrelstats->latestRemovedXid = InvalidTransactionId;
 
-	lazy_space_alloc(vacrelstats, nblocks);
+	lazy_space_alloc(vacrelstats, nblocks, dowarmcleanup);
 	frozen = palloc(sizeof(xl_heap_freeze_tuple) * MaxHeapTuplesPerPage);
 
 	/* Report that we're scanning the heap, advertising total # of blocks */
 	initprog_val[0] = PROGRESS_VACUUM_PHASE_SCAN_HEAP;
 	initprog_val[1] = nblocks;
-	initprog_val[2] = vacrelstats->max_dead_tuples;
+	initprog_val[2] = vacrelstats->maxtuples;
 	pgstat_progress_update_multi_param(3, initprog_index, initprog_val);
 
 	/*
@@ -656,6 +678,11 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 		bool		all_frozen = true;	/* provided all_visible is also true */
 		bool		has_dead_tuples;
 		TransactionId visibility_cutoff_xid = InvalidTransactionId;
+		char		*end_deads;
+		char		*end_warms;
+		Size		free_work_area;
+		int			avail_dead_tuples;
+		int			avail_warm_chains;
 
 		/* see note above about forcing scanning of last page */
 #define FORCE_CHECK_PAGE() \
@@ -740,13 +767,39 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 		vacuum_delay_point();
 
 		/*
+		 * The dead tuples are stored starting from the start of the work
+		 * area and growing downwards. The candidate warm chains are stored
+		 * starting from the bottom on the work area and growing upwards. Once
+		 * the difference between these two segments is too small to accomodate
+		 * potentially all tuples in the current page, we stop and do one round
+		 * of index cleanup.
+		 */
+		end_deads = (char *)(vacrelstats->dead_tuples + vacrelstats->num_dead_tuples);
+
+		/*
+		 * If we are not doing WARM cleanup, then the entire work area is used
+		 * by the dead tuples.
+		 */
+		if (vacrelstats->warm_chains)
+		{
+			end_warms = (char *)(vacrelstats->warm_chains - vacrelstats->num_warm_chains);
+			free_work_area = end_warms - end_deads;
+			avail_warm_chains = (free_work_area / sizeof (LVWarmChain));
+		}
+		else
+		{
+			free_work_area = vacrelstats->work_area +
+				vacrelstats->work_area_size - end_deads;
+			avail_warm_chains = 0;
+		}
+		avail_dead_tuples = (free_work_area / sizeof (ItemPointerData));
+
+		/*
 		 * If we are close to overrunning the available space for dead-tuple
 		 * TIDs, pause and do a cycle of vacuuming before we tackle this page.
 		 */
-		if (((vacrelstats->max_dead_tuples - vacrelstats->num_dead_tuples) < MaxHeapTuplesPerPage &&
-			vacrelstats->num_dead_tuples > 0) ||
-			((vacrelstats->max_warm_chains - vacrelstats->num_warm_chains) < MaxHeapTuplesPerPage &&
-			 vacrelstats->num_warm_chains > 0))
+		if ((avail_dead_tuples < MaxHeapTuplesPerPage && vacrelstats->num_dead_tuples > 0) ||
+			(avail_warm_chains < MaxHeapTuplesPerPage && vacrelstats->num_warm_chains > 0))
 		{
 			const int	hvp_index[] = {
 				PROGRESS_VACUUM_PHASE,
@@ -776,7 +829,8 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 			/* Remove index entries */
 			for (i = 0; i < nindexes; i++)
 				lazy_vacuum_index(Irel[i],
-								  (vacrelstats->num_warm_chains > 0),
+								  dowarmcleanup && (vacrelstats->num_warm_chains > 0),
+								  warmcleanup_index_scale,
 								  &indstats[i],
 								  vacrelstats);
 
@@ -800,8 +854,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 			 */
 			vacrelstats->num_dead_tuples = 0;
 			vacrelstats->num_warm_chains = 0;
-			memset(vacrelstats->warm_chains, 0,
-					vacrelstats->max_warm_chains * sizeof (LVWarmChain));
+			memset(vacrelstats->work_area, 0, vacrelstats->work_area_size);
 			vacrelstats->num_index_scans++;
 
 			/* Report that we are once again scanning the heap */
@@ -1413,7 +1466,8 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 		/* Remove index entries */
 		for (i = 0; i < nindexes; i++)
 			lazy_vacuum_index(Irel[i],
-							  (vacrelstats->num_warm_chains > 0),
+							  dowarmcleanup && (vacrelstats->num_warm_chains > 0),
+							  warmcleanup_index_scale,
 							  &indstats[i],
 							  vacrelstats);
 
@@ -1518,9 +1572,12 @@ lazy_vacuum_heap(Relation onerel, LVRelStats *vacrelstats)
 		vacuum_delay_point();
 
 		tblk = chainblk = InvalidBlockNumber;
-		if (chainindex < vacrelstats->num_warm_chains)
-			chainblk =
-				ItemPointerGetBlockNumber(&(vacrelstats->warm_chains[chainindex].chain_tid));
+		if (vacrelstats->warm_chains &&
+			chainindex < vacrelstats->num_warm_chains)
+		{
+			LVWarmChain *chain = vacrelstats->warm_chains - (chainindex + 1);
+			chainblk = ItemPointerGetBlockNumber(&chain->chain_tid);
+		}
 
 		if (tupindex < vacrelstats->num_dead_tuples)
 			tblk = ItemPointerGetBlockNumber(&vacrelstats->dead_tuples[tupindex]);
@@ -1618,7 +1675,8 @@ lazy_warmclear_page(Relation onerel, BlockNumber blkno, Buffer buffer,
 		BlockNumber tblk;
 		LVWarmChain	*chain;
 
-		chain = &vacrelstats->warm_chains[chainindex];
+		/* The warm chains are indexed from bottom */
+		chain = vacrelstats->warm_chains - (chainindex + 1);
 
 		tblk = ItemPointerGetBlockNumber(&chain->chain_tid);
 		if (tblk != blkno)
@@ -1852,9 +1910,11 @@ static void
 lazy_reset_warm_pointer_count(LVRelStats *vacrelstats)
 {
 	int i;
-	for (i = 0; i < vacrelstats->num_warm_chains; i++)
+
+	/* Start from the bottom and move upwards */
+	for (i = 1; i <= vacrelstats->num_warm_chains; i++)
 	{
-		LVWarmChain *chain = &vacrelstats->warm_chains[i];
+		LVWarmChain *chain = (vacrelstats->warm_chains - i);
 		chain->num_clear_pointers = chain->num_warm_pointers = 0;
 	}
 }
@@ -1868,6 +1928,7 @@ lazy_reset_warm_pointer_count(LVRelStats *vacrelstats)
 static void
 lazy_vacuum_index(Relation indrel,
 				  bool clear_warm,
+				  double warmcleanup_index_scale,
 				  IndexBulkDeleteResult **stats,
 				  LVRelStats *vacrelstats)
 {
@@ -1932,25 +1993,57 @@ lazy_vacuum_index(Relation indrel,
 						(*stats)->warm_pointers_removed,
 						(*stats)->clear_pointers_removed)));
 
-		(*stats)->num_warm_pointers = 0;
-		(*stats)->num_clear_pointers = 0;
-		(*stats)->warm_pointers_removed = 0;
-		(*stats)->clear_pointers_removed = 0;
-		(*stats)->pointers_cleared = 0;
+		/*
+		 * If the number of WARM pointers found in the index are more than the
+		 * configured fraction of total candidate WARM chains, then do the
+		 * second index scan to clean up WARM chains.
+		 *
+		 * Otherwise we must set these WARM chains as non-convertible chains.
+		 */
+		if ((*stats)->num_warm_pointers >
+				((double)vacrelstats->num_warm_chains * warmcleanup_index_scale))
+		{
+			(*stats)->num_warm_pointers = 0;
+			(*stats)->num_clear_pointers = 0;
+			(*stats)->warm_pointers_removed = 0;
+			(*stats)->clear_pointers_removed = 0;
+			(*stats)->pointers_cleared = 0;
 
-		*stats = index_bulk_delete(&ivinfo, *stats,
-				lazy_indexvac_phase2, (void *) vacrelstats);
-		ereport(elevel,
-				(errmsg("scanned index \"%s\" to convert WARM pointers, found "
-						"%0.f WARM pointers, %0.f CLEAR pointers, removed "
-						"%0.f WARM pointers, removed %0.f CLEAR pointers, "
-						"cleared %0.f WARM pointers",
-						RelationGetRelationName(indrel),
-						(*stats)->num_warm_pointers,
-						(*stats)->num_clear_pointers,
-						(*stats)->warm_pointers_removed,
-						(*stats)->clear_pointers_removed,
-						(*stats)->pointers_cleared)));
+			*stats = index_bulk_delete(&ivinfo, *stats,
+					lazy_indexvac_phase2, (void *) vacrelstats);
+			ereport(elevel,
+					(errmsg("scanned index \"%s\" to convert WARM pointers, found "
+							"%0.f WARM pointers, %0.f CLEAR pointers, removed "
+							"%0.f WARM pointers, removed %0.f CLEAR pointers, "
+							"cleared %0.f WARM pointers",
+							RelationGetRelationName(indrel),
+							(*stats)->num_warm_pointers,
+							(*stats)->num_clear_pointers,
+							(*stats)->warm_pointers_removed,
+							(*stats)->clear_pointers_removed,
+							(*stats)->pointers_cleared)));
+		}
+		else
+		{
+			int ii;
+
+			/*
+			 * All chains skipped by this index are marked non-convertible.
+			 *
+			 * Start from bottom and move upwards.
+			 */
+			for (ii = 1; ii <= vacrelstats->num_warm_chains; ii++)
+			{
+				LVWarmChain *chain = vacrelstats->warm_chains - ii;
+				if (chain->num_warm_pointers > 0 ||
+					chain->num_clear_pointers > 1)
+				{
+					chain->keep_warm_chain = 1;
+					vacrelstats->num_non_convertible_warm_chains++;
+				}
+			}
+
+		}
 	}
 	else
 	{
@@ -2328,7 +2421,8 @@ count_nondeletable_pages(Relation onerel, LVRelStats *vacrelstats)
  * See the comments at the head of this file for rationale.
  */
 static void
-lazy_space_alloc(LVRelStats *vacrelstats, BlockNumber relblocks)
+lazy_space_alloc(LVRelStats *vacrelstats, BlockNumber relblocks,
+				 bool dowarmcleanup)
 {
 	long		maxtuples;
 	int			vac_work_mem = IsAutoVacuumWorkerProcess() &&
@@ -2337,11 +2431,16 @@ lazy_space_alloc(LVRelStats *vacrelstats, BlockNumber relblocks)
 
 	if (vacrelstats->hasindex)
 	{
+		/*
+		 * If we're not doing WARM cleanup then the entire memory is available
+		 * for tracking dead tuples. Otherwise it gets split between tracking
+		 * dead tuples and tracking WARM chains.
+		 */
 		maxtuples = (vac_work_mem * 1024L) / (sizeof(ItemPointerData) +
-				sizeof(LVWarmChain));
+				dowarmcleanup ? sizeof(LVWarmChain) : 0);
 		maxtuples = Min(maxtuples, INT_MAX);
 		maxtuples = Min(maxtuples, MaxAllocSize / (sizeof(ItemPointerData) +
-					sizeof(LVWarmChain)));
+				dowarmcleanup ? sizeof(LVWarmChain) : 0));
 
 		/* curious coding here to ensure the multiplication can't overflow */
 		if ((BlockNumber) (maxtuples / LAZY_ALLOC_TUPLES) > relblocks)
@@ -2355,21 +2454,29 @@ lazy_space_alloc(LVRelStats *vacrelstats, BlockNumber relblocks)
 		maxtuples = MaxHeapTuplesPerPage;
 	}
 
-	vacrelstats->num_dead_tuples = 0;
-	vacrelstats->max_dead_tuples = (int) maxtuples;
-	vacrelstats->dead_tuples = (ItemPointer)
-		palloc(maxtuples * sizeof(ItemPointerData));
-
-	/*
-	 * XXX Cheat for now and allocate the same size array for tracking warm
-	 * chains. maxtuples must have been already adjusted above to ensure we
-	 * don't cross vac_work_mem.
+	/* Allocate work area of the desired size and setup dead_tuples and
+	 * warm_chains to the start and the end of the area respectively. They grow
+	 * in opposite directions as dead tuples and warm chains are added. Note
+	 * that if we are not doing WARM cleanup then the entire area will only be
+	 * used for tracking dead tuples.
 	 */
-	vacrelstats->num_warm_chains = 0;
-	vacrelstats->max_warm_chains = (int) maxtuples;
-	vacrelstats->warm_chains = (LVWarmChain *)
-		palloc0(maxtuples * sizeof(LVWarmChain));
+	vacrelstats->work_area_size = maxtuples * (sizeof(ItemPointerData) +
+				dowarmcleanup ? sizeof(LVWarmChain) : 0);
+	vacrelstats->work_area = (char *) palloc0(vacrelstats->work_area_size);
+	vacrelstats->num_dead_tuples = 0;
+	vacrelstats->dead_tuples = (ItemPointer)vacrelstats->work_area;
+	vacrelstats->maxtuples = maxtuples;
 
+	if (dowarmcleanup)
+	{
+		vacrelstats->num_warm_chains = 0;
+		vacrelstats->warm_chains = (LVWarmChain *)
+			(vacrelstats->work_area + vacrelstats->work_area_size);
+	}
+	else
+	{
+		vacrelstats->warm_chains = NULL;
+	}
 }
 
 /*
@@ -2379,17 +2486,38 @@ static void
 lazy_record_clear_chain(LVRelStats *vacrelstats,
 					   ItemPointer itemptr)
 {
+	char *end_deads, *end_warms;
+	Size free_work_area;
+
+	if (vacrelstats->warm_chains == NULL)
+	{
+		vacrelstats->num_non_convertible_warm_chains++;
+		return;
+	}
+
+	end_deads = (char *) (vacrelstats->dead_tuples +
+					vacrelstats->num_dead_tuples);
+	end_warms = (char *) (vacrelstats->warm_chains -
+					vacrelstats->num_warm_chains);
+	free_work_area = (end_warms - end_deads);
+
+	Assert(free_work_area >= 0);
 	/*
 	 * The array shouldn't overflow under normal behavior, but perhaps it
 	 * could if we are given a really small maintenance_work_mem. In that
 	 * case, just forget the last few tuples (we'll get 'em next time).
 	 */
-	if (vacrelstats->num_warm_chains < vacrelstats->max_warm_chains)
+	if (free_work_area >= sizeof (LVWarmChain))
 	{
-		vacrelstats->warm_chains[vacrelstats->num_warm_chains].chain_tid = *itemptr;
-		vacrelstats->warm_chains[vacrelstats->num_warm_chains].is_postwarm_chain = 0;
+		LVWarmChain *chain;
+
 		vacrelstats->num_warm_chains++;
+	   	chain = vacrelstats->warm_chains - vacrelstats->num_warm_chains;
+		chain->chain_tid = *itemptr;
+		chain->is_postwarm_chain = 0;
 	}
+	else
+		vacrelstats->num_non_convertible_warm_chains++;
 }
 
 /*
@@ -2399,17 +2527,39 @@ static void
 lazy_record_warm_chain(LVRelStats *vacrelstats,
 					   ItemPointer itemptr)
 {
+	char *end_deads, *end_warms;
+	Size free_work_area;
+
+	if (vacrelstats->warm_chains == NULL)
+	{
+		vacrelstats->num_non_convertible_warm_chains++;
+		return;
+	}
+
+	end_deads = (char *) (vacrelstats->dead_tuples +
+					vacrelstats->num_dead_tuples);
+	end_warms = (char *) (vacrelstats->warm_chains -
+					vacrelstats->num_warm_chains);
+	free_work_area = (end_warms - end_deads);
+
+	Assert(free_work_area >= 0);
+
 	/*
 	 * The array shouldn't overflow under normal behavior, but perhaps it
 	 * could if we are given a really small maintenance_work_mem. In that
 	 * case, just forget the last few tuples (we'll get 'em next time).
 	 */
-	if (vacrelstats->num_warm_chains < vacrelstats->max_warm_chains)
+	if (free_work_area >= sizeof (LVWarmChain))
 	{
-		vacrelstats->warm_chains[vacrelstats->num_warm_chains].chain_tid = *itemptr;
-		vacrelstats->warm_chains[vacrelstats->num_warm_chains].is_postwarm_chain = 1;
+		LVWarmChain *chain;
+
 		vacrelstats->num_warm_chains++;
+	   	chain = vacrelstats->warm_chains - vacrelstats->num_warm_chains;
+		chain->chain_tid = *itemptr;
+		chain->is_postwarm_chain = 1;
 	}
+	else
+		vacrelstats->num_non_convertible_warm_chains++;
 }
 
 /*
@@ -2419,12 +2569,20 @@ static void
 lazy_record_dead_tuple(LVRelStats *vacrelstats,
 					   ItemPointer itemptr)
 {
+	char *end_deads = (char *) (vacrelstats->dead_tuples +
+		 	vacrelstats->num_dead_tuples);
+	char *end_warms = (char *) (vacrelstats->warm_chains -
+			vacrelstats->num_warm_chains);
+	Size freespace = (end_warms - end_deads);
+
+	Assert(freespace >= 0);
+	
 	/*
 	 * The array shouldn't overflow under normal behavior, but perhaps it
 	 * could if we are given a really small maintenance_work_mem. In that
 	 * case, just forget the last few tuples (we'll get 'em next time).
 	 */
-	if (vacrelstats->num_dead_tuples < vacrelstats->max_dead_tuples)
+	if (freespace >= sizeof (ItemPointer))
 	{
 		vacrelstats->dead_tuples[vacrelstats->num_dead_tuples] = *itemptr;
 		vacrelstats->num_dead_tuples++;
@@ -2477,10 +2635,10 @@ lazy_indexvac_phase1(ItemPointer itemptr, bool is_warm, void *state)
 		return IBDCR_DELETE;
 
 	chain = (LVWarmChain *) bsearch((void *) itemptr,
-								(void *) vacrelstats->warm_chains,
-								vacrelstats->num_warm_chains,
-								sizeof(LVWarmChain),
-								vac_cmp_warm_chain);
+				(void *) (vacrelstats->warm_chains - vacrelstats->num_warm_chains),
+				vacrelstats->num_warm_chains,
+				sizeof(LVWarmChain),
+				vac_cmp_warm_chain);
 	if (chain != NULL)
 	{
 		if (is_warm)
@@ -2500,13 +2658,13 @@ static IndexBulkDeleteCallbackResult
 lazy_indexvac_phase2(ItemPointer itemptr, bool is_warm, void *state)
 {
 	LVRelStats		*vacrelstats = (LVRelStats *) state;
-	LVWarmChain	*chain;
+	LVWarmChain		*chain;
 
 	chain = (LVWarmChain *) bsearch((void *) itemptr,
-								(void *) vacrelstats->warm_chains,
-								vacrelstats->num_warm_chains,
-								sizeof(LVWarmChain),
-								vac_cmp_warm_chain);
+				(void *) (vacrelstats->warm_chains - vacrelstats->num_warm_chains),
+				vacrelstats->num_warm_chains,
+				sizeof(LVWarmChain),
+				vac_cmp_warm_chain);
 
 	if (chain != NULL && (chain->keep_warm_chain != 1))
 	{
@@ -2619,6 +2777,7 @@ lazy_indexvac_phase2(ItemPointer itemptr, bool is_warm, void *state)
 		 * index pointers.
 		 */
 		chain->keep_warm_chain = 1;
+		vacrelstats->num_non_convertible_warm_chains++;
 		return IBDCR_KEEP;
 	}
 	return IBDCR_KEEP;
@@ -2627,6 +2786,9 @@ lazy_indexvac_phase2(ItemPointer itemptr, bool is_warm, void *state)
 /*
  * Comparator routines for use with qsort() and bsearch(). Similar to
  * vac_cmp_itemptr, but right hand argument is LVWarmChain struct pointer.
+ *
+ * The warm_chains array is sorted in descending order hence the return values
+ * are flipped.
  */
 static int
 vac_cmp_warm_chain(const void *left, const void *right)
@@ -2640,17 +2802,17 @@ vac_cmp_warm_chain(const void *left, const void *right)
 	rblk = ItemPointerGetBlockNumber(&((LVWarmChain *) right)->chain_tid);
 
 	if (lblk < rblk)
-		return -1;
-	if (lblk > rblk)
 		return 1;
+	if (lblk > rblk)
+		return -1;
 
 	loff = ItemPointerGetOffsetNumber((ItemPointer) left);
 	roff = ItemPointerGetOffsetNumber(&((LVWarmChain *) right)->chain_tid);
 
 	if (loff < roff)
-		return -1;
-	if (loff > roff)
 		return 1;
+	if (loff > roff)
+		return -1;
 
 	return 0;
 }

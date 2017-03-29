@@ -103,6 +103,7 @@ ExecVacuum(VacuumStmt *vacstmt, bool isTopLevel)
 		params.freeze_table_age = 0;
 		params.multixact_freeze_min_age = 0;
 		params.multixact_freeze_table_age = 0;
+		params.warmcleanup_index_scale = -1;
 	}
 	else
 	{
@@ -110,6 +111,7 @@ ExecVacuum(VacuumStmt *vacstmt, bool isTopLevel)
 		params.freeze_table_age = -1;
 		params.multixact_freeze_min_age = -1;
 		params.multixact_freeze_table_age = -1;
+		params.warmcleanup_index_scale = -1;
 	}
 
 	/* user-invoked vacuum is never "for wraparound" */

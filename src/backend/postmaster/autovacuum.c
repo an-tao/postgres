@@ -117,6 +117,8 @@ int			autovacuum_vac_thresh;
 double		autovacuum_vac_scale;
 int			autovacuum_anl_thresh;
 double		autovacuum_anl_scale;
+double		autovacuum_warmcleanup_scale;
+double		autovacuum_warmcleanup_index_scale;
 int			autovacuum_freeze_max_age;
 int			autovacuum_multixact_freeze_max_age;
 
@@ -338,7 +340,8 @@ static void relation_needs_vacanalyze(Oid relid, AutoVacOpts *relopts,
 						  Form_pg_class classForm,
 						  PgStat_StatTabEntry *tabentry,
 						  int effective_multixact_freeze_max_age,
-						  bool *dovacuum, bool *doanalyze, bool *wraparound);
+						  bool *dovacuum, bool *doanalyze, bool *wraparound,
+						  bool *dowarmcleanup);
 
 static void autovacuum_do_vac_analyze(autovac_table *tab,
 						  BufferAccessStrategy bstrategy);
@@ -2076,6 +2079,7 @@ do_autovacuum(void)
 		bool		dovacuum;
 		bool		doanalyze;
 		bool		wraparound;
+		bool		dowarmcleanup;
 
 		if (classForm->relkind != RELKIND_RELATION &&
 			classForm->relkind != RELKIND_MATVIEW)
@@ -2115,10 +2119,14 @@ do_autovacuum(void)
 		tabentry = get_pgstat_tabentry_relid(relid, classForm->relisshared,
 											 shared, dbentry);
 
-		/* Check if it needs vacuum or analyze */
+		/* 
+		 * Check if it needs vacuum or analyze. For vacuum, also check if it
+		 * needs WARM cleanup.
+		 */
 		relation_needs_vacanalyze(relid, relopts, classForm, tabentry,
 								  effective_multixact_freeze_max_age,
-								  &dovacuum, &doanalyze, &wraparound);
+								  &dovacuum, &doanalyze, &wraparound,
+								  &dowarmcleanup);
 
 		/* Relations that need work are added to table_oids */
 		if (dovacuum || doanalyze)
@@ -2171,6 +2179,7 @@ do_autovacuum(void)
 		bool		dovacuum;
 		bool		doanalyze;
 		bool		wraparound;
+		bool		dowarmcleanup;
 
 		/*
 		 * We cannot safely process other backends' temp tables, so skip 'em.
@@ -2201,7 +2210,8 @@ do_autovacuum(void)
 
 		relation_needs_vacanalyze(relid, relopts, classForm, tabentry,
 								  effective_multixact_freeze_max_age,
-								  &dovacuum, &doanalyze, &wraparound);
+								  &dovacuum, &doanalyze, &wraparound,
+								  &dowarmcleanup);
 
 		/* ignore analyze for toast tables */
 		if (dovacuum)
@@ -2792,6 +2802,7 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 	HeapTuple	classTup;
 	bool		dovacuum;
 	bool		doanalyze;
+	bool		dowarmcleanup;
 	autovac_table *tab = NULL;
 	PgStat_StatTabEntry *tabentry;
 	PgStat_StatDBEntry *shared;
@@ -2833,7 +2844,8 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 
 	relation_needs_vacanalyze(relid, avopts, classForm, tabentry,
 							  effective_multixact_freeze_max_age,
-							  &dovacuum, &doanalyze, &wraparound);
+							  &dovacuum, &doanalyze, &wraparound,
+							  &dowarmcleanup);
 
 	/* ignore ANALYZE for toast tables */
 	if (classForm->relkind == RELKIND_TOASTVALUE)
@@ -2849,6 +2861,7 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 		int			vac_cost_limit;
 		int			vac_cost_delay;
 		int			log_min_duration;
+		double		warmcleanup_index_scale;
 
 		/*
 		 * Calculate the vacuum cost parameters and the freeze ages.  If there
@@ -2895,19 +2908,26 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 			? avopts->multixact_freeze_table_age
 			: default_multixact_freeze_table_age;
 
+		warmcleanup_index_scale = (avopts &&
+								   avopts->warmcleanup_index_scale >= 0)
+			? avopts->warmcleanup_index_scale
+			: autovacuum_warmcleanup_index_scale;
+
 		tab = palloc(sizeof(autovac_table));
 		tab->at_relid = relid;
 		tab->at_sharedrel = classForm->relisshared;
 		tab->at_vacoptions = VACOPT_SKIPTOAST |
 			(dovacuum ? VACOPT_VACUUM : 0) |
 			(doanalyze ? VACOPT_ANALYZE : 0) |
-			(!wraparound ? VACOPT_NOWAIT : 0);
+			(!wraparound ? VACOPT_NOWAIT : 0) |
+			(dowarmcleanup ? VACOPT_WARM_CLEANUP : 0);
 		tab->at_params.freeze_min_age = freeze_min_age;
 		tab->at_params.freeze_table_age = freeze_table_age;
 		tab->at_params.multixact_freeze_min_age = multixact_freeze_min_age;
 		tab->at_params.multixact_freeze_table_age = multixact_freeze_table_age;
 		tab->at_params.is_wraparound = wraparound;
 		tab->at_params.log_min_duration = log_min_duration;
+		tab->at_params.warmcleanup_index_scale = warmcleanup_index_scale;
 		tab->at_vacuum_cost_limit = vac_cost_limit;
 		tab->at_vacuum_cost_delay = vac_cost_delay;
 		tab->at_relname = NULL;
@@ -2974,7 +2994,8 @@ relation_needs_vacanalyze(Oid relid,
  /* output params below */
 						  bool *dovacuum,
 						  bool *doanalyze,
-						  bool *wraparound)
+						  bool *wraparound,
+						  bool *dowarmcleanup)
 {
 	bool		force_vacuum;
 	bool		av_enabled;
@@ -2986,6 +3007,9 @@ relation_needs_vacanalyze(Oid relid,
 	float4		vac_scale_factor,
 				anl_scale_factor;
 
+	/* constant from reloptions or GUC valriable */
+	float4		warmcleanup_scale_factor;
+
 	/* thresholds calculated from above constants */
 	float4		vacthresh,
 				anlthresh;
@@ -2993,6 +3017,9 @@ relation_needs_vacanalyze(Oid relid,
 	/* number of vacuum (resp. analyze) tuples at this time */
 	float4		vactuples,
 				anltuples;
+
+	/* number of WARM chains in the table */
+	float4		warmchains;
 
 	/* freeze parameters */
 	int			freeze_max_age;
@@ -3025,6 +3052,11 @@ relation_needs_vacanalyze(Oid relid,
 	anl_base_thresh = (relopts && relopts->analyze_threshold >= 0)
 		? relopts->analyze_threshold
 		: autovacuum_anl_thresh;
+
+	/* Use table specific value or the GUC value */
+	warmcleanup_scale_factor = (relopts && relopts->warmcleanup_scale_factor >= 0)
+		? relopts->warmcleanup_scale_factor
+		: autovacuum_warmcleanup_scale;
 
 	freeze_max_age = (relopts && relopts->freeze_max_age >= 0)
 		? Min(relopts->freeze_max_age, autovacuum_freeze_max_age)
@@ -3073,6 +3105,7 @@ relation_needs_vacanalyze(Oid relid,
 		reltuples = classForm->reltuples;
 		vactuples = tabentry->n_dead_tuples;
 		anltuples = tabentry->changes_since_analyze;
+		warmchains = tabentry->n_warm_chains;
 
 		vacthresh = (float4) vac_base_thresh + vac_scale_factor * reltuples;
 		anlthresh = (float4) anl_base_thresh + anl_scale_factor * reltuples;
@@ -3089,6 +3122,17 @@ relation_needs_vacanalyze(Oid relid,
 		/* Determine if this table needs vacuum or analyze. */
 		*dovacuum = force_vacuum || (vactuples > vacthresh);
 		*doanalyze = (anltuples > anlthresh);
+
+		/*
+		 * If the number of WARM chains in the is more than the configured
+		 * fraction, then we also do a WARM cleanup. This only triggers at the
+		 * table level, but we then look at each index and do cleanup for the
+		 * index only if the WARM pointers in the index are more than
+		 * configured index-level scale factor. lazy_vacuum_index() later deals
+		 * with that.
+		 */
+		if (*dovacuum && (warmcleanup_scale_factor * reltuples < warmchains))
+			*dowarmcleanup = true;
 	}
 	else
 	{

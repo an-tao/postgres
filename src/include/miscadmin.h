@@ -255,6 +255,7 @@ extern int	VacuumPageDirty;
 extern int	VacuumCostBalance;
 extern bool VacuumCostActive;
 
+extern double VacuumWarmCleanupIndexScale;
 
 /* in tcop/postgres.c */
 

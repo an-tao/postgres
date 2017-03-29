@@ -93,7 +93,8 @@ static VacAttrStats *examine_attribute(Relation onerel, int attnum,
 				  Node *index_expr);
 static int acquire_sample_rows(Relation onerel, int elevel,
 					HeapTuple *rows, int targrows,
-					double *totalrows, double *totaldeadrows);
+					double *totalrows, double *totaldeadrows,
+					double *totalwarmchains);
 static int	compare_rows(const void *a, const void *b);
 static int acquire_inherited_sample_rows(Relation onerel, int elevel,
 							  HeapTuple *rows, int targrows,
@@ -320,7 +321,8 @@ do_analyze_rel(Relation onerel, int options, VacuumParams *params,
 	int			targrows,
 				numrows;
 	double		totalrows,
-				totaldeadrows;
+				totaldeadrows,
+				totalwarmchains;
 	HeapTuple  *rows;
 	PGRUsage	ru0;
 	TimestampTz starttime = 0;
@@ -501,7 +503,8 @@ do_analyze_rel(Relation onerel, int options, VacuumParams *params,
 	else
 		numrows = (*acquirefunc) (onerel, elevel,
 								  rows, targrows,
-								  &totalrows, &totaldeadrows);
+								  &totalrows, &totaldeadrows,
+								  &totalwarmchains);
 
 	/*
 	 * Compute the statistics.  Temporary results during the calculations for
@@ -631,7 +634,7 @@ do_analyze_rel(Relation onerel, int options, VacuumParams *params,
 	 */
 	if (!inh)
 		pgstat_report_analyze(onerel, totalrows, totaldeadrows,
-							  (va_cols == NIL));
+							  totalwarmchains, (va_cols == NIL));
 
 	/* If this isn't part of VACUUM ANALYZE, let index AMs do cleanup */
 	if (!(options & VACOPT_VACUUM))
@@ -991,12 +994,14 @@ examine_attribute(Relation onerel, int attnum, Node *index_expr)
 static int
 acquire_sample_rows(Relation onerel, int elevel,
 					HeapTuple *rows, int targrows,
-					double *totalrows, double *totaldeadrows)
+					double *totalrows, double *totaldeadrows,
+					double *totalwarmchains)
 {
 	int			numrows = 0;	/* # rows now in reservoir */
 	double		samplerows = 0; /* total # rows collected */
 	double		liverows = 0;	/* # live rows seen */
 	double		deadrows = 0;	/* # dead rows seen */
+	double		warmchains = 0;
 	double		rowstoskip = -1;	/* -1 means not set yet */
 	BlockNumber totalblocks;
 	TransactionId OldestXmin;
@@ -1023,8 +1028,13 @@ acquire_sample_rows(Relation onerel, int elevel,
 		Page		targpage;
 		OffsetNumber targoffset,
 					maxoffset;
+		bool		marked[MaxHeapTuplesPerPage];
+		OffsetNumber root_offsets[MaxHeapTuplesPerPage];
 
 		vacuum_delay_point();
+
+		/* Track which root line pointers are already counted. */
+		memset(marked, 0, sizeof (marked));
 
 		/*
 		 * We must maintain a pin on the target page's buffer to ensure that
@@ -1040,6 +1050,9 @@ acquire_sample_rows(Relation onerel, int elevel,
 		LockBuffer(targbuffer, BUFFER_LOCK_SHARE);
 		targpage = BufferGetPage(targbuffer);
 		maxoffset = PageGetMaxOffsetNumber(targpage);
+
+		/* Get all root line pointers first */
+		heap_get_root_tuples(targpage, root_offsets);
 
 		/* Inner loop over all tuples on the selected page */
 		for (targoffset = FirstOffsetNumber; targoffset <= maxoffset; targoffset++)
@@ -1068,6 +1081,22 @@ acquire_sample_rows(Relation onerel, int elevel,
 			targtuple.t_tableOid = RelationGetRelid(onerel);
 			targtuple.t_data = (HeapTupleHeader) PageGetItem(targpage, itemid);
 			targtuple.t_len = ItemIdGetLength(itemid);
+
+			/*
+			 * If this is a WARM-updated tuple, check if we have already seen
+			 * the root line pointer. If not, count this as a WARM chain. This
+			 * ensures that we count every WARM-chain just once, irrespective
+			 * of how many tuples exist in the chain.
+			 */
+			if (HeapTupleHeaderIsWarmUpdated(targtuple.t_data))
+			{
+				OffsetNumber root_offnum = root_offsets[targoffset];
+				if (!marked[root_offnum])
+				{
+					warmchains += 1;
+					marked[root_offnum] = true;
+				}
+			}
 
 			switch (HeapTupleSatisfiesVacuum(&targtuple,
 											 OldestXmin,
@@ -1200,18 +1229,24 @@ acquire_sample_rows(Relation onerel, int elevel,
 
 	/*
 	 * Estimate total numbers of rows in relation.  For live rows, use
-	 * vac_estimate_reltuples; for dead rows, we have no source of old
-	 * information, so we have to assume the density is the same in unseen
-	 * pages as in the pages we scanned.
+	 * vac_estimate_reltuples; for dead rows and WARM chains, we have no source
+	 * of old information, so we have to assume the density is the same in
+	 * unseen pages as in the pages we scanned.
 	 */
 	*totalrows = vac_estimate_reltuples(onerel, true,
 										totalblocks,
 										bs.m,
 										liverows);
 	if (bs.m > 0)
+	{
 		*totaldeadrows = floor((deadrows / bs.m) * totalblocks + 0.5);
+		*totalwarmchains = floor((warmchains / bs.m) * totalblocks + 0.5);
+	}
 	else
+	{
 		*totaldeadrows = 0.0;
+		*totalwarmchains = 0.0;
+	}
 
 	/*
 	 * Emit some interesting relation info
@@ -1219,11 +1254,13 @@ acquire_sample_rows(Relation onerel, int elevel,
 	ereport(elevel,
 			(errmsg("\"%s\": scanned %d of %u pages, "
 					"containing %.0f live rows and %.0f dead rows; "
-					"%d rows in sample, %.0f estimated total rows",
+					"%d rows in sample, %.0f estimated total rows; "
+					"%.0f warm chains",
 					RelationGetRelationName(onerel),
 					bs.m, totalblocks,
 					liverows, deadrows,
-					numrows, *totalrows)));
+					numrows, *totalrows,
+					*totalwarmchains)));
 
 	return numrows;
 }
@@ -1428,11 +1465,12 @@ acquire_inherited_sample_rows(Relation onerel, int elevel,
 				int			childrows;
 				double		trows,
 							tdrows;
+				double		twarmchains;
 
 				/* Fetch a random sample of the child's rows */
 				childrows = (*acquirefunc) (childrel, elevel,
 											rows + numrows, childtargrows,
-											&trows, &tdrows);
+											&trows, &tdrows, &twarmchains);
 
 				/* We may need to convert from child's rowtype to parent's */
 				if (childrows > 0 &&
