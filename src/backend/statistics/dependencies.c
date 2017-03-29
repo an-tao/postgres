@@ -288,6 +288,7 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	/* start with the first row forming a group */
 	group_size = 1;
 
+	/* loop 1 beyond the end of the array so that we count the final group */
 	for (i = 1; i <= numrows; i++)
 	{
 		/*
