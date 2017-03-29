@@ -288,7 +288,7 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	/* start with the first row forming a group */
 	group_size = 1;
 
-	for (i = 1; i <= numrows; i++)
+	for (i = 1; i < numrows; i++)
 	{
 		/*
 		 * Check if the group ended, which may be either because we processed
