@@ -148,8 +148,9 @@ DependencyGenerator_init(int n, int k)
 static void
 DependencyGenerator_free(DependencyGenerator state)
 {
-	/* we've allocated a single chunk, so just free it */
+	pfree(state->dependencies);
 	pfree(state);
+
 }
 
 /* generate next combination */
