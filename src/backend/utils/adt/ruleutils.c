@@ -1518,7 +1518,7 @@ pg_get_statisticsext_worker(Oid statextid, bool missing_ok)
 		else if (dependencies_enabled)
 			appendStringInfoString(&buf, "dependencies");
 
-		appendStringInfoString(&buf, ")");
+		appendStringInfoChar(&buf, ')');
 	}
 
 	appendStringInfoString(&buf, " ON (");
