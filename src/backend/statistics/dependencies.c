@@ -518,11 +518,11 @@ statext_dependencies_deserialize(bytea *data)
 	tmp += sizeof(uint32);
 
 	if (dependencies->magic != STATS_DEPS_MAGIC)
-		elog(ERROR, "invalid dependency magic %d (expected %dd)",
+		elog(ERROR, "invalid dependency magic %d (expected %d)",
 			 dependencies->magic, STATS_DEPS_MAGIC);
 
 	if (dependencies->type != STATS_DEPS_TYPE_BASIC)
-		elog(ERROR, "invalid dependency type %d (expected %dd)",
+		elog(ERROR, "invalid dependency type %d (expected %d)",
 			 dependencies->type, STATS_DEPS_TYPE_BASIC);
 
 	if (dependencies->ndeps == 0)
