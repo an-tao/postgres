@@ -261,4 +261,5 @@ EXPLAIN (COSTS OFF)
          Index Cond: ((a = 1) AND (b = '1'::text))
 (5 rows)
 
+RESET random_page_cost;
 DROP TABLE functional_dependencies;
