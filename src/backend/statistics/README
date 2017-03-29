@@ -12,7 +12,7 @@ hopefully improving the estimates and producing better plans.
 Types of statistics
 -------------------
 
-Currently we only have two kinds of extended statistics
+There are two kinds of extended statistics:
 
     (a) ndistinct coefficients
 
@@ -26,8 +26,9 @@ Each type of statistics may be used to estimate some subset of clause types.
 
     (a) functional dependencies - equality clauses (AND), possibly IS NULL
 
-Currently only simple operator clauses (Var op Const) are supported, but it's
-possible to support more complex clause types, e.g. (Var op Var).
+Currently, only OpExprs in the form Var op Const, or Const op Var are
+supported, however it's feasible to expand the code later to also estimate the
+selectivities on clauses such as Var op Var.
 
 
 Complex clauses
