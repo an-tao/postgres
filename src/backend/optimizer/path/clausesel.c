@@ -1051,6 +1051,8 @@ clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
 		clauses = clauses_filtered;
 	}
 
+	pfree(dependencies);
+
 	/* And now simply multiply with selectivities of the remaining clauses. */
 	foreach (lc, clauses)
 	{
