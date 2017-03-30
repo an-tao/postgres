@@ -331,22 +331,18 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 /*
  * detects functional dependencies between groups of columns
  *
- * Generates all possible subsets of columns (variations) and checks if the
- * last one is determined by the preceding ones. For example given 3 columns,
- * there are 12 variations (6 for variations on 2 columns, 6 for 3 columns):
+ * Generates all possible subsets of columns (variations) and computes
+ * the degree of validity for each one. For example with a statistic on
+ * three columns (a,b,c) there are 9 possible dependencies
  *
  *	   two columns			  three columns
  *	   -----------			  -------------
- *	   (a) -> c				  (a,b) -> c
- *	   (b) -> c				  (b,a) -> c
- *	   (a) -> b				  (a,c) -> b
- *	   (c) -> b				  (c,a) -> b
- *	   (c) -> a				  (c,b) -> a
+ *	   (a) -> b				  (a,b) -> c
+ *	   (a) -> c				  (a,c) -> b
  *	   (b) -> a				  (b,c) -> a
- *
- * XXX Currently this builds redundant dependencies, becuse (a,b => c) and
- * (b,a => c) is exactly the same thing, but both versions are generated
- * and stored in the statistics.
+ *	   (b) -> c
+ *	   (c) -> a
+ *	   (c) -> b
  */
 MVDependencies *
 statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
@@ -437,7 +433,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 
 /*
- * serialize list of dependencies into a bytea
+ * Serialize list of dependencies into a bytea value.
  */
 bytea *
 statext_dependencies_serialize(MVDependencies *dependencies)
@@ -621,6 +617,10 @@ dependency_implies_attribute(MVDependency *dependency, AttrNumber attnum)
 	return false;
 }
 
+/*
+ * staext_dependencies_load
+ *		Load the functional dependencies for the indicated pg_statistic_ext tuple
+ */
 MVDependencies *
 staext_dependencies_load(Oid mvoid)
 {
@@ -645,8 +645,6 @@ staext_dependencies_load(Oid mvoid)
  *
  * pg_dependencies is real enough to be a table column, but it has no operations
  * of its own, and disallows input too
- *
- * XXX This is inspired by what pg_node_tree does.
  */
 Datum
 pg_dependencies_in(PG_FUNCTION_ARGS)
@@ -664,10 +662,6 @@ pg_dependencies_in(PG_FUNCTION_ARGS)
 
 /*
  * pg_dependencies		- output routine for type pg_dependencies.
- *
- * dependencies are serialized into a bytea value, so we simply call
- * byteaout() to serialize the value into text. But it'd be nice to serialize
- * that into a meaningful representation (e.g. for inspection by people).
  */
 Datum
 pg_dependencies_out(PG_FUNCTION_ARGS)
@@ -724,7 +718,8 @@ pg_dependencies_recv(PG_FUNCTION_ARGS)
 /*
  * pg_dependencies_send		- binary output routine for type pg_dependencies.
  *
- * XXX Histograms are serialized into a bytea value, so let's just send that.
+ * Functional dependencies are serialized in a bytea value (although the type
+ * is named differently), so let's just send that.
  */
 Datum
 pg_dependencies_send(PG_FUNCTION_ARGS)

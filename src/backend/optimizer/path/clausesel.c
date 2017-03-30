@@ -145,8 +145,6 @@ clauselist_selectivity(PlannerInfo *root,
 	 * baserel (no join statistics). However set_baserel_size_estimates() sets
 	 * varRelid=0 so we have to actually inspect the clauses by pull_varnos
 	 * and see if there's just a single varno referenced.
-	 *
-	 * XXX Maybe there's a better way to find the relid?
 	 */
 	if (get_singleton_varno(clauses, &relid) &&
 		(varRelid == 0 || varRelid == relid))
@@ -859,16 +857,20 @@ clause_selectivity(PlannerInfo *root,
 }
 
 /*
+ * find_strongest_dependency
+ *		find the strongest dependency on the attributes
+ *
  * When applying functional dependencies, we start with the strongest ones
  * strongest dependencies. That is, we select the dependency that:
  *
- * (a) has all attributes covered by the clauses
+ * (a) has all attributes covered by equality clauses
  *
  * (b) has the most attributes
  *
- * (c) has the higher degree of validity
+ * (c) has the highest degree of validity
  *
- * TODO Explain why we select the dependencies this way.
+ * This guarantees that we eliminate the most redundant conditions first
+ * (see the comment at clauselist_ext_selectivity_deps).
  */
 static MVDependency *
 find_strongest_dependency(StatisticExtInfo *stats, MVDependencies *dependencies,
@@ -985,11 +987,15 @@ clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
 
 		/*
 		 * We found an applicable dependency, so find all the clauses on the
-		 * implied attribute, so with dependency (a,b => c) we search for
-		 * clauses on 'c'. We only really expect a single such clause, but in
-		 * case there are more we simply multiply the selectivities as usual.
+		 * implied attribute - with dependency (a,b => c) we look for
+		 * clauses on 'c'.
 		 *
-		 * XXX Maybe we should use the maximum, minimum or just error out?
+		 * We only expect to find one such clause, as the optimizer will
+		 * detect conflicting clauses like
+		 *
+		 *  (b=1) AND (b=2)
+		 *
+		 * and eliminate them from the list of clauses.
 		 */
 		foreach(lc, clauses)
 		{
@@ -997,10 +1003,9 @@ clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
 			Node	   *clause = (Node *) lfirst(lc);
 
 			/*
-			 * XXX We need the attnum referenced by the clause, and this is the
-			 * easiest way to get it (but maybe not the best one). At this point
-			 * we should only see equality clauses compatible with functional
-			 * dependencies, so just error out if we stumble upon something else.
+			 * Get the attnum referenced by the clause. At this point we should
+			 * only see equality clauses compatible with functional dependencies,
+			 * so just error out if we stumble upon something else.
 			 */
 			if (!clause_is_ext_compatible(clause, relid, &attnum_clause))
 				elog(ERROR, "clause not compatible with functional dependencies");
@@ -1021,12 +1026,8 @@ clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
 			/*
 			 * Otherwise compute selectivity of the clause, and multiply it with
 			 * other clauses on the same attribute.
-			 *
-			 * XXX Not sure if we need to worry about multiple clauses, though.
-			 * Those are all equality clauses, and if they reference different
-			 * constants, that's not going to work.
 			 */
-			s2 *= clause_selectivity(root, clause, varRelid, jointype, sjinfo);
+			s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo);
 		}
 
 		/*
@@ -1055,7 +1056,14 @@ clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
 }
 
 /*
- * Collect attributes from mv-compatible clauses.
+ * collect_ext_attnums
+ *	collect attnums from clauses compatible with extended stats
+ *
+ * Functional dependencies only work with equality claues of the form
+ *
+ *    Var = Const
+ *
+ * so walk the clause list and collect attnums from such clauses.
  */
 static Bitmapset *
 collect_ext_attnums(List *clauses, Index relid)
@@ -1096,7 +1104,8 @@ collect_ext_attnums(List *clauses, Index relid)
 }
 
 /*
- * Count the number of attributes in clauses compatible with extended stats.
+ * count_ext_attnums
+ *		count attributes in clauses compatible with extended stats
  */
 static int
 count_ext_attnums(List *clauses, Index relid)
@@ -1161,62 +1170,9 @@ count_attnums_covered_by_stats(StatisticExtInfo *info, Bitmapset *attnums)
  * attributes.
  *
  * If there are multiple statistics referencing the same number of columns
- * (from the clauses), the one with less source columns (as listed in the
- * ADD STATISTICS when creating the statistics) wins. Else the first one wins.
- *
- * This is a very simple criteria, and has several weaknesses:
- *
- * (a) does not consider the accuracy of the statistics
- *
- *	   If there are two histograms built on the same set of columns, but one
- *	   has 100 buckets and the other one has 1000 buckets (thus likely
- *	   providing better estimates), this is not currently considered.
- *
- * (b) does not consider the type of statistics
- *
- *	   If there are three statistics - one containing just an MCV list,
- *	   and another one with just a histogram, and a third one with both,
- *	   we treat them equally.
- *
- * (c) does not consider the number of clauses
- *
- *	   As explained, only the number of referenced attributes counts, so if
- *	   there are multiple clauses on a single attribute, this still counts as
- *	   a single attribute.
- *
- * (d) does not consider type of condition
- *
- *	   Some clauses may work better with some statistics - for example equality
- *	   clauses probably work better with MCV lists than with histograms. But
- *	   IS [NOT] NULL conditions may often work better with histograms (thanks
- *	   to NULL-buckets).
- *
- * So for example with five WHERE conditions
- *
- *	   WHERE (a = 1) AND (b = 1) AND (c = 1) AND (d = 1) AND (e = 1)
- *
- * and statistics on (a,b), (a,b,e) and (a,b,c,d), the last one will be selected
- * as it references the most columns.
- *
- * Once we have selected the extended statistics, we split the list of
- * clauses into two parts - conditions that are compatible with the selected
- * stats, and conditions are estimated using simple statistics.
- *
- * From the example above, conditions
- *
- *	   (a = 1) AND (b = 1) AND (c = 1) AND (d = 1)
- *
- * will be estimated using the extended statistics (a,b,c,d) while the last
- * condition (e = 1) will get estimated using the regular ones.
- *
- * There are various alternative selection criteria (e.g. counting conditions
- * instead of just referenced attributes), but eventually the best option should
- * be to combine multiple statistics. But that's much harder to do correctly.
- *
- * TODO: Select multiple statistics and combine them when computing the estimate.
- *
- * TODO: This will probably have to consider compatibility of clauses, because
- * 'dependencies' will probably work only with equality clauses.
+ * (from the clauses), the one with fewer source columns (as listed in the
+ * CREATE STATISTICS command) wins, based on the assumption that the object
+ * is either smaller or more accurate. Else the first one wins.
  */
 static StatisticExtInfo *
 choose_ext_statistics(List *stats, Bitmapset *attnums, char requiredkind)
@@ -1320,10 +1276,6 @@ typedef struct
 /*
  * Recursive walker that checks compatibility of the clause with extended
  * statistics, and collects attnums from the Vars.
- *
- * XXX The original idea was to combine this with expression_tree_walker, but
- *	   I've been unable to make that work - seems that does not quite allow
- *	   checking the structure. Hence the explicit calls to the walker.
  */
 static bool
 mv_compatible_walker(Node *node, mv_compatible_context *context)
@@ -1395,10 +1347,12 @@ mv_compatible_walker(Node *node, mv_compatible_context *context)
 			return true;
 
 		/*
-		 * If it's not a "<" or ">" or "=" operator, just ignore the clause.
-		 * Otherwise note the relid and attnum for the variable. This uses the
-		 * function for estimating selectivity, ont the operator directly (a
-		 * bit awkward, but well ...).
+		 * If it's not "=" operator, just ignore the clause, as it's not
+		 * compatible with functinal dependencies. Otherwise note the relid
+		 * and attnum for the variable.
+		 *
+		 * This uses the function for estimating selectivity, not the operator
+		 * directly (a bit awkward, but well ...).
 		 */
 		switch (get_oprrest(expr->opno))
 		{
@@ -1423,6 +1377,9 @@ mv_compatible_walker(Node *node, mv_compatible_context *context)
 }
 
 /*
+ * clause_is_ext_compatible
+ *	decide if the clause is compatible with extended statistics
+ *
  * Determines whether the clause is compatible with extended stats,
  * and if it is, returns some additional information - varno (index
  * into simple_rte_array) and a bitmap of attributes. This is then
@@ -1432,12 +1389,9 @@ mv_compatible_walker(Node *node, mv_compatible_context *context)
  *
  *	   variable OP constant
  *
- * where OP is one of [=,<,<=,>=,>] (which is however determined by
- * looking at the associated function for estimating selectivity, just
- * like with the single-dimensional case).
- *
- * TODO: Support 'OR clauses' - shouldn't be all that difficult to
- * evaluate them using extended stats.
+ * where OP is '=' (determined by looking at the associated function
+ * for estimating selectivity, just like with the single-dimensional
+ * case).
  */
 static bool
 clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum)
@@ -1457,7 +1411,10 @@ clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum)
 }
 
 /*
- * Check for any stats with the required kind
+ * has_stats
+ *	check that the list contains statistic of a given type
+ *
+ * Check for any stats with the required kind.
  */
 static bool
 has_stats(List *stats, char requiredkind)
