@@ -14,14 +14,20 @@
  */
 #include "postgres.h"
 
+#include "access/sysattr.h"
+#include "catalog/pg_operator.h"
+#include "catalog/pg_statistic_ext.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/plancat.h"
+#include "optimizer/var.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
+#include "statistics/statistics.h"
+#include "utils/typcache.h"
 
 
 /*
@@ -40,6 +46,22 @@ typedef struct RangeQueryClause
 
 static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
 			   bool varonleft, bool isLTsel, Selectivity s2);
+static MVDependency *find_strongest_dependency(StatisticExtInfo *stats,
+											   MVDependencies *dependencies,
+											   Bitmapset *attnums);
+static Selectivity clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
+								List *clauses, StatisticExtInfo *stats,
+								Index varRelid, JoinType jointype,
+								SpecialJoinInfo *sjinfo,
+								RelOptInfo *rel);
+static Bitmapset *collect_ext_attnums(List *clauses, Index relid);
+static int count_attnums_covered_by_stats(StatisticExtInfo *info, Bitmapset *attnums);
+static StatisticExtInfo *choose_ext_statistics(List *stats, Bitmapset *attnums, char requiredkind);
+static List *clauselist_ext_split(PlannerInfo *root, Index relid,
+					List *clauses, List **mvclauses,
+					StatisticExtInfo *stats);
+static bool clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum);
+static bool has_stats_of_kind(List *stats, char requiredkind);
 
 
 /****************************************************************************
@@ -60,23 +82,33 @@ static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
  * subclauses.  However, that's only right if the subclauses have independent
  * probabilities, and in reality they are often NOT independent.  So,
  * we want to be smarter where we can.
-
- * Currently, the only extra smarts we have is to recognize "range queries",
- * such as "x > 34 AND x < 42".  Clauses are recognized as possible range
- * query components if they are restriction opclauses whose operators have
- * scalarltsel() or scalargtsel() as their restriction selectivity estimator.
- * We pair up clauses of this form that refer to the same variable.  An
- * unpairable clause of this kind is simply multiplied into the selectivity
- * product in the normal way.  But when we find a pair, we know that the
- * selectivities represent the relative positions of the low and high bounds
- * within the column's range, so instead of figuring the selectivity as
- * hisel * losel, we can figure it as hisel + losel - 1.  (To visualize this,
- * see that hisel is the fraction of the range below the high bound, while
- * losel is the fraction above the low bound; so hisel can be interpreted
- * directly as a 0..1 value but we need to convert losel to 1-losel before
- * interpreting it as a value.  Then the available range is 1-losel to hisel.
- * However, this calculation double-excludes nulls, so really we need
- * hisel + losel + null_frac - 1.)
+ *
+ * When 'tryextstats' is true, and 'rel' is not null, we'll try to apply
+ * selectivity estimates using any extended statistcs on 'rel'. Currently this
+ * is limited only to base relations with an rtekind of RTE_RELATION.
+ *
+ * If we identify such extended statistics apply, we try to apply them.
+ * Currently we only have (soft) functional dependencies, so we try to reduce
+ * the list of clauses.
+ *
+ * Then we remove the clauses estimated using extended stats, and process
+ * the rest of the clauses using the regular per-column stats.
+ *
+ * We also recognize "range queries", such as "x > 34 AND x < 42".  Clauses
+ * are recognized as possible range query components if they are restriction
+ * opclauses whose operators have scalarltsel() or scalargtsel() as their
+ * restriction selectivity estimator.  We pair up clauses of this form that
+ * refer to the same variable.  An unpairable clause of this kind is simply
+ * multiplied into the selectivity product in the normal way.  But when we
+ * find a pair, we know that the selectivities represent the relative
+ * positions of the low and high bounds within the column's range, so instead
+ * of figuring the selectivity as hisel * losel, we can figure it as hisel +
+ * losel - 1.  (To visualize this, see that hisel is the fraction of the range
+ * below the high bound, while losel is the fraction above the low bound; so
+ * hisel can be interpreted directly as a 0..1 value but we need to convert
+ * losel to 1-losel before interpreting it as a value.  Then the available
+ * range is 1-losel to hisel.  However, this calculation double-excludes
+ * nulls, so really we need hisel + losel + null_frac - 1.)
  *
  * If either selectivity is exactly DEFAULT_INEQ_SEL, we forget this equation
  * and instead use DEFAULT_RANGE_INEQ_SEL.  The same applies if the equation
@@ -93,19 +125,71 @@ clauselist_selectivity(PlannerInfo *root,
 					   List *clauses,
 					   int varRelid,
 					   JoinType jointype,
-					   SpecialJoinInfo *sjinfo)
+					   SpecialJoinInfo *sjinfo,
+					   RelOptInfo *rel,
+					   bool tryextstats)
 {
 	Selectivity s1 = 1.0;
 	RangeQueryClause *rqlist = NULL;
 	ListCell   *l;
 
 	/*
-	 * If there's exactly one clause, then no use in trying to match up pairs,
-	 * so just go directly to clause_selectivity().
+	 * If there's exactly one clause, then extended statistics is futile
+	 * at this level (we might be able to apply them later if it's AND/OR
+	 * clause). So just go directly to clause_selectivity().
 	 */
 	if (list_length(clauses) == 1)
 		return clause_selectivity(root, (Node *) linitial(clauses),
-								  varRelid, jointype, sjinfo);
+							  varRelid, jointype, sjinfo, rel, tryextstats);
+
+	/*
+	 * Check for common reasons where we can't apply multivariate dependency
+	 * statistics. We want to be as cheap as possible here as most likely
+	 * we'll not be using multivariate statistics in most cases.
+	 */
+	if (tryextstats && rel && rel->rtekind == RTE_RELATION &&
+		rel->statlist != NIL &&
+		has_stats_of_kind(rel->statlist, STATS_EXT_DEPENDENCIES))
+	{
+		Index		relid = rel->relid;
+		Bitmapset  *mvattnums;
+
+		/*
+		 * Now that we've validated that we actually have some multivariate
+		 * statistics, we'll want to check that the clauses reference more
+		 * than a single column.
+		 */
+
+		/* extract all of the attribute attnums into a bitmap set. */
+		mvattnums = collect_ext_attnums(clauses, relid);
+
+		/* we can't do anything with mv stats unless we got two or more */
+		if (bms_num_members(mvattnums) >= 2)
+		{
+			StatisticExtInfo *stat;
+
+			/* and search for the statistic covering the most attributes */
+			stat = choose_ext_statistics(rel->statlist, mvattnums,
+										 STATS_EXT_DEPENDENCIES);
+
+			if (stat != NULL)		/* we have a matching stats */
+			{
+				/* clauses compatible with multi-variate stats */
+				List	   *mvclauses = NIL;
+
+				/* split the clauselist into regular and mv-clauses */
+				clauses = clauselist_ext_split(root, relid, clauses,
+											&mvclauses, stat);
+
+				/* Empty list of clauses is a clear sign something went wrong. */
+				Assert(list_length(mvclauses));
+
+				/* compute the extended stats (dependencies) */
+				s1 *= clauselist_ext_selectivity_deps(root, relid, mvclauses, stat,
+													 varRelid, jointype, sjinfo, rel);
+			}
+		}
+	}
 
 	/*
 	 * Initial scan over clauses.  Anything that doesn't look like a potential
@@ -119,7 +203,8 @@ clauselist_selectivity(PlannerInfo *root,
 		Selectivity s2;
 
 		/* Always compute the selectivity using clause_selectivity */
-		s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo);
+		s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo, rel,
+								tryextstats);
 
 		/*
 		 * Check for being passed a RestrictInfo.
@@ -484,7 +569,9 @@ clause_selectivity(PlannerInfo *root,
 				   Node *clause,
 				   int varRelid,
 				   JoinType jointype,
-				   SpecialJoinInfo *sjinfo)
+				   SpecialJoinInfo *sjinfo,
+				   RelOptInfo *rel,
+				   bool tryextstats)
 {
 	Selectivity s1 = 0.5;		/* default for any unhandled clause type */
 	RestrictInfo *rinfo = NULL;
@@ -604,7 +691,9 @@ clause_selectivity(PlannerInfo *root,
 								  (Node *) get_notclausearg((Expr *) clause),
 									  varRelid,
 									  jointype,
-									  sjinfo);
+									  sjinfo,
+									  rel,
+									  tryextstats);
 	}
 	else if (and_clause(clause))
 	{
@@ -613,7 +702,9 @@ clause_selectivity(PlannerInfo *root,
 									((BoolExpr *) clause)->args,
 									varRelid,
 									jointype,
-									sjinfo);
+									sjinfo,
+									rel,
+									tryextstats);
 	}
 	else if (or_clause(clause))
 	{
@@ -632,7 +723,9 @@ clause_selectivity(PlannerInfo *root,
 												(Node *) lfirst(arg),
 												varRelid,
 												jointype,
-												sjinfo);
+												sjinfo,
+												rel,
+												tryextstats);
 
 			s1 = s1 + s2 - s1 * s2;
 		}
@@ -725,7 +818,9 @@ clause_selectivity(PlannerInfo *root,
 								(Node *) ((RelabelType *) clause)->arg,
 								varRelid,
 								jointype,
-								sjinfo);
+								sjinfo,
+								rel,
+								tryextstats);
 	}
 	else if (IsA(clause, CoerceToDomain))
 	{
@@ -734,7 +829,9 @@ clause_selectivity(PlannerInfo *root,
 								(Node *) ((CoerceToDomain *) clause)->arg,
 								varRelid,
 								jointype,
-								sjinfo);
+								sjinfo,
+								rel,
+								tryextstats);
 	}
 	else
 	{
@@ -762,4 +859,543 @@ clause_selectivity(PlannerInfo *root,
 #endif   /* SELECTIVITY_DEBUG */
 
 	return s1;
+}
+
+/*
+ * find_strongest_dependency
+ *		find the strongest dependency on the attributes
+ *
+ * When applying functional dependencies, we start with the strongest ones
+ * strongest dependencies. That is, we select the dependency that:
+ *
+ * (a) has all attributes covered by equality clauses
+ *
+ * (b) has the most attributes
+ *
+ * (c) has the highest degree of validity
+ *
+ * This guarantees that we eliminate the most redundant conditions first
+ * (see the comment at clauselist_ext_selectivity_deps).
+ */
+static MVDependency *
+find_strongest_dependency(StatisticExtInfo *stats, MVDependencies *dependencies,
+						  Bitmapset *attnums)
+{
+	int i;
+	MVDependency *strongest = NULL;
+
+	/* number of attnums in clauses */
+	int nattnums = bms_num_members(attnums);
+
+	/*
+	 * Iterate over the MVDependency items and find the strongest one from
+	 * the fully-matched dependencies. We do the cheap checks first, before
+	 * matching it against the attnums.
+	 */
+	for (i = 0; i < dependencies->ndeps; i++)
+	{
+		MVDependency   *dependency = dependencies->deps[i];
+
+		/*
+		 * Skip dependencies referencing more attributes than available clauses,
+		 * as those can't be fully matched.
+		 */
+		if (dependency->nattributes > nattnums)
+			continue;
+
+		/* We can skip dependencies on fewer attributes than the best one. */
+		if (strongest && (strongest->nattributes > dependency->nattributes))
+			continue;
+
+		/* And also weaker dependencies on the same number of attributes. */
+		if (strongest &&
+			(strongest->nattributes == dependency->nattributes) &&
+			(strongest->degree > dependency->degree))
+			continue;
+
+		/*
+		 * Check if the depdendency is full matched to the attnums. If so we
+		 * can save it as the strongest match, since we rejected any weaker
+		 * matches above.
+		 */
+		if (dependency_is_fully_matched(dependency, attnums))
+			strongest = dependency;
+	}
+
+	return strongest;
+}
+
+/*
+ * clauselist_ext_selectivity_deps
+ *		estimate selectivity using functional dependencies
+ *
+ * Given equality clauses on attributes (a,b) we find the strongest dependency
+ * between them, i.e. either (a=>b) or (b=>a). Assuming (a=>b) is the selected
+ * dependency, we then combine the per-clause selectivities using the formula
+ *
+ *     P(a,b) = P(a) * [f + (1-f)*P(b)]
+ *
+ * where 'f' is the degree of the dependency.
+ *
+ * With clauses on more than two attributes, the dependencies are applied
+ * recursively, starting with the widest/strongest dependencies. For example
+ * P(a,b,c) is first split like this:
+ *
+ *     P(a,b,c) = P(a,b) * [f + (1-f)*P(c)]
+ *
+ * assuming (a,b=>c) is the strongest dependency.
+ */
+static Selectivity
+clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
+								List *clauses, StatisticExtInfo *stats,
+								Index varRelid, JoinType jointype,
+								SpecialJoinInfo *sjinfo,
+								RelOptInfo *rel)
+{
+	ListCell	   *lc;
+	Selectivity		s1 = 1.0;
+	MVDependencies *dependencies;
+
+	Assert(stats->kind == STATS_EXT_DEPENDENCIES);
+
+	/* load the dependency items stored in the statistics */
+	dependencies = staext_dependencies_load(stats->statOid);
+
+	Assert(dependencies);
+
+	/*
+	 * Apply the dependencies recursively, starting with the widest/strongest
+	 * ones, and proceeding to the smaller/weaker ones. At the end of each
+	 * round we factor in the selectivity of clauses on the implied attribute,
+	 * and remove the clauses from the list.
+	 */
+	while (true)
+	{
+		Selectivity		s2 = 1.0;
+		Bitmapset	   *attnums;
+		MVDependency   *dependency;
+
+		/* clauses remaining after removing those on the "implied" attribute */
+		List		   *clauses_filtered = NIL;
+
+		attnums = collect_ext_attnums(clauses, relid);
+
+		/* no point in looking for dependencies with fewer than 2 attributes */
+		if (bms_num_members(attnums) < 2)
+			break;
+
+		/* the widest/strongest dependency, fully matched by clauses */
+		dependency = find_strongest_dependency(stats, dependencies, attnums);
+
+		/* if no suitable dependency was found, we're done */
+		if (!dependency)
+			break;
+
+		/*
+		 * We found an applicable dependency, so find all the clauses on the
+		 * implied attribute - with dependency (a,b => c) we look for
+		 * clauses on 'c'.
+		 *
+		 * We only expect to find one such clause, as the optimizer will
+		 * detect conflicting clauses like
+		 *
+		 *  (b=1) AND (b=2)
+		 *
+		 * and eliminate them from the list of clauses.
+		 */
+		foreach(lc, clauses)
+		{
+			AttrNumber	attnum_clause = InvalidAttrNumber;
+			Node	   *clause = (Node *) lfirst(lc);
+
+			/*
+			 * Get the attnum referenced by the clause. At this point we should
+			 * only see equality clauses compatible with functional dependencies,
+			 * so just error out if we stumble upon something else.
+			 */
+			if (!clause_is_ext_compatible(clause, relid, &attnum_clause))
+				elog(ERROR, "clause not compatible with functional dependencies");
+
+			Assert(AttributeNumberIsValid(attnum_clause));
+
+			/*
+			 * If the clause is not on the implied attribute, add it to the list
+			 * of filtered clauses (for the next round) and continue with the
+			 * next one.
+			 */
+			if (!dependency_implies_attribute(dependency, attnum_clause))
+			{
+				clauses_filtered = lappend(clauses_filtered, clause);
+				continue;
+			}
+
+			/*
+			 * Otherwise compute selectivity of the clause, and multiply it with
+			 * other clauses on the same attribute.
+			 */
+			s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo,
+									rel, false);
+		}
+
+		/*
+		 * Now factor in the selectivity for all the "implied" clauses into the
+		 * final one, using this formula:
+		 *
+		 *     P(a,b) = P(a) * (f + (1-f) * P(b))
+		 *
+		 * where 'f' is the degree of validity of the dependency.
+		*/
+		s1 *= (dependency->degree + (1 - dependency->degree) * s2);
+
+		/* And only keep the filtered clauses for the next round. */
+		clauses = clauses_filtered;
+	}
+
+	pfree(dependencies);
+
+	/* And now simply multiply with selectivities of the remaining clauses. */
+	foreach (lc, clauses)
+	{
+		Node   *clause = (Node *) lfirst(lc);
+
+		s1 *= clause_selectivity(root, clause, varRelid, jointype, sjinfo,
+								 rel, false);
+	}
+
+	return s1;
+}
+
+/*
+ * collect_ext_attnums
+ *	collect attnums from clauses compatible with extended stats
+ *
+ * Functional dependencies only work with equality claues of the form
+ *
+ *    Var = Const
+ *
+ * so walk the clause list and collect attnums from such clauses.
+ */
+static Bitmapset *
+collect_ext_attnums(List *clauses, Index relid)
+{
+	Bitmapset  *attnums = NULL;
+	ListCell   *l;
+
+	/*
+	 * Walk through the clauses and identify the ones we can estimate using
+	 * extended stats, and remember the relid/columns. We'll then
+	 * cross-check if we have suitable stats, and only if needed we'll split
+	 * the clauses into extended and regular lists.
+	 *
+	 * For now we're only interested in RestrictInfo nodes with nested OpExpr,
+	 * using either a range or equality.
+	 */
+	foreach(l, clauses)
+	{
+		AttrNumber	attnum;
+		Node	   *clause = (Node *) lfirst(l);
+
+		/* ignore the result for now - we only need the info */
+		if (clause_is_ext_compatible(clause, relid, &attnum))
+			attnums = bms_add_member(attnums, attnum);
+	}
+
+	/*
+	 * If there are not at least two attributes referenced by the clause(s),
+	 * we can throw everything out (as we'll revert to simple stats).
+	 */
+	if (bms_num_members(attnums) <= 1)
+	{
+		bms_free(attnums);
+		return NULL;
+	}
+
+	return attnums;
+}
+
+/*
+ * count_attnums_covered_by_stats
+ *		return the number of 'attnums' matched to this extended statistics
+ *		object
+ */
+static int
+count_attnums_covered_by_stats(StatisticExtInfo *info, Bitmapset *attnums)
+{
+	Bitmapset *covered;
+	int ncovered;
+
+	covered = bms_intersect(attnums, info->keys);
+	ncovered = bms_num_members(covered);
+	bms_free(covered);
+
+	return ncovered;
+}
+
+/*
+ * We're looking for statistics matching at least 2 attributes, referenced in
+ * clauses compatible with extended statistics. The current selection
+ * criteria is very simple - we choose the statistics referencing the most
+ * attributes.
+ *
+ * If there are multiple statistics referencing the same number of columns
+ * (from the clauses), the one with fewer source columns (as listed in the
+ * CREATE STATISTICS command) wins, based on the assumption that the object
+ * is either smaller or more accurate. Else the first one wins.
+ */
+static StatisticExtInfo *
+choose_ext_statistics(List *stats, Bitmapset *attnums, char requiredkind)
+{
+	ListCell   *lc;
+	StatisticExtInfo *choice = NULL;
+	int			current_matches = 2;	/* goal #1: maximize */
+	int			current_dims = (STATS_MAX_DIMENSIONS + 1);	/* goal #2: minimize */
+
+	foreach(lc, stats)
+	{
+		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
+		int			matches;
+		int			numattrs;
+
+		/* skip statistics that are not the correct type */
+		if (info->kind != requiredkind)
+			continue;
+
+		/* determine how many attributes of these stats can be matched to */
+		matches = count_attnums_covered_by_stats(info, attnums);
+
+		/*
+		 * save the actual number of keys in the stats so that we can choose
+		 * the narrowest stats with the most matching keys.
+		 */
+		numattrs = bms_num_members(info->keys);
+
+		/*
+		 * Use these statistics when it increases the number of matched clauses
+		 * or when it matches the same number of attributes but these stats
+		 * have fewer keys than any previous match.
+		 */
+		if (matches > current_matches ||
+			(matches == current_matches && current_dims > numattrs))
+		{
+			choice = info;
+			current_matches = matches;
+			current_dims = numattrs;
+		}
+	}
+
+	return choice;
+}
+
+
+/*
+ * clauselist_ext_split
+ *		split the clause list into a part to be estimated using the provided
+ *		statistics, and remaining clauses (estimated in some other way)
+ */
+static List *
+clauselist_ext_split(PlannerInfo *root, Index relid,
+					List *clauses, List **mvclauses,
+					StatisticExtInfo *stats)
+{
+	ListCell   *l;
+	List	   *non_mvclauses = NIL;
+
+	/* erase the list of mv-compatible clauses */
+	*mvclauses = NIL;
+
+	foreach(l, clauses)
+	{
+		bool		match = false;		/* by default not mv-compatible */
+		AttrNumber	attnum = InvalidAttrNumber;
+		Node	   *clause = (Node *) lfirst(l);
+
+		if (clause_is_ext_compatible(clause, relid, &attnum))
+		{
+			/* are all the attributes part of the selected stats? */
+			if (bms_is_member(attnum, stats->keys))
+				match = true;
+		}
+
+		/*
+		 * The clause matches the selected stats, so put it to the list of
+		 * mv-compatible clauses. Otherwise, keep it in the list of 'regular'
+		 * clauses (that may be selected later).
+		 */
+		if (match)
+			*mvclauses = lappend(*mvclauses, clause);
+		else
+			non_mvclauses = lappend(non_mvclauses, clause);
+	}
+
+	/*
+	 * Perform regular estimation using the clauses incompatible with the
+	 * chosen histogram (or MV stats in general).
+	 */
+	return non_mvclauses;
+
+}
+
+typedef struct
+{
+	Index		varno;			/* relid we're interested in */
+	Bitmapset  *varattnos;		/* attnums referenced by the clauses */
+} mv_compatible_context;
+
+/*
+ * Recursive walker that checks compatibility of the clause with extended
+ * statistics, and collects attnums from the Vars.
+ */
+static bool
+mv_compatible_walker(Node *node, mv_compatible_context *context)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, RestrictInfo))
+	{
+		RestrictInfo *rinfo = (RestrictInfo *) node;
+
+		/* Pseudoconstants are not really interesting here. */
+		if (rinfo->pseudoconstant)
+			return true;
+
+		/* clauses referencing multiple varnos are incompatible */
+		if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
+			return true;
+
+		/* check the clause inside the RestrictInfo */
+		return mv_compatible_walker((Node *) rinfo->clause, context);
+	}
+
+	if (IsA(node, Var))
+	{
+		Var		   *var = (Var *) node;
+
+		/*
+		 * Also, the variable needs to reference the right relid (this might
+		 * be unnecessary given the other checks, but let's be sure).
+		 */
+		if (var->varno != context->varno)
+			return true;
+
+		/* Also skip system attributes (we don't allow stats on those). */
+		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
+			return true;
+
+		/* Seems fine, so let's remember the attnum. */
+		context->varattnos = bms_add_member(context->varattnos, var->varattno);
+
+		return false;
+	}
+
+	/*
+	 * And finally the operator expressions - we only allow simple expressions
+	 * with two arguments, where one is a Var and the other is a constant, and
+	 * it's a simple comparison (which we detect using estimator function).
+	 */
+	if (is_opclause(node))
+	{
+		OpExpr	   *expr = (OpExpr *) node;
+		Var		   *var;
+		bool		varonleft = true;
+		bool		ok;
+
+		/* Only expressions with two arguments are considered compatible. */
+		if (list_length(expr->args) != 2)
+			return true;
+
+		/* see if it actually has the right */
+		ok = (NumRelids((Node *) expr) == 1) &&
+			(is_pseudo_constant_clause(lsecond(expr->args)) ||
+			 (varonleft = false,
+			  is_pseudo_constant_clause(linitial(expr->args))));
+
+		/* unsupported structure (two variables or so) */
+		if (!ok)
+			return true;
+
+		/*
+		 * If it's not "=" operator, just ignore the clause, as it's not
+		 * compatible with functinal dependencies. Otherwise note the relid
+		 * and attnum for the variable.
+		 *
+		 * This uses the function for estimating selectivity, not the operator
+		 * directly (a bit awkward, but well ...).
+		 */
+		switch (get_oprrest(expr->opno))
+		{
+			case F_EQSEL:
+
+				/* equality conditions are compatible with all statistics */
+				break;
+
+			default:
+
+				/* unknown estimator */
+				return true;
+		}
+
+		var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
+
+		return mv_compatible_walker((Node *) var, context);
+	}
+
+	/* Node not explicitly supported, so terminate */
+	return true;
+}
+
+/*
+ * clause_is_ext_compatible
+ *	decide if the clause is compatible with extended statistics
+ *
+ * Determines whether the clause is compatible with extended stats,
+ * and if it is, returns some additional information - varno (index
+ * into simple_rte_array) and a bitmap of attributes. This is then
+ * used to fetch related extended statistics.
+ *
+ * At this moment we only support basic conditions of the form
+ *
+ *	   variable OP constant
+ *
+ * where OP is '=' (determined by looking at the associated function
+ * for estimating selectivity, just like with the single-dimensional
+ * case).
+ */
+static bool
+clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum)
+{
+	mv_compatible_context context;
+
+	context.varno = relid;
+	context.varattnos = NULL;	/* no attnums */
+
+	if (mv_compatible_walker(clause, &context))
+		return false;
+
+	/* remember the newly collected attnums */
+	*attnum = bms_singleton_member(context.varattnos);
+
+	return true;
+}
+
+/*
+ * has_stats_of_kind
+ *	check that the list contains statistic of a given type
+ *
+ * Check for any stats with the required kind.
+ */
+static bool
+has_stats_of_kind(List *stats, char requiredkind)
+{
+	ListCell   *s;
+
+	foreach(s, stats)
+	{
+		StatisticExtInfo *stat = (StatisticExtInfo *) lfirst(s);
+
+		if (stat->kind == requiredkind)
+			return true;
+	}
+
+	return false;
 }
