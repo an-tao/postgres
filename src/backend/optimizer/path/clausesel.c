@@ -49,7 +49,6 @@ static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
 static bool clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum);
 static Bitmapset *collect_ext_attnums(List *clauses, Index relid);
 static int count_ext_attnums(List *clauses, Index relid);
-static bool get_singleton_varno(List *clauses, Index *relid);
 static StatisticExtInfo *choose_ext_statistics(List *stats,
 									Bitmapset *attnums, char requiredkind);
 static List *clauselist_ext_split(PlannerInfo *root, Index relid,
@@ -57,7 +56,8 @@ static List *clauselist_ext_split(PlannerInfo *root, Index relid,
 					StatisticExtInfo *stats);
 static Selectivity clauselist_ext_selectivity_deps(PlannerInfo *root,
 						Index relid, List *clauses, StatisticExtInfo *stats,
-						Index varRelid, JoinType jointype, SpecialJoinInfo *sjinfo);
+						Index varRelid, JoinType jointype,
+						SpecialJoinInfo *sjinfo, RelOptInfo *rel);
 static bool has_stats(List *stats, char requiredkind);
 
 
@@ -80,10 +80,9 @@ static bool has_stats(List *stats, char requiredkind);
  * probabilities, and in reality they are often NOT independent.  So,
  * we want to be smarter where we can.
  *
- * The first thing we try to do is applying extended statistics, in a way
- * that intends to minimize the overhead when there are no extended stats
- * on the relation. Thus we do several simple (and inexpensive) checks first,
- * to verify that suitable extended statistics exist.
+ * When 'tryextstats' is true, and 'rel' is not null, we'll try to apply
+ * selectivity estimates using any extended statistcs on 'rel'. Currently this
+ * is limited only to base relations with an rtekind of RTE_RELATION.
  *
  * If we identify such extended statistics apply, we try to apply them.
  * Currently we only have (soft) functional dependencies, so we try to reduce
@@ -123,12 +122,13 @@ clauselist_selectivity(PlannerInfo *root,
 					   List *clauses,
 					   int varRelid,
 					   JoinType jointype,
-					   SpecialJoinInfo *sjinfo)
+					   SpecialJoinInfo *sjinfo,
+					   RelOptInfo *rel,
+					   bool tryextstats)
 {
 	Selectivity s1 = 1.0;
 	RangeQueryClause *rqlist = NULL;
 	ListCell   *l;
-	Index		relid;
 
 	/*
 	 * If there's exactly one clause, then extended statistics is futile
@@ -137,20 +137,12 @@ clauselist_selectivity(PlannerInfo *root,
 	 */
 	if (list_length(clauses) == 1)
 		return clause_selectivity(root, (Node *) linitial(clauses),
-								  varRelid, jointype, sjinfo);
+							  varRelid, jointype, sjinfo, rel, tryextstats);
 
-	/*
-	 * To fetch the statistics, we first need to determine the rel. Currently
-	 * we only support estimates of simple restrictions referencing a single
-	 * baserel (no join statistics). However set_baserel_size_estimates() sets
-	 * varRelid=0 so we have to actually inspect the clauses by pull_varnos
-	 * and see if there's just a single varno referenced.
-	 */
-	if (get_singleton_varno(clauses, &relid) &&
-		(varRelid == 0 || varRelid == relid))
+	if (tryextstats && rel && rel->rtekind == RTE_RELATION)
 	{
-		RelOptInfo *rel = find_base_rel(root, relid);
 		List	   *stats = rel->statlist;
+		Index		relid = rel->relid;
 
 		/*
 		 * Check that there are extended statistics usable for selectivity
@@ -194,7 +186,7 @@ clauselist_selectivity(PlannerInfo *root,
 
 				/* compute the extended stats (dependencies) */
 				s1 *= clauselist_ext_selectivity_deps(root, relid, mvclauses, stat,
-													 varRelid, jointype, sjinfo);
+													 varRelid, jointype, sjinfo, rel);
 			}
 		}
 	}
@@ -211,7 +203,8 @@ clauselist_selectivity(PlannerInfo *root,
 		Selectivity s2;
 
 		/* Always compute the selectivity using clause_selectivity */
-		s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo);
+		s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo, rel,
+								tryextstats);
 
 		/*
 		 * Check for being passed a RestrictInfo.
@@ -576,7 +569,9 @@ clause_selectivity(PlannerInfo *root,
 				   Node *clause,
 				   int varRelid,
 				   JoinType jointype,
-				   SpecialJoinInfo *sjinfo)
+				   SpecialJoinInfo *sjinfo,
+				   RelOptInfo *rel,
+				   bool tryextstats)
 {
 	Selectivity s1 = 0.5;		/* default for any unhandled clause type */
 	RestrictInfo *rinfo = NULL;
@@ -696,7 +691,9 @@ clause_selectivity(PlannerInfo *root,
 								  (Node *) get_notclausearg((Expr *) clause),
 									  varRelid,
 									  jointype,
-									  sjinfo);
+									  sjinfo,
+									  rel,
+									  tryextstats);
 	}
 	else if (and_clause(clause))
 	{
@@ -705,7 +702,9 @@ clause_selectivity(PlannerInfo *root,
 									((BoolExpr *) clause)->args,
 									varRelid,
 									jointype,
-									sjinfo);
+									sjinfo,
+									rel,
+									tryextstats);
 	}
 	else if (or_clause(clause))
 	{
@@ -724,7 +723,9 @@ clause_selectivity(PlannerInfo *root,
 												(Node *) lfirst(arg),
 												varRelid,
 												jointype,
-												sjinfo);
+												sjinfo,
+												rel,
+												tryextstats);
 
 			s1 = s1 + s2 - s1 * s2;
 		}
@@ -817,7 +818,9 @@ clause_selectivity(PlannerInfo *root,
 								(Node *) ((RelabelType *) clause)->arg,
 								varRelid,
 								jointype,
-								sjinfo);
+								sjinfo,
+								rel,
+								tryextstats);
 	}
 	else if (IsA(clause, CoerceToDomain))
 	{
@@ -826,7 +829,9 @@ clause_selectivity(PlannerInfo *root,
 								(Node *) ((CoerceToDomain *) clause)->arg,
 								varRelid,
 								jointype,
-								sjinfo);
+								sjinfo,
+								rel,
+								tryextstats);
 	}
 	else
 	{
@@ -944,7 +949,8 @@ static Selectivity
 clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
 								List *clauses, StatisticExtInfo *stats,
 								Index varRelid, JoinType jointype,
-								SpecialJoinInfo *sjinfo)
+								SpecialJoinInfo *sjinfo,
+								RelOptInfo *rel)
 {
 	ListCell	   *lc;
 	Selectivity		s1 = 1.0;
@@ -1027,7 +1033,8 @@ clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
 			 * Otherwise compute selectivity of the clause, and multiply it with
 			 * other clauses on the same attribute.
 			 */
-			s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo);
+			s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo,
+									rel, false);
 		}
 
 		/*
@@ -1049,7 +1056,8 @@ clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
 	{
 		Node   *clause = (Node *) lfirst(lc);
 
-		s1 *= clause_selectivity(root, clause, varRelid, jointype, sjinfo);
+		s1 *= clause_selectivity(root, clause, varRelid, jointype, sjinfo,
+								 rel, false);
 	}
 
 	return s1;
@@ -1118,31 +1126,6 @@ count_ext_attnums(List *clauses, Index relid)
 	bms_free(attnums);
 
 	return c;
-}
-
-/*
- * get_singleton_varno
- *		Returns true if clauses list contains only references to a single
- *		varno and sets 'relid' to that Varno, otherwise returns false.
- */
-static bool
-get_singleton_varno(List *clauses, Index *relid)
-{
-	Bitmapset  *varnos;
-	int rel;
-
-	varnos = pull_varnos((Node *) clauses);
-
-	if (bms_get_singleton_member(varnos, &rel))
-	{
-		*relid = rel;
-		bms_free(varnos);
-		return true;
-	}
-
-	bms_free(varnos);
-
-	return false;
 }
 
 /*
