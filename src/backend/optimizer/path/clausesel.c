@@ -46,23 +46,19 @@ typedef struct RangeQueryClause
 
 static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
 			   bool varonleft, bool isLTsel, Selectivity s2);
-
-#define		STATS_TYPE_FDEPS	0x01
-
 static bool clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum);
 static Bitmapset *collect_ext_attnums(List *clauses, Index relid);
 static int count_ext_attnums(List *clauses, Index relid);
 static bool get_singleton_varno(List *clauses, Index *relid);
-static StatisticExtInfo *choose_ext_statistics(List *stats, Bitmapset *attnums,
-											 int types);
+static StatisticExtInfo *choose_ext_statistics(List *stats,
+									Bitmapset *attnums, char requiredkind);
 static List *clauselist_ext_split(PlannerInfo *root, Index relid,
 					List *clauses, List **mvclauses,
-					StatisticExtInfo *stats, int types);
+					StatisticExtInfo *stats);
 static Selectivity clauselist_ext_selectivity_deps(PlannerInfo *root,
 						Index relid, List *clauses, StatisticExtInfo *stats,
 						Index varRelid, JoinType jointype, SpecialJoinInfo *sjinfo);
-static bool has_stats(List *stats, int type);
-static bool stats_type_matches(StatisticExtInfo *stat, int type);
+static bool has_stats(List *stats, char requiredkind);
 
 
 /****************************************************************************
@@ -173,7 +169,7 @@ clauselist_selectivity(PlannerInfo *root,
 		 * simply skip to estimation using the plain per-column stats.
 		 */
 		if (stats != NULL &&
-			has_stats(stats, STATS_TYPE_FDEPS) &&
+			has_stats(stats, STATS_EXT_DEPENDENCIES) &&
 			(count_ext_attnums(clauses, relid) >= 2))
 		{
 			StatisticExtInfo *stat;
@@ -183,7 +179,8 @@ clauselist_selectivity(PlannerInfo *root,
 			mvattnums = collect_ext_attnums(clauses, relid);
 
 			/* and search for the statistic covering the most attributes */
-			stat = choose_ext_statistics(stats, mvattnums, STATS_TYPE_FDEPS);
+			stat = choose_ext_statistics(stats, mvattnums,
+										 STATS_EXT_DEPENDENCIES);
 
 			if (stat != NULL)		/* we have a matching stats */
 			{
@@ -191,8 +188,8 @@ clauselist_selectivity(PlannerInfo *root,
 				List	   *mvclauses = NIL;
 
 				/* split the clauselist into regular and mv-clauses */
-				clauses = clauselist_ext_split(root, relid, clauses, &mvclauses,
-											   stat, STATS_TYPE_FDEPS);
+				clauses = clauselist_ext_split(root, relid, clauses,
+											&mvclauses, stat);
 
 				/* Empty list of clauses is a clear sign something went wrong. */
 				Assert(list_length(mvclauses));
@@ -1214,44 +1211,39 @@ count_attnums_covered_by_stats(StatisticExtInfo *info, Bitmapset *attnums)
  * 'dependencies' will probably work only with equality clauses.
  */
 static StatisticExtInfo *
-choose_ext_statistics(List *stats, Bitmapset *attnums, int types)
+choose_ext_statistics(List *stats, Bitmapset *attnums, char requiredkind)
 {
 	ListCell   *lc;
-
 	StatisticExtInfo *choice = NULL;
-
 	int			current_matches = 2;	/* goal #1: maximize */
 	int			current_dims = (STATS_MAX_DIMENSIONS + 1);	/* goal #2: minimize */
 
-	/*
-	 * Walk through the statistics (simple array with nmvstats elements) and
-	 * for each one count the referenced attributes (encoded in the 'attnums'
-	 * bitmap).
-	 */
 	foreach(lc, stats)
 	{
 		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
-
-		/* columns matching this statistics */
-		int			matches = 0;
-
-		/* size (number of dimensions) of this statistics */
-		int			numattrs = bms_num_members(info->keys);
+		int			matches;
+		int			numattrs;
 
 		/* skip statistics not matching any of the requested types */
-		if (! ((info->kind == STATS_EXT_DEPENDENCIES) && (STATS_TYPE_FDEPS & types)))
+		if (info->kind != requiredkind)
 			continue;
 
-		/* count columns covered by the statistics */
+		/* determine how many attributes of these stats can be matched to */
 		matches = count_attnums_covered_by_stats(info, attnums);
 
 		/*
-		 * Use this statistics when it increases the number of matched clauses
-		 * or when it matches the same number of attributes but is smaller
-		 * (in terms of number of attributes covered).
+		 * save the actual number of keys in the stats so that we can choose
+		 * the narrowest stats with the most matching keys.
 		 */
-		if ((matches > current_matches) ||
-			((matches == current_matches) && (current_dims > numattrs)))
+		numattrs = bms_num_members(info->keys);
+
+		/*
+		 * Use these statistics when it increases the number of matched clauses
+		 * or when it matches the same number of attributes but these stats
+		 * have fewer keys than any previous match.
+		 */
+		if (matches > current_matches ||
+			(matches == current_matches && current_dims > numattrs))
 		{
 			choice = info;
 			current_matches = matches;
@@ -1271,7 +1263,7 @@ choose_ext_statistics(List *stats, Bitmapset *attnums, int types)
 static List *
 clauselist_ext_split(PlannerInfo *root, Index relid,
 					List *clauses, List **mvclauses,
-					StatisticExtInfo *stats, int types)
+					StatisticExtInfo *stats)
 {
 	ListCell   *l;
 	List	   *non_mvclauses = NIL;
@@ -1456,24 +1448,11 @@ clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum)
 	return true;
 }
 
-
 /*
- * Check that the statistics matches at least one of the requested types.
+ * Check for any stats with the required kind
  */
 static bool
-stats_type_matches(StatisticExtInfo *stat, int type)
-{
-	if ((type & STATS_TYPE_FDEPS) && (stat->kind == STATS_EXT_DEPENDENCIES))
-		return true;
-
-	return false;
-}
-
-/*
- * Check that there are stats with at least one of the requested types.
- */
-static bool
-has_stats(List *stats, int type)
+has_stats(List *stats, char requiredkind)
 {
 	ListCell   *s;
 
@@ -1481,8 +1460,7 @@ has_stats(List *stats, int type)
 	{
 		StatisticExtInfo *stat = (StatisticExtInfo *) lfirst(s);
 
-		/* terminate if we've found at least one matching statistics */
-		if (stats_type_matches(stat, type))
+		if (stat->kind == requiredkind)
 			return true;
 	}
 
