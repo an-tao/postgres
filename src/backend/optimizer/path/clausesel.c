@@ -1263,7 +1263,7 @@ mv_compatible_walker(Node *node, mv_compatible_context *context)
 			return true;
 
 		/* check the clause inside the RestrictInfo */
-		return mv_compatible_walker((Node *) rinfo->clause, (void *) context);
+		return mv_compatible_walker((Node *) rinfo->clause, context);
 	}
 
 	if (IsA(node, Var))
@@ -1368,7 +1368,7 @@ clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum)
 	context.varno = relid;
 	context.varattnos = NULL;	/* no attnums */
 
-	if (mv_compatible_walker(clause, (void *) &context))
+	if (mv_compatible_walker(clause, &context))
 		return false;
 
 	/* remember the newly collected attnums */
