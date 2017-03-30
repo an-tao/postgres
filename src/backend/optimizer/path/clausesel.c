@@ -46,17 +46,22 @@ typedef struct RangeQueryClause
 
 static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
 			   bool varonleft, bool isLTsel, Selectivity s2);
-static bool clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum);
+static MVDependency *find_strongest_dependency(StatisticExtInfo *stats,
+											   MVDependencies *dependencies,
+											   Bitmapset *attnums);
+static Selectivity clauselist_ext_selectivity_deps(PlannerInfo *root, Index relid,
+								List *clauses, StatisticExtInfo *stats,
+								Index varRelid, JoinType jointype,
+								SpecialJoinInfo *sjinfo,
+								RelOptInfo *rel);
 static Bitmapset *collect_ext_attnums(List *clauses, Index relid);
-static StatisticExtInfo *choose_ext_statistics(List *stats,
-									Bitmapset *attnums, char requiredkind);
+static int count_attnums_covered_by_stats(StatisticExtInfo *info, Bitmapset *attnums);
+static StatisticExtInfo *choose_ext_statistics(List *stats, Bitmapset *attnums, char requiredkind);
 static List *clauselist_ext_split(PlannerInfo *root, Index relid,
 					List *clauses, List **mvclauses,
 					StatisticExtInfo *stats);
-static Selectivity clauselist_ext_selectivity_deps(PlannerInfo *root,
-						Index relid, List *clauses, StatisticExtInfo *stats,
-						Index varRelid, JoinType jointype,
-						SpecialJoinInfo *sjinfo, RelOptInfo *rel);
+//static bool mv_compatible_walker(Node *node, mv_compatible_context *context);
+static bool clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum);
 static bool has_stats_of_kind(List *stats, char requiredkind);
 
 
