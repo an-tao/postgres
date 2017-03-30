@@ -1136,14 +1136,22 @@ get_singleton_varno(List *clauses, Index *relid)
 	return false;
 }
 
+/*
+ * count_attnums_covered_by_stats
+ *		return the number of 'attnums' matched to this extended statistics
+ *		object
+ */
 static int
 count_attnums_covered_by_stats(StatisticExtInfo *info, Bitmapset *attnums)
 {
 	Bitmapset *covered;
+	int ncovered;
 
 	covered = bms_intersect(attnums, info->keys);
+	ncovered = bms_num_members(covered);
+	bms_free(covered);
 
-	return bms_num_members(covered);
+	return ncovered;
 }
 
 /*
