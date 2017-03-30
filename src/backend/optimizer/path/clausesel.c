@@ -48,7 +48,6 @@ static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
 			   bool varonleft, bool isLTsel, Selectivity s2);
 static bool clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum);
 static Bitmapset *collect_ext_attnums(List *clauses, Index relid);
-static int count_ext_attnums(List *clauses, Index relid);
 static StatisticExtInfo *choose_ext_statistics(List *stats,
 									Bitmapset *attnums, char requiredkind);
 static List *clauselist_ext_split(PlannerInfo *root, Index relid,
@@ -139,37 +138,34 @@ clauselist_selectivity(PlannerInfo *root,
 		return clause_selectivity(root, (Node *) linitial(clauses),
 							  varRelid, jointype, sjinfo, rel, tryextstats);
 
-	if (tryextstats && rel && rel->rtekind == RTE_RELATION)
+	/*
+	 * Check for common reasons where we can't apply multivariate dependency
+	 * statistics. We want to be as cheap as possible here as most likely
+	 * we'll not be using multivariate statistics in most cases.
+	 */
+	if (tryextstats && rel && rel->rtekind == RTE_RELATION &&
+		rel->statlist != NIL &&
+		has_stats_of_kind(rel->statlist, STATS_EXT_DEPENDENCIES))
 	{
-		List	   *stats = rel->statlist;
 		Index		relid = rel->relid;
+		Bitmapset  *mvattnums;
 
 		/*
-		 * Check that there are extended statistics usable for selectivity
-		 * estimation, i.e. anything except ndistinct coefficients.
-		 *
-		 * Also check the number of attributes in clauses that might be
-		 * estimated using those statistics, and that there are at least two
-		 * such attributes.  It may easily happen that we won't be able to
-		 * estimate the clauses using the extended statistics anyway, but that
-		 * requires a more expensive check to verify (so the check should be
-		 * worth it).
-		 *
-		 * If there are no such stats or not enough attributes, don't waste time
-		 * simply skip to estimation using the plain per-column stats.
+		 * Now that we've validated that we actually have some multivariate
+		 * statistics, we'll want to check that the clauses reference more
+		 * than a single column.
 		 */
-		if (stats != NULL &&
-			has_stats_of_kind(stats, STATS_EXT_DEPENDENCIES) &&
-			(count_ext_attnums(clauses, relid) >= 2))
+
+		/* extract all of the attribute attnums into a bitmap set. */
+		mvattnums = collect_ext_attnums(clauses, relid);
+
+		/* we can't do anything with mv stats unless we got two or more */
+		if (bms_num_members(mvattnums) >= 2)
 		{
 			StatisticExtInfo *stat;
-			Bitmapset  *mvattnums;
-
-			/* collect attributes from the compatible conditions */
-			mvattnums = collect_ext_attnums(clauses, relid);
 
 			/* and search for the statistic covering the most attributes */
-			stat = choose_ext_statistics(stats, mvattnums,
+			stat = choose_ext_statistics(rel->statlist, mvattnums,
 										 STATS_EXT_DEPENDENCIES);
 
 			if (stat != NULL)		/* we have a matching stats */
@@ -1109,23 +1105,6 @@ collect_ext_attnums(List *clauses, Index relid)
 	}
 
 	return attnums;
-}
-
-/*
- * count_ext_attnums
- *		count attributes in clauses compatible with extended stats
- */
-static int
-count_ext_attnums(List *clauses, Index relid)
-{
-	int			c;
-	Bitmapset  *attnums = collect_ext_attnums(clauses, relid);
-
-	c = bms_num_members(attnums);
-
-	bms_free(attnums);
-
-	return c;
 }
 
 /*
