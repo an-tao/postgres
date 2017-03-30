@@ -1154,7 +1154,7 @@ choose_ext_statistics(List *stats, Bitmapset *attnums, char requiredkind)
 		int			matches;
 		int			numattrs;
 
-		/* skip statistics not matching any of the requested types */
+		/* skip statistics that are not the correct type */
 		if (info->kind != requiredkind)
 			continue;
 
