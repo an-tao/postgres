@@ -58,7 +58,7 @@ static Selectivity clauselist_ext_selectivity_deps(PlannerInfo *root,
 						Index relid, List *clauses, StatisticExtInfo *stats,
 						Index varRelid, JoinType jointype,
 						SpecialJoinInfo *sjinfo, RelOptInfo *rel);
-static bool has_stats(List *stats, char requiredkind);
+static bool has_stats_of_kind(List *stats, char requiredkind);
 
 
 /****************************************************************************
@@ -159,7 +159,7 @@ clauselist_selectivity(PlannerInfo *root,
 		 * simply skip to estimation using the plain per-column stats.
 		 */
 		if (stats != NULL &&
-			has_stats(stats, STATS_EXT_DEPENDENCIES) &&
+			has_stats_of_kind(stats, STATS_EXT_DEPENDENCIES) &&
 			(count_ext_attnums(clauses, relid) >= 2))
 		{
 			StatisticExtInfo *stat;
@@ -1394,13 +1394,13 @@ clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum)
 }
 
 /*
- * has_stats
+ * has_stats_of_kind
  *	check that the list contains statistic of a given type
  *
  * Check for any stats with the required kind.
  */
 static bool
-has_stats(List *stats, char requiredkind)
+has_stats_of_kind(List *stats, char requiredkind)
 {
 	ListCell   *s;
 
