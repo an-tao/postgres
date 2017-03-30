@@ -82,38 +82,6 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 		stats = lookup_var_attr_stats(onerel, stat->columns,
 									  natts, vacattrstats);
 
-		/*
-		 * XXX We only get one NULL and so don't know which columns have no
-		 * statistics, so we can't show a more detailed hint.
-		 */
-		if (!stats)
-		{
-			char	   *nsp;
-			HeapTuple	statexttup;
-			Form_pg_statistic_ext	statextrec;
-
-			statexttup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(stat->statOid));
-
-			if (!HeapTupleIsValid(statexttup))
-				elog(ERROR, "cache lookup failed for extended statistics %u", stat->statOid);
-
-			statextrec = (Form_pg_statistic_ext) GETSTRUCT(statexttup);
-
-			nsp = get_namespace_name(statextrec->stanamespace);
-
-			ereport(WARNING,
-				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-				errmsg("extended statistics %s on relation %s.%s could not be collected",
-						quote_qualified_identifier(nsp, NameStr(statextrec->staname)),
-						get_namespace_name(onerel->rd_rel->relnamespace),
-						RelationGetRelationName(onerel))));
-
-			ReleaseSysCache(statexttup);
-
-			/* proceed to build the next statistics */
-			continue;
-		}
-
 		/* check allowed number of dimensions */
 		Assert(bms_num_members(stat->columns) >= 2 &&
 			   bms_num_members(stat->columns) <= STATS_MAX_DIMENSIONS);
@@ -235,9 +203,6 @@ fetch_statentries_for_relation(Relation pg_statext, Oid relid)
  * Using 'vacattrstats' of size 'natts' as input data, return a newly built
  * VacAttrStats array which includes only the items corresponding to attributes
  * indicated by 'attrs'.
- *
- * If statistics for some of the columns are not available, the function
- * returns NULL, informing the caller not to do anything.
  */
 static VacAttrStats **
 lookup_var_attr_stats(Relation rel, Bitmapset *attrs, int natts,
@@ -266,18 +231,17 @@ lookup_var_attr_stats(Relation rel, Bitmapset *attrs, int natts,
 			}
 		}
 
-		/*
-		 * If we don't find VacAttrStats for a given attribute, it means
-		 * either the statistics target was set to 0 for that column, or
-		 * that we're doing ANALYZE t (a,b,c) missing some attributes.
-		 * In that case we simply return NULL, so that the caller knows
-		 * not to build this statistics.
-		 */
 		if (!stats[i])
-		{
-			pfree(stats);
-			return NULL;
-		}
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					 errmsg("extended statistics could not be collected for column \"%s\" of relation %s.%s",
+							NameStr(RelationGetDescr(rel)->attrs[x - 1]->attname),
+							get_namespace_name(rel->rd_rel->relnamespace),
+							RelationGetRelationName(rel)),
+					 errhint("Consider ALTER TABLE \"%s\".\"%s\" ALTER \"%s\" SET STATISTICS -1",
+							 get_namespace_name(rel->rd_rel->relnamespace),
+							 RelationGetRelationName(rel),
+							 NameStr(RelationGetDescr(rel)->attrs[x - 1]->attname))));
 
 		/*
 		 * Check that we found a non-dropped column and that the attnum
