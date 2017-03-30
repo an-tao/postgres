@@ -60,7 +60,6 @@ static StatisticExtInfo *choose_ext_statistics(List *stats, Bitmapset *attnums, 
 static List *clauselist_ext_split(PlannerInfo *root, Index relid,
 					List *clauses, List **mvclauses,
 					StatisticExtInfo *stats);
-//static bool mv_compatible_walker(Node *node, mv_compatible_context *context);
 static bool clause_is_ext_compatible(Node *clause, Index relid, AttrNumber *attnum);
 static bool has_stats_of_kind(List *stats, char requiredkind);
 
