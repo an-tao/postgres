@@ -1205,26 +1205,17 @@ clauselist_ext_split(PlannerInfo *root, Index relid,
 
 	foreach(l, clauses)
 	{
-		bool		match = false;		/* by default not mv-compatible */
 		AttrNumber	attnum = InvalidAttrNumber;
 		Node	   *clause = (Node *) lfirst(l);
 
 		if (clause_is_ext_compatible(clause, relid, &attnum))
 		{
-			/* are all the attributes part of the selected stats? */
+			/* is the attribute included in stats? */
 			if (bms_is_member(attnum, stats->keys))
-				match = true;
+				*mvclauses = lappend(*mvclauses, clause);
+			else
+				non_mvclauses = lappend(non_mvclauses, clause);
 		}
-
-		/*
-		 * The clause matches the selected stats, so put it to the list of
-		 * mv-compatible clauses. Otherwise, keep it in the list of 'regular'
-		 * clauses (that may be selected later).
-		 */
-		if (match)
-			*mvclauses = lappend(*mvclauses, clause);
-		else
-			non_mvclauses = lappend(non_mvclauses, clause);
 	}
 
 	/*
