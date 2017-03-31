@@ -56,27 +56,26 @@ clauses as 'conditions' into the deeper parts of the expression tree.
 Selectivity estimation
 ----------------------
 
-When estimating selectivity, we aim to achieve several things:
+Throughout the planner clauselist_selectivity() still remains in charge of
+most selectivity estimate requests. clauselist_selectivity() can be instructed
+to try to make use of any extended statistics on the given RelOptInfo, which
+it will do, if:
 
-    (a) maximize the estimate accuracy
+    (a) An actual valid RelOptInfo was given. Join relations are passed in as
+        NULL, therefore are invalid.
 
-    (b) minimize the overhead, especially when no suitable extended statistics
-        exist (so if you are not using extended stats, there's no overhead)
+    (b) The relation given actually has any extended statistics defined which
+        are actually built.
 
-This clauselist_selectivity() performs several inexpensive checks first, before
-even attempting to do the more expensive estimation.
+    (c) tryextstats is True.
 
-    (1) check if there are extended stats on the relation
-
-    (2) check there are at least two attributes referenced by clauses compatible
-        with extended statistics (equality clauses for func. dependencies)
-
-    (3) perform reduction of equality clauses using func. dependencies
-
-    (4) estimate the reduced list of clauses using regular statistics
-
-Whenever we find there are no suitable stats, we skip the expensive steps.
-
+When the above conditions are met, clauselist_selectivity() first attempts to
+pass the clause list off to the extended statistics selectivity estimation
+function. This functions may not find any clauses which is can perform any
+estimations on. In such cases these clauses are simply ignored. When actual
+estimation work is performed in these functions they're expected to mark which
+clauses they've performed estimations for so that any other function
+performing estimations knows which clauses are to be skipped.
 
 Size of sample in ANALYZE
 -------------------------

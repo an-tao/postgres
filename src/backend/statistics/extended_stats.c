@@ -405,3 +405,82 @@ multi_sort_compare_dims(int start, int end,
 
 	return 0;
 }
+
+/*
+ * has_stats_of_kind
+ *	check that the list contains statistic of a given type
+ *
+ * Check for any stats with the required kind.
+ */
+bool
+has_stats_of_kind(List *stats, char requiredkind)
+{
+	ListCell   *l;
+
+	foreach(l, stats)
+	{
+		StatisticExtInfo *stat = (StatisticExtInfo *) lfirst(l);
+
+		if (stat->kind == requiredkind)
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * We're looking for statistics matching at least two attributes, referenced
+ * in clauses compatible with extended statistics. The current selection
+ * criteria is very simple - we choose the statistics referencing the most
+ * attributes.
+ *
+ * In cases where there are multiple statistics referencing the same number of
+ * attributes, the statistics with the least keys wins.  The reason for this
+ * is that we deem the smaller statistics to be more accurate.
+ */
+StatisticExtInfo *
+choose_best_statistics(List *stats, Bitmapset *attnums, char requiredkind)
+{
+	ListCell   *lc;
+	StatisticExtInfo *best_match = NULL;
+	int			best_num_matched = 2;	/* goal #1: maximize */
+	int			best_match_keys = (STATS_MAX_DIMENSIONS + 1);	/* goal #2: minimize */
+
+	foreach(lc, stats)
+	{
+		StatisticExtInfo *info = (StatisticExtInfo *) lfirst(lc);
+		int			num_matched;
+		int			numkeys;
+		Bitmapset  *matched;
+
+		/* skip statistics that are not the correct type */
+		if (info->kind != requiredkind)
+			continue;
+
+		/* determine how many attributes of these stats can be matched to */
+		matched = bms_intersect(attnums, info->keys);
+		num_matched = bms_num_members(matched);
+		bms_free(matched);
+
+		/*
+		 * save the actual number of keys in the stats so that we can choose
+		 * the narrowest stats with the most matching keys.
+		 */
+		numkeys = bms_num_members(info->keys);
+
+		/*
+		 * Use these statistics when it increases the number of matched clauses
+		 * or when it matches the same number of attributes but these stats
+		 * have fewer keys than any previous match.
+		 */
+		if (num_matched > best_num_matched ||
+			(num_matched == best_num_matched && best_match_keys > numkeys))
+		{
+			best_match = info;
+			best_num_matched = num_matched;
+			best_match_keys = numkeys;
+		}
+	}
+
+	return best_match;
+}

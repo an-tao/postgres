@@ -14,11 +14,19 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/sysattr.h"
+#include "catalog/pg_operator.h"
 #include "catalog/pg_statistic_ext.h"
 #include "lib/stringinfo.h"
+#include "optimizer/clauses.h"
+#include "optimizer/cost.h"
+#include "optimizer/var.h"
+#include "nodes/nodes.h"
+#include "nodes/relation.h"
 #include "statistics/extended_stats_internal.h"
 #include "statistics/statistics.h"
 #include "utils/bytea.h"
+#include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
@@ -39,6 +47,28 @@ typedef struct DependencyGeneratorData
 } DependencyGeneratorData;
 
 typedef DependencyGeneratorData *DependencyGenerator;
+
+typedef struct
+{
+	Index		varno;			/* relid we're interested in */
+	Bitmapset  *varattnos;		/* attnums referenced by the clauses */
+} dependency_compatible_context;
+
+static void generate_dependencies_recurse(DependencyGenerator state,
+							int index, AttrNumber start, AttrNumber *current);
+static void generate_dependencies(DependencyGenerator state);
+static DependencyGenerator DependencyGenerator_init(int n, int k);
+static void DependencyGenerator_free(DependencyGenerator state);
+static AttrNumber *DependencyGenerator_next(DependencyGenerator state);
+static double dependency_degree(int numrows, HeapTuple *rows, int k,
+			AttrNumber *dependency, VacAttrStats **stats, Bitmapset *attrs);
+static bool dependency_compatible_walker(Node *node,
+										 dependency_compatible_context *context);
+static bool dependency_compatible_clause(Node *clause, Index relid,
+										 AttrNumber *attnum);
+static MVDependency *find_strongest_dependency(StatisticExtInfo *stats,
+											   MVDependencies *dependencies,
+											   Bitmapset *attnums);
 
 static void
 generate_dependencies_recurse(DependencyGenerator state, int index,
@@ -727,4 +757,378 @@ Datum
 pg_dependencies_send(PG_FUNCTION_ARGS)
 {
 	return byteasend(fcinfo);
+}
+
+/*
+ * Recursive walker that checks compatibility of the clause with extended
+ * statistics, and collects attnums from the Vars.
+ */
+static bool
+dependency_compatible_walker(Node *node,
+							 dependency_compatible_context *context)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, RestrictInfo))
+	{
+		RestrictInfo *rinfo = (RestrictInfo *) node;
+
+		/* Pseudoconstants are not really interesting here. */
+		if (rinfo->pseudoconstant)
+			return true;
+
+		/* clauses referencing multiple varnos are incompatible */
+		if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
+			return true;
+
+		/* check the clause inside the RestrictInfo */
+		return dependency_compatible_walker((Node *) rinfo->clause, context);
+	}
+
+	if (IsA(node, Var))
+	{
+		Var		   *var = (Var *) node;
+
+		/*
+		 * Also, the variable needs to reference the right relid (this might
+		 * be unnecessary given the other checks, but let's be sure).
+		 */
+		if (var->varno != context->varno)
+			return true;
+
+		/* we also better ensure the var is from the current level */
+		if (var->varlevelsup > 0)
+			return true;
+
+		/* Also skip system attributes (we don't allow stats on those). */
+		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
+			return true;
+
+		/* Seems fine, so let's remember the attnum. */
+		context->varattnos = bms_add_member(context->varattnos, var->varattno);
+
+		return false;
+	}
+
+	/*
+	 * And finally the operator expressions - we only allow simple expressions
+	 * with two arguments, where one is a Var and the other is a constant, and
+	 * it's a simple comparison (which we detect using estimator function).
+	 */
+	if (is_opclause(node))
+	{
+		OpExpr	   *expr = (OpExpr *) node;
+		Var		   *var;
+		bool		varonleft = true;
+		bool		ok;
+
+		/* Only expressions with two arguments are considered compatible. */
+		if (list_length(expr->args) != 2)
+			return true;
+
+		/* see if it actually has the right */
+		ok = (NumRelids((Node *) expr) == 1) &&
+			(is_pseudo_constant_clause(lsecond(expr->args)) ||
+			 (varonleft = false,
+			  is_pseudo_constant_clause(linitial(expr->args))));
+
+		/* unsupported structure (two variables or so) */
+		if (!ok)
+			return true;
+
+		/*
+		 * If it's not "=" operator, just ignore the clause, as it's not
+		 * compatible with functinal dependencies. Otherwise note the relid
+		 * and attnum for the variable.
+		 *
+		 * This uses the function for estimating selectivity, not the operator
+		 * directly (a bit awkward, but well ...).
+		 */
+		if (get_oprrest(expr->opno) != F_EQSEL)
+			return true;
+
+		var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
+
+		return dependency_compatible_walker((Node *) var, context);
+	}
+
+	/* Node not explicitly supported, so terminate */
+	return true;
+}
+
+/*
+ * dependency_compatible_clause
+ *		Determines if the clause is compatible with functional dependencies
+ *
+ * Only OpExprs with two arguments using an equality operator are supported.
+ * When returning True attnum is set to the attribute number of the Var within
+ * the supported clause.
+ *
+ * Currently we only support Var = Const, or Const = Var. It may be possible
+ * to expand on this later.
+ */
+static bool
+dependency_compatible_clause(Node *clause, Index relid, AttrNumber *attnum)
+{
+	dependency_compatible_context context;
+
+	context.varno = relid;
+	context.varattnos = NULL;	/* no attnums */
+
+	if (dependency_compatible_walker(clause, &context))
+		return false;
+
+	/* remember the newly collected attnums */
+	*attnum = bms_singleton_member(context.varattnos);
+
+	return true;
+}
+
+/*
+ * find_strongest_dependency
+ *		find the strongest dependency on the attributes
+ *
+ * When applying functional dependencies, we start with the strongest
+ * dependencies. That is, we select the dependency that:
+ *
+ * (a) has all attributes covered by equality clauses
+ *
+ * (b) has the most attributes
+ *
+ * (c) has the highest degree of validity
+ *
+ * This guarantees that we eliminate the most redundant conditions first
+ * (see the comment at clauselist_ext_selectivity_deps).
+ */
+static MVDependency *
+find_strongest_dependency(StatisticExtInfo *stats, MVDependencies *dependencies,
+						  Bitmapset *attnums)
+{
+	int i;
+	MVDependency *strongest = NULL;
+
+	/* number of attnums in clauses */
+	int nattnums = bms_num_members(attnums);
+
+	/*
+	 * Iterate over the MVDependency items and find the strongest one from
+	 * the fully-matched dependencies. We do the cheap checks first, before
+	 * matching it against the attnums.
+	 */
+	for (i = 0; i < dependencies->ndeps; i++)
+	{
+		MVDependency   *dependency = dependencies->deps[i];
+
+		/*
+		 * Skip dependencies referencing more attributes than available clauses,
+		 * as those can't be fully matched.
+		 */
+		if (dependency->nattributes > nattnums)
+			continue;
+
+		if (strongest)
+		{
+			/* skip dependencies on fewer attributes than the strongest. */
+			if (dependency->nattributes < strongest->nattributes)
+				continue;
+
+			/* also skip weaker dependencies when attribute count matches */
+			if (strongest->nattributes == dependency->nattributes &&
+				strongest->degree > dependency->degree)
+				continue;
+		}
+
+		/*
+		 * this dependency is stronger, but we must still check that it's
+		 * fully matched to these attnums. We perform this check last as it's
+		 * slightly more expensive than the previous checks.
+		 */
+		if (dependency_is_fully_matched(dependency, attnums))
+			strongest = dependency;					/* save new best match */
+	}
+
+	return strongest;
+}
+
+/*
+ * dependencies_clauselist_selectivity
+ *		Attempt to estimate selectivity using functional dependency statistics
+ *
+ * Given equality clauses on attributes (a,b) we find the strongest dependency
+ * between them, i.e. either (a=>b) or (b=>a). Assuming (a=>b) is the selected
+ * dependency, we then combine the per-clause selectivities using the formula
+ *
+ *     P(a,b) = P(a) * [f + (1-f)*P(b)]
+ *
+ * where 'f' is the degree of the dependency.
+ *
+ * With clauses on more than two attributes, the dependencies are applied
+ * recursively, starting with the widest/strongest dependencies. For example
+ * P(a,b,c) is first split like this:
+ *
+ *     P(a,b,c) = P(a,b) * [f + (1-f)*P(c)]
+ *
+ * assuming (a,b=>c) is the strongest dependency.
+ */
+Selectivity
+dependencies_clauselist_selectivity(PlannerInfo *root,
+					   List *clauses,
+					   Selectivity s1,
+					   int varRelid,
+					   JoinType jointype,
+					   SpecialJoinInfo *sjinfo,
+					   RelOptInfo *rel,
+					   Bitmapset **estimatedclauses)
+{
+	ListCell		   *l;
+	Bitmapset		   *clauses_attnums = NULL;
+	StatisticExtInfo   *stat;
+	MVDependencies	   *dependencies;
+	AttrNumber		   *list_attnums;
+	int					listidx;
+
+
+	/* check if there's any stats that might be useful for us. */
+	if (!has_stats_of_kind(rel->statlist, STATS_EXT_DEPENDENCIES))
+		return 1.0;
+
+	list_attnums = (AttrNumber *) palloc(sizeof(AttrNumber) *
+										 list_length(clauses));
+
+	/*
+	 * Pre-process the clauses list to extract the attnums seen in each item.
+	 * We need to determine if there's any clauses which will be useful for
+	 * dependency selectivity estimations. Along the way we'll record all of
+	 * the attnums for each clause in a list which we'll reference later so we
+	 * don't need to repeat the same work again. We'll also keep track of all
+	 * attnums seen. This is only so we can reject the whole list, if we
+	 * happen to not find at least two distinct attnums, which will, of course
+	 * be useless to a multivariate statistics object.
+	 */
+	listidx = 0;
+	foreach(l, clauses)
+	{
+		Node	   *clause = (Node *) lfirst(l);
+		AttrNumber	attnum;
+
+		if (dependency_compatible_clause(clause, rel->relid, &attnum))
+		{
+			list_attnums[listidx] = attnum;
+			clauses_attnums = bms_add_member(clauses_attnums, attnum);
+		}
+		else
+			list_attnums[listidx] = InvalidAttrNumber;
+
+		listidx++;
+	}
+
+	/*
+	 * If there's not at least two distinct attnums then reject the whole
+	 * list of clauses. We must return 1.0 so the calling function's
+	 * selectivity is unaffected.
+	 */
+	if (bms_num_members(clauses_attnums) < 2)
+	{
+		pfree(list_attnums);
+		return 1.0;
+	}
+
+	/* find the best suited statistics for these attnums */
+	stat = choose_best_statistics(rel->statlist, clauses_attnums,
+										 STATS_EXT_DEPENDENCIES);
+
+	/* if no matching stats could be found then we've nothing to do */
+	if (!stat)
+	{
+		pfree(list_attnums);
+		return 1.0;
+	}
+
+	/* load the dependency items stored in the statistics */
+	dependencies = staext_dependencies_load(stat->statOid);
+
+	/*
+	 * Apply the dependencies recursively, starting with the widest/strongest
+	 * ones, and proceeding to the smaller/weaker ones. At the end of each
+	 * round we factor in the selectivity of clauses on the implied attribute,
+	 * and remove the clauses from the list.
+	 */
+	while (true)
+	{
+		Selectivity		s2 = 1.0;
+		MVDependency   *dependency;
+
+		/* the widest/strongest dependency, fully matched by clauses */
+		dependency = find_strongest_dependency(stat, dependencies,
+											   clauses_attnums);
+
+		/* if no suitable dependency was found, we're done */
+		if (!dependency)
+			break;
+
+		/*
+		 * We found an applicable dependency, so find all the clauses on the
+		 * implied attribute - with dependency (a,b => c) we look for
+		 * clauses on 'c'.
+		 */
+		listidx = -1;
+		foreach(l, clauses)
+		{
+			Node	   *clause;
+
+			listidx++;
+
+			/*
+			 * Skip incompatible clauses, and ones we've already estimated on.
+			 */
+			if (list_attnums[listidx] == InvalidAttrNumber ||
+				bms_is_member(listidx, *estimatedclauses))
+				continue;
+
+			/*
+			 * Technically we could find more than one clause for a given attnum.
+			 * Since these clauses must be equality clauses, we choose to only
+			 * take the selectivity estimate from the final clause in the list
+			 * for this attnum. If the attnum happens to be compared to a
+			 * different Const in another clause then no rows will match
+			 * anyway. If it happens to be compared to the same Const, then
+			 * ignoring the additional clause is just the thing to do.
+			 */
+			if (dependency_implies_attribute(dependency,
+				list_attnums[listidx]))
+			{
+				clause = (Node *) lfirst(l);
+
+				s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo,
+										rel, false);
+
+				/* mark this one as done, so we don't touch it again. */
+				*estimatedclauses = bms_add_member(*estimatedclauses, listidx);
+
+				/*
+				 * Mark that we've got and used the dependency on this clause.
+				 * We'll want to ignore this when looking for the next
+				 * strongest dependency above.
+				 */
+				clauses_attnums = bms_del_member(clauses_attnums,
+												 list_attnums[listidx]);
+			}
+		}
+
+		/*
+		 * Now factor in the selectivity for all the "implied" clauses into the
+		 * final one, using this formula:
+		 *
+		 *     P(a,b) = P(a) * (f + (1-f) * P(b))
+		 *
+		 * where 'f' is the degree of validity of the dependency.
+		*/
+		s1 *= (dependency->degree + (1 - dependency->degree) * s2);
+	}
+
+	pfree(dependencies);
+	pfree(list_attnums);
+
+	return s1;
 }

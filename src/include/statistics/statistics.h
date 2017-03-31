@@ -14,6 +14,7 @@
 #define STATISTICS_H
 
 #include "commands/vacuum.h"
+#include "nodes/relation.h"
 
 #define STATS_MAX_DIMENSIONS	8		/* max number of attributes */
 
@@ -88,5 +89,16 @@ extern void BuildRelationExtStatistics(Relation onerel, double totalrows,
 						   int numrows, HeapTuple *rows,
 						   int natts, VacAttrStats **vacattrstats);
 extern bool statext_is_kind_built(HeapTuple htup, char kind);
+extern Selectivity dependencies_clauselist_selectivity(PlannerInfo *root,
+					   List *clauses,
+					   Selectivity s1,
+					   int varRelid,
+					   JoinType jointype,
+					   SpecialJoinInfo *sjinfo,
+					   RelOptInfo *rel,
+					   Bitmapset **estimatedclauses);
+extern bool has_stats_of_kind(List *stats, char requiredkind);
+extern StatisticExtInfo *choose_best_statistics(List *stats,
+									Bitmapset *attnums, char requiredkind);
 
 #endif   /* STATISTICS_H */
