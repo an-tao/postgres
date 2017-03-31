@@ -1269,6 +1269,10 @@ mv_compatible_walker(Node *node, mv_compatible_context *context)
 		if (var->varno != context->varno)
 			return true;
 
+		/* we also better ensure the var is from the current level */
+		if (var->varlevelsup > 0)
+			return true;
+
 		/* Also skip system attributes (we don't allow stats on those). */
 		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
 			return true;
