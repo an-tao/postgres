@@ -903,23 +903,25 @@ find_strongest_dependency(StatisticExtInfo *stats, MVDependencies *dependencies,
 		if (dependency->nattributes > nattnums)
 			continue;
 
-		/* We can skip dependencies on fewer attributes than the best one. */
-		if (strongest && (strongest->nattributes > dependency->nattributes))
-			continue;
+		if (strongest)
+		{
+			/* skip dependencies on fewer attributes than the strongest. */
+			if (dependency->nattributes < strongest->nattributes)
+				continue;
 
-		/* And also weaker dependencies on the same number of attributes. */
-		if (strongest &&
-			(strongest->nattributes == dependency->nattributes) &&
-			(strongest->degree > dependency->degree))
-			continue;
+			/* also skip weaker dependencies when attribute count matches */
+			if (strongest->nattributes == dependency->nattributes &&
+				strongest->degree > dependency->degree)
+				continue;
+		}
 
 		/*
-		 * Check if the depdendency is full matched to the attnums. If so we
-		 * can save it as the strongest match, since we rejected any weaker
-		 * matches above.
+		 * this dependency is stronger, but we must still check that it's
+		 * fully matched to these attnums. We perform this check last as it's
+		 * slightly more expensive than the previous checks.
 		 */
 		if (dependency_is_fully_matched(dependency, attnums))
-			strongest = dependency;
+			strongest = dependency;					/* save new best match */
 	}
 
 	return strongest;
