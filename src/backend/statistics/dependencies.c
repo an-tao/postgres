@@ -39,12 +39,12 @@
  */
 typedef struct DependencyGeneratorData
 {
-	int				k;				/* size of the dependency */
-	int				n;				/* number of possible attributes */
-	int				current;		/* next dependency to return (index) */
-	AttrNumber		ndependencies;	/* number of dependencies generated */
-	AttrNumber	   *dependencies;	/* array of pre-generated dependencies  */
-} DependencyGeneratorData;
+	int			k;				/* size of the dependency */
+	int			n;				/* number of possible attributes */
+	int			current;		/* next dependency to return (index) */
+	AttrNumber	ndependencies;	/* number of dependencies generated */
+	AttrNumber *dependencies;	/* array of pre-generated dependencies	*/
+}	DependencyGeneratorData;
 
 typedef DependencyGeneratorData *DependencyGenerator;
 
@@ -52,31 +52,31 @@ typedef struct
 {
 	Index		varno;			/* relid we're interested in */
 	Bitmapset  *varattnos;		/* attnums referenced by the clauses */
-} dependency_compatible_context;
+}	dependency_compatible_context;
 
 static void generate_dependencies_recurse(DependencyGenerator state,
-							int index, AttrNumber start, AttrNumber *current);
+						   int index, AttrNumber start, AttrNumber *current);
 static void generate_dependencies(DependencyGenerator state);
 static DependencyGenerator DependencyGenerator_init(int n, int k);
 static void DependencyGenerator_free(DependencyGenerator state);
 static AttrNumber *DependencyGenerator_next(DependencyGenerator state);
 static double dependency_degree(int numrows, HeapTuple *rows, int k,
-			AttrNumber *dependency, VacAttrStats **stats, Bitmapset *attrs);
+			 AttrNumber *dependency, VacAttrStats **stats, Bitmapset *attrs);
 static bool dependency_compatible_walker(Node *node,
-										 dependency_compatible_context *context);
+							 dependency_compatible_context * context);
 static bool dependency_compatible_clause(Node *clause, Index relid,
-										 AttrNumber *attnum);
-static MVDependency *find_strongest_dependency(StatisticExtInfo *stats,
-											   MVDependencies *dependencies,
-											   Bitmapset *attnums);
+							 AttrNumber *attnum);
+static MVDependency *find_strongest_dependency(StatisticExtInfo * stats,
+						  MVDependencies * dependencies,
+						  Bitmapset *attnums);
 
 static void
 generate_dependencies_recurse(DependencyGenerator state, int index,
 							  AttrNumber start, AttrNumber *current)
 {
 	/*
-	 * The generator handles the first (k-1) elements differently from
-	 * the last element.
+	 * The generator handles the first (k-1) elements differently from the
+	 * last element.
 	 */
 	if (index < (state->k - 1))
 	{
@@ -90,12 +90,12 @@ generate_dependencies_recurse(DependencyGenerator state, int index,
 		for (i = start; i < state->n; i++)
 		{
 			current[index] = i;
-			generate_dependencies_recurse(state, (index+1), (i+1), current);
+			generate_dependencies_recurse(state, (index + 1), (i + 1), current);
 		}
 	}
 	else
 	{
-		int i;
+		int			i;
 
 		/*
 		 * the last element is the implied value, which does not respect the
@@ -105,8 +105,8 @@ generate_dependencies_recurse(DependencyGenerator state, int index,
 
 		for (i = 0; i < state->n; i++)
 		{
-			int		j;
-			bool	match = false;
+			int			j;
+			bool		match = false;
 
 			current[index] = i;
 
@@ -123,10 +123,10 @@ generate_dependencies_recurse(DependencyGenerator state, int index,
 			 * If the value is not found in the first part of the dependency,
 			 * we're done.
 			 */
-			if (! match)
+			if (!match)
 			{
-				state->dependencies = (AttrNumber *)repalloc(state->dependencies,
-					state->k * (state->ndependencies + 1) * sizeof(AttrNumber));
+				state->dependencies = (AttrNumber *) repalloc(state->dependencies,
+				 state->k * (state->ndependencies + 1) * sizeof(AttrNumber));
 				memcpy(&state->dependencies[(state->k * state->ndependencies)],
 					   current, state->k * sizeof(AttrNumber));
 				state->ndependencies++;
@@ -276,11 +276,11 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	/* prepare the sort function for the first dimension, and SortItem array */
 	for (i = 0; i < k; i++)
 	{
-		VacAttrStats   *colstat = stats[dependency[i]];
+		VacAttrStats *colstat = stats[dependency[i]];
 		TypeCacheEntry *type;
 
 		type = lookup_type_cache(colstat->attrtypid, TYPECACHE_LT_OPR);
-		if (type->lt_opr == InvalidOid)		/* shouldn't happen */
+		if (type->lt_opr == InvalidOid) /* shouldn't happen */
 			elog(ERROR, "cache lookup failed for ordering operator for type %u",
 				 colstat->attrtypid);
 
@@ -378,11 +378,11 @@ MVDependencies *
 statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 						   VacAttrStats **stats)
 {
-	int		i,
-			j,
-			k;
-	int		numattrs;
-	int	   *attnums;
+	int			i,
+				j,
+				k;
+	int			numattrs;
+	int		   *attnums;
 
 	/* result */
 	MVDependencies *dependencies = NULL;
@@ -416,18 +416,20 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 		/* generate all possible variations of k values (out of n) */
 		while ((dependency = DependencyGenerator_next(DependencyGenerator)))
 		{
-			double			degree;
-			MVDependency   *d;
+			double		degree;
+			MVDependency *d;
 
 			/* compute how valid the dependency seems */
 			degree = dependency_degree(numrows, rows, k, dependency, stats, attrs);
 
-			/* if the dependency seems entirely invalid, don't bother storing it */
+			/*
+			 * if the dependency seems entirely invalid, don't store it it
+			 */
 			if (degree == 0.0)
 				continue;
 
 			d = (MVDependency *) palloc0(offsetof(MVDependency, attributes)
-									   + k * sizeof(AttrNumber));
+										 + k * sizeof(AttrNumber));
 
 			/* copy the dependency (and keep the indexes into stakeys) */
 			d->degree = degree;
@@ -448,13 +450,16 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 			dependencies->ndeps++;
 			dependencies = (MVDependencies *) repalloc(dependencies,
-									   offsetof(MVDependencies, deps)
-						+ dependencies->ndeps * sizeof(MVDependency));
+											   offsetof(MVDependencies, deps)
+							   + dependencies->ndeps * sizeof(MVDependency));
 
 			dependencies->deps[dependencies->ndeps - 1] = d;
 		}
 
-		/* we're done with variations of k elements, so free the DependencyGenerator */
+		/*
+		 * we're done with variations of k elements, so free the
+		 * DependencyGenerator
+		 */
 		DependencyGenerator_free(DependencyGenerator);
 	}
 
@@ -466,7 +471,7 @@ statext_dependencies_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
  * Serialize list of dependencies into a bytea value.
  */
 bytea *
-statext_dependencies_serialize(MVDependencies *dependencies)
+statext_dependencies_serialize(MVDependencies * dependencies)
 {
 	int			i;
 	bytea	   *output;
@@ -475,7 +480,7 @@ statext_dependencies_serialize(MVDependencies *dependencies)
 
 	/* we need to store ndeps, with a number of attributes for each one */
 	len = VARHDRSZ + SizeOfDependencies
-				   + dependencies->ndeps * SizeOfDependency;
+		+ dependencies->ndeps * SizeOfDependency;
 
 	/* and also include space for the actual attribute numbers and degrees */
 	for (i = 0; i < dependencies->ndeps; i++)
@@ -558,8 +563,8 @@ statext_dependencies_deserialize(bytea *data)
 
 	/* what minimum bytea size do we expect for those parameters */
 	min_expected_size = SizeOfDependencies +
-							dependencies->ndeps * (SizeOfDependency +
-							sizeof(AttrNumber) * 2);
+		dependencies->ndeps * (SizeOfDependency +
+							   sizeof(AttrNumber) * 2);
 
 	if (VARSIZE_ANY_EXHDR(data) < min_expected_size)
 		elog(ERROR, "invalid dependencies size %ld (expected at least %ld)",
@@ -567,13 +572,13 @@ statext_dependencies_deserialize(bytea *data)
 
 	/* allocate space for the MCV items */
 	dependencies = repalloc(dependencies, offsetof(MVDependencies, deps)
-						 + (dependencies->ndeps * sizeof(MVDependency *)));
+							+ (dependencies->ndeps * sizeof(MVDependency *)));
 
 	for (i = 0; i < dependencies->ndeps; i++)
 	{
-		double			degree;
-		AttrNumber		k;
-		MVDependency   *d;
+		double		degree;
+		AttrNumber	k;
+		MVDependency *d;
 
 		/* degree of validity */
 		memcpy(&degree, tmp, sizeof(double));
@@ -612,22 +617,22 @@ statext_dependencies_deserialize(bytea *data)
 /*
  * dependency_is_fully_matched
  *		checks that a functional dependency is fully matched given clauses on
- * 		attributes (assuming the clauses are suitable equality clauses)
+ *		attributes (assuming the clauses are suitable equality clauses)
  */
 bool
-dependency_is_fully_matched(MVDependency *dependency, Bitmapset *attnums)
+dependency_is_fully_matched(MVDependency * dependency, Bitmapset *attnums)
 {
-	int j;
+	int			j;
 
 	/*
-	 * Check that the dependency actually is fully covered by clauses. We
-	 * have to translate all attribute numbers, as those are referenced
+	 * Check that the dependency actually is fully covered by clauses. We have
+	 * to translate all attribute numbers, as those are referenced
 	 */
 	for (j = 0; j < dependency->nattributes; j++)
 	{
-		int attnum = dependency->attributes[j];
+		int			attnum = dependency->attributes[j];
 
-		if (! bms_is_member(attnum, attnums))
+		if (!bms_is_member(attnum, attnums))
 			return false;
 	}
 
@@ -639,9 +644,9 @@ dependency_is_fully_matched(MVDependency *dependency, Bitmapset *attnums)
  *		check that the attnum matches is implied by the functional dependency
  */
 bool
-dependency_implies_attribute(MVDependency *dependency, AttrNumber attnum)
+dependency_implies_attribute(MVDependency * dependency, AttrNumber attnum)
 {
-	if (attnum == dependency->attributes[dependency->nattributes-1])
+	if (attnum == dependency->attributes[dependency->nattributes - 1])
 		return true;
 
 	return false;
@@ -657,8 +662,12 @@ staext_dependencies_load(Oid mvoid)
 	bool		isnull;
 	Datum		deps;
 
-	/* Prepare to scan pg_statistic_ext for entries having indrelid = this rel. */
+	/*
+	 * Prepare to scan pg_statistic_ext for entries having indrelid = this
+	 * rel.
+	 */
 	HeapTuple	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
+
 	if (!HeapTupleIsValid(htup))
 		elog(ERROR, "cache lookup failed for extended statistics %u", mvoid);
 
@@ -698,8 +707,9 @@ pg_dependencies_in(PG_FUNCTION_ARGS)
 Datum
 pg_dependencies_out(PG_FUNCTION_ARGS)
 {
-	int i, j;
-	StringInfoData	str;
+	int			i,
+				j;
+	StringInfoData str;
 
 	bytea	   *data = PG_GETARG_BYTEA_PP(0);
 
@@ -718,7 +728,7 @@ pg_dependencies_out(PG_FUNCTION_ARGS)
 		appendStringInfoChar(&str, '{');
 		for (j = 0; j < dependency->nattributes; j++)
 		{
-			if (j == dependency->nattributes-1)
+			if (j == dependency->nattributes - 1)
 				appendStringInfoString(&str, " => ");
 			else if (j > 0)
 				appendStringInfoString(&str, ", ");
@@ -765,7 +775,7 @@ pg_dependencies_send(PG_FUNCTION_ARGS)
  */
 static bool
 dependency_compatible_walker(Node *node,
-							 dependency_compatible_context *context)
+							 dependency_compatible_context * context)
 {
 	if (node == NULL)
 		return false;
@@ -902,27 +912,27 @@ dependency_compatible_clause(Node *clause, Index relid, AttrNumber *attnum)
  * (see the comment at clauselist_ext_selectivity_deps).
  */
 static MVDependency *
-find_strongest_dependency(StatisticExtInfo *stats, MVDependencies *dependencies,
+find_strongest_dependency(StatisticExtInfo * stats, MVDependencies * dependencies,
 						  Bitmapset *attnums)
 {
-	int i;
+	int			i;
 	MVDependency *strongest = NULL;
 
 	/* number of attnums in clauses */
-	int nattnums = bms_num_members(attnums);
+	int			nattnums = bms_num_members(attnums);
 
 	/*
-	 * Iterate over the MVDependency items and find the strongest one from
-	 * the fully-matched dependencies. We do the cheap checks first, before
+	 * Iterate over the MVDependency items and find the strongest one from the
+	 * fully-matched dependencies. We do the cheap checks first, before
 	 * matching it against the attnums.
 	 */
 	for (i = 0; i < dependencies->ndeps; i++)
 	{
-		MVDependency   *dependency = dependencies->deps[i];
+		MVDependency *dependency = dependencies->deps[i];
 
 		/*
-		 * Skip dependencies referencing more attributes than available clauses,
-		 * as those can't be fully matched.
+		 * Skip dependencies referencing more attributes than available
+		 * clauses, as those can't be fully matched.
 		 */
 		if (dependency->nattributes > nattnums)
 			continue;
@@ -945,7 +955,7 @@ find_strongest_dependency(StatisticExtInfo *stats, MVDependencies *dependencies,
 		 * slightly more expensive than the previous checks.
 		 */
 		if (dependency_is_fully_matched(dependency, attnums))
-			strongest = dependency;					/* save new best match */
+			strongest = dependency;		/* save new best match */
 	}
 
 	return strongest;
@@ -959,7 +969,7 @@ find_strongest_dependency(StatisticExtInfo *stats, MVDependencies *dependencies,
  * between them, i.e. either (a=>b) or (b=>a). Assuming (a=>b) is the selected
  * dependency, we then combine the per-clause selectivities using the formula
  *
- *     P(a,b) = P(a) * [f + (1-f)*P(b)]
+ *	   P(a,b) = P(a) * [f + (1-f)*P(b)]
  *
  * where 'f' is the degree of the dependency.
  *
@@ -967,26 +977,26 @@ find_strongest_dependency(StatisticExtInfo *stats, MVDependencies *dependencies,
  * recursively, starting with the widest/strongest dependencies. For example
  * P(a,b,c) is first split like this:
  *
- *     P(a,b,c) = P(a,b) * [f + (1-f)*P(c)]
+ *	   P(a,b,c) = P(a,b) * [f + (1-f)*P(c)]
  *
  * assuming (a,b=>c) is the strongest dependency.
  */
 Selectivity
 dependencies_clauselist_selectivity(PlannerInfo *root,
-					   List *clauses,
-					   Selectivity s1,
-					   int varRelid,
-					   JoinType jointype,
-					   SpecialJoinInfo *sjinfo,
-					   RelOptInfo *rel,
-					   Bitmapset **estimatedclauses)
+									List *clauses,
+									Selectivity s1,
+									int varRelid,
+									JoinType jointype,
+									SpecialJoinInfo *sjinfo,
+									RelOptInfo *rel,
+									Bitmapset **estimatedclauses)
 {
-	ListCell		   *l;
-	Bitmapset		   *clauses_attnums = NULL;
-	StatisticExtInfo   *stat;
-	MVDependencies	   *dependencies;
-	AttrNumber		   *list_attnums;
-	int					listidx;
+	ListCell   *l;
+	Bitmapset  *clauses_attnums = NULL;
+	StatisticExtInfo *stat;
+	MVDependencies *dependencies;
+	AttrNumber *list_attnums;
+	int			listidx;
 
 
 	/* check if there's any stats that might be useful for us. */
@@ -1024,9 +1034,9 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	}
 
 	/*
-	 * If there's not at least two distinct attnums then reject the whole
-	 * list of clauses. We must return 1.0 so the calling function's
-	 * selectivity is unaffected.
+	 * If there's not at least two distinct attnums then reject the whole list
+	 * of clauses. We must return 1.0 so the calling function's selectivity is
+	 * unaffected.
 	 */
 	if (bms_num_members(clauses_attnums) < 2)
 	{
@@ -1036,7 +1046,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 
 	/* find the best suited statistics for these attnums */
 	stat = choose_best_statistics(rel->statlist, clauses_attnums,
-										 STATS_EXT_DEPENDENCIES);
+								  STATS_EXT_DEPENDENCIES);
 
 	/* if no matching stats could be found then we've nothing to do */
 	if (!stat)
@@ -1056,8 +1066,8 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	 */
 	while (true)
 	{
-		Selectivity		s2 = 1.0;
-		MVDependency   *dependency;
+		Selectivity s2 = 1.0;
+		MVDependency *dependency;
 
 		/* the widest/strongest dependency, fully matched by clauses */
 		dependency = find_strongest_dependency(stat, dependencies,
@@ -1069,8 +1079,8 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 
 		/*
 		 * We found an applicable dependency, so find all the clauses on the
-		 * implied attribute - with dependency (a,b => c) we look for
-		 * clauses on 'c'.
+		 * implied attribute - with dependency (a,b => c) we look for clauses
+		 * on 'c'.
 		 */
 		listidx = -1;
 		foreach(l, clauses)
@@ -1087,16 +1097,16 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 				continue;
 
 			/*
-			 * Technically we could find more than one clause for a given attnum.
-			 * Since these clauses must be equality clauses, we choose to only
-			 * take the selectivity estimate from the final clause in the list
-			 * for this attnum. If the attnum happens to be compared to a
-			 * different Const in another clause then no rows will match
+			 * Technically we could find more than one clause for a given
+			 * attnum. Since these clauses must be equality clauses, we choose
+			 * to only take the selectivity estimate from the final clause in
+			 * the list for this attnum. If the attnum happens to be compared
+			 * to a different Const in another clause then no rows will match
 			 * anyway. If it happens to be compared to the same Const, then
 			 * ignoring the additional clause is just the thing to do.
 			 */
 			if (dependency_implies_attribute(dependency,
-				list_attnums[listidx]))
+											 list_attnums[listidx]))
 			{
 				clause = (Node *) lfirst(l);
 
@@ -1117,13 +1127,13 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		}
 
 		/*
-		 * Now factor in the selectivity for all the "implied" clauses into the
-		 * final one, using this formula:
+		 * Now factor in the selectivity for all the "implied" clauses into
+		 * the final one, using this formula:
 		 *
-		 *     P(a,b) = P(a) * (f + (1-f) * P(b))
+		 * P(a,b) = P(a) * (f + (1-f) * P(b))
 		 *
 		 * where 'f' is the degree of validity of the dependency.
-		*/
+		 */
 		s1 *= (dependency->degree + (1 - dependency->degree) * s2);
 	}
 
