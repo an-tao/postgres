@@ -62,6 +62,10 @@ static void DependencyGenerator_free(DependencyGenerator state);
 static AttrNumber *DependencyGenerator_next(DependencyGenerator state);
 static double dependency_degree(int numrows, HeapTuple *rows, int k,
 			 AttrNumber *dependency, VacAttrStats **stats, Bitmapset *attrs);
+static bool dependency_is_fully_matched(MVDependency * dependency,
+						   Bitmapset *attnums);
+static bool dependency_implies_attribute(MVDependency * dependency,
+						   AttrNumber attnum);
 static bool dependency_compatible_walker(Node *node,
 							 dependency_compatible_context * context);
 static bool dependency_compatible_clause(Node *clause, Index relid,
@@ -619,7 +623,7 @@ statext_dependencies_deserialize(bytea *data)
  *		checks that a functional dependency is fully matched given clauses on
  *		attributes (assuming the clauses are suitable equality clauses)
  */
-bool
+static bool
 dependency_is_fully_matched(MVDependency * dependency, Bitmapset *attnums)
 {
 	int			j;
@@ -643,7 +647,7 @@ dependency_is_fully_matched(MVDependency * dependency, Bitmapset *attnums)
  * dependency_implies_attribute
  *		check that the attnum matches is implied by the functional dependency
  */
-bool
+static bool
 dependency_implies_attribute(MVDependency * dependency, AttrNumber attnum)
 {
 	if (attnum == dependency->attributes[dependency->nattributes - 1])

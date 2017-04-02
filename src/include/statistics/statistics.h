@@ -77,11 +77,6 @@ typedef struct MVDependencies
 /* size of the struct excluding the deps array */
 #define SizeOfDependencies	(offsetof(MVDependencies, ndeps) + sizeof(uint32))
 
-extern bool dependency_implies_attribute(MVDependency *dependency,
-						AttrNumber attnum);
-extern bool dependency_is_fully_matched(MVDependency *dependency,
-						Bitmapset *attnums);
-
 extern MVNDistinct *statext_ndistinct_load(Oid mvoid);
 extern MVDependencies *staext_dependencies_load(Oid mvoid);
 
