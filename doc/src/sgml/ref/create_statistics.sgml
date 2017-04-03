@@ -104,7 +104,7 @@ CREATE STATISTICS [ IF NOT EXISTS ] <replaceable class="PARAMETER">statistics_na
 
    <para>
     The <literal>WITH</> clause can specify <firstterm>options</>
-    for statistics. The currently available parameters are listed below.
+    for the statistics. Available options are listed below.
    </para>
 
    <variablelist>
