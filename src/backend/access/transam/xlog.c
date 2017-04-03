@@ -8560,7 +8560,8 @@ CreateCheckPoint(int flags)
 	InitXLogInsert();
 
 	/* Checkpoints are a handy time to update the effective catalog_xmin */
-	UpdateOldestCatalogXmin();
+	if (XLogInsertAllowed())
+		UpdateOldestCatalogXmin();
 
 	/*
 	 * Acquire CheckpointLock to ensure only one checkpoint happens at a time.
