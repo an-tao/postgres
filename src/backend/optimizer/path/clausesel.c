@@ -131,13 +131,13 @@ clauselist_selectivity(PlannerInfo *root,
 		/*
 		 * Try to estimate with multivariate functional dependency statistics.
 		 *
-		 * We pass s1 into the function to give it a starting point for the
-		 * estimation. We receive back an estimatedclauses Bitmapset which
-		 * indicates the zero-based list index of the clauses list of all
-		 * clauses which the retuned value includes selectivity estimations
-		 * for.
+		 * The function will supply an estimate for the clauses which it
+		 * estimated for. Any clauses which were unsuitible were ignored.
+		 * Clauses which were estimated will have their 0-based list index set
+		 * in estimatedclauses.  We must ignore these clauses when processing
+		 * the remaining clauses later.
 		 */
-		s1 *= dependencies_clauselist_selectivity(root, clauses, s1, varRelid,
+		s1 *= dependencies_clauselist_selectivity(root, clauses, varRelid,
 									jointype, sjinfo, rel, &estimatedclauses);
 
 		/*

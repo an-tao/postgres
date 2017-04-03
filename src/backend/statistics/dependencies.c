@@ -988,13 +988,13 @@ find_strongest_dependency(StatisticExtInfo * stats, MVDependencies * dependencie
 Selectivity
 dependencies_clauselist_selectivity(PlannerInfo *root,
 									List *clauses,
-									Selectivity s1,
 									int varRelid,
 									JoinType jointype,
 									SpecialJoinInfo *sjinfo,
 									RelOptInfo *rel,
 									Bitmapset **estimatedclauses)
 {
+	Selectivity s1 = 1.0;
 	ListCell   *l;
 	Bitmapset  *clauses_attnums = NULL;
 	StatisticExtInfo *stat;

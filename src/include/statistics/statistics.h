@@ -86,7 +86,6 @@ extern void BuildRelationExtStatistics(Relation onerel, double totalrows,
 extern bool statext_is_kind_built(HeapTuple htup, char kind);
 extern Selectivity dependencies_clauselist_selectivity(PlannerInfo *root,
 					   List *clauses,
-					   Selectivity s1,
 					   int varRelid,
 					   JoinType jointype,
 					   SpecialJoinInfo *sjinfo,
