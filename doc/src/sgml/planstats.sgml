@@ -459,8 +459,8 @@ rows = (outer_cardinality * inner_cardinality) * selectivity
 
    <para>
     In normalized databases, only functional dependencies on primary keys
-    and super keys are allowed. In practice however many data sets are not
-    fully normalized, for example due to intentional denormalization for
+    and superkeys are allowed. However, in practice, many data sets are not
+    fully normalized, for example, due to intentional denormalization for
     performance reasons.
    </para>
 
@@ -492,7 +492,7 @@ EXPLAIN ANALYZE SELECT * FROM t WHERE a = 1 AND b = 1;
 </programlisting>
 
     The planner is now aware of the functional dependencies and considers
-    them when computing selectivity of the second condition.  Running
+    them when computing the selectivity of the second condition.  Running
     the query without the statistics would lead to quite different estimates.
 
 <programlisting>
@@ -534,10 +534,11 @@ SELECT tablename, staname, attnums, depsbytes
 
    <para>
     When computing the selectivity, the planner inspects all conditions and
-    attempts to identify which conditions are already implied by some other
-    conditions, and eliminates them (but only for the estimation, all
-    conditions will be evaluated on tuples during execution). In the example
-    query, either of the conditions may get eliminated, improving the estimate.
+    attempts to identify which conditions are already implied by other
+    conditions.  The selectivity estimates from any redundant conditions are
+    ignored from a selectivity point of view. In the example query above,
+    the selectivity estimates for either of the conditions may be eliminated,
+    thus improving the overall estimate.
    </para>
 
     <sect3 id="functional-dependencies-limitations">
@@ -576,7 +577,7 @@ EXPLAIN ANALYZE SELECT * FROM t WHERE a = 1 AND b = 10;
 
      <para>
       This assumption is more about queries executed on the database - in many
-      cases it's actually satisfied (e.g. when the GUI only allows selecting
+      cases, it's actually satisfied (e.g. when the GUI only allows selecting
       compatible values). But if that's not the case, functional dependencies
       may not be a viable option.
      </para>
