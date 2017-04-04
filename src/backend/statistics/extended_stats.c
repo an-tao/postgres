@@ -408,9 +408,7 @@ multi_sort_compare_dims(int start, int end,
 
 /*
  * has_stats_of_kind
- *	check that the list contains statistic of a given type
- *
- * Check for any stats with the required kind.
+ *	Check that the list contains statistic of a given kind
  */
 bool
 has_stats_of_kind(List *stats, char requiredkind)
@@ -429,14 +427,16 @@ has_stats_of_kind(List *stats, char requiredkind)
 }
 
 /*
- * We're looking for statistics matching at least two attributes, referenced
- * in clauses compatible with extended statistics. The current selection
- * criteria is very simple - we choose the statistics referencing the most
- * attributes.
+ * choose_best_statistics
+ *		Look for statistics with the specified 'requiredkind' which have keys
+ *		that match at least two attnums.
  *
- * In cases where there are multiple statistics referencing the same number of
- * attributes, the statistics with the least keys wins.  The reason for this
- * is that we deem the smaller statistics to be more accurate.
+ * The current selection criteria is very simple - we choose the statistics
+ * referencing the most attributes with the least keys.
+ *
+ * XXX if multiple statistics exists of the same size matching the same number
+ * of keys, then the statistics which are chosen depend on the order that they
+ * appear in the stats list. Perhaps this needs to be more definitive.
  */
 StatisticExtInfo *
 choose_best_statistics(List *stats, Bitmapset *attnums, char requiredkind)
@@ -474,7 +474,7 @@ choose_best_statistics(List *stats, Bitmapset *attnums, char requiredkind)
 		 * have fewer keys than any previous match.
 		 */
 		if (num_matched > best_num_matched ||
-			(num_matched == best_num_matched && best_match_keys > numkeys))
+			(num_matched == best_num_matched && numkeys < best_match_keys))
 		{
 			best_match = info;
 			best_num_matched = num_matched;
