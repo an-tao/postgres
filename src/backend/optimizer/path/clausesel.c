@@ -66,7 +66,7 @@ static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
  * selectivity estimates using any extended statistcs on 'rel'. Currently this
  * is limited only to base relations with an rtekind of RTE_RELATION.
  *
- * If we identify such extended statistics apply, we try to apply them.
+ * If we identify such extended statistics exist, we try to apply them.
  * Currently we only have (soft) functional dependencies, so apply these in as
  * many cases as possible, and fall back on normal estimates for remaining
  * clauses.
