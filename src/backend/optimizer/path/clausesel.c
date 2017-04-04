@@ -107,17 +107,17 @@ clauselist_selectivity(PlannerInfo *root,
 	Selectivity s1 = 1.0;
 	RangeQueryClause *rqlist = NULL;
 	ListCell   *l;
-	Bitmapset	*estimatedclauses = NULL;
+	Bitmapset  *estimatedclauses = NULL;
 	int			listidx;
 
 	/*
-	 * If there's exactly one clause, then extended statistics is futile
-	 * at this level (we might be able to apply them later if it's AND/OR
+	 * If there's exactly one clause, then extended statistics is futile at
+	 * this level (we might be able to apply them later if it's AND/OR
 	 * clause). So just go directly to clause_selectivity().
 	 */
 	if (list_length(clauses) == 1)
 		return clause_selectivity(root, (Node *) linitial(clauses),
-							  varRelid, jointype, sjinfo, rel);
+								  varRelid, jointype, sjinfo, rel);
 
 	/*
 	 * If we have a valid rel and we have the correct rte kind, then attempt
@@ -135,7 +135,7 @@ clauselist_selectivity(PlannerInfo *root,
 		 * the remaining clauses later.
 		 */
 		s1 *= dependencies_clauselist_selectivity(root, clauses, varRelid,
-									jointype, sjinfo, rel, &estimatedclauses);
+								   jointype, sjinfo, rel, &estimatedclauses);
 
 		/*
 		 * This would be the place to apply any other types of extended

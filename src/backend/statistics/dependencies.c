@@ -72,16 +72,16 @@ static void DependencyGenerator_free(DependencyGenerator state);
 static AttrNumber *DependencyGenerator_next(DependencyGenerator state);
 static double dependency_degree(int numrows, HeapTuple *rows, int k,
 			 AttrNumber *dependency, VacAttrStats **stats, Bitmapset *attrs);
-static bool dependency_is_fully_matched(MVDependency * dependency,
-						   Bitmapset *attnums);
-static bool dependency_implies_attribute(MVDependency * dependency,
-						   AttrNumber attnum);
+static bool dependency_is_fully_matched(MVDependency *dependency,
+							Bitmapset *attnums);
+static bool dependency_implies_attribute(MVDependency *dependency,
+							 AttrNumber attnum);
 static bool dependency_compatible_walker(Node *node,
-							 dependency_compatible_context * context);
+							 dependency_compatible_context *context);
 static bool dependency_compatible_clause(Node *clause, Index relid,
 							 AttrNumber *attnum);
-static MVDependency *find_strongest_dependency(StatisticExtInfo * stats,
-						  MVDependencies * dependencies,
+static MVDependency *find_strongest_dependency(StatisticExtInfo *stats,
+						  MVDependencies *dependencies,
 						  Bitmapset *attnums);
 
 static void
@@ -326,7 +326,7 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 		 * to the preceding one.
 		 */
 		if (i == numrows ||
-			multi_sort_compare_dims(0, k - 2, &items[i - 1], &items[i], mss) != 0)
+		multi_sort_compare_dims(0, k - 2, &items[i - 1], &items[i], mss) != 0)
 		{
 			/*
 			 * Do accounting for the preceding group, and reset counters.
@@ -334,8 +334,8 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 			 * If there were no contradicting rows in the group, count the
 			 * rows as supporting.
 			 *
-			 * XXX Maybe the threshold here should be somehow related to the number
-			 * of distinct values in the combination of columns we're
+			 * XXX Maybe the threshold here should be somehow related to the
+			 * number of distinct values in the combination of columns we're
 			 * analyzing. Assuming the distribution is uniform, we can
 			 * estimate the average group size and use it as a threshold,
 			 * similarly to what we do for MCV lists.
@@ -1115,7 +1115,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 				clause = (Node *) lfirst(l);
 
 				s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo,
-										NULL); /* don't try to use ext stats */
+										NULL);	/* don't try to use ext stats */
 
 				/* mark this one as done, so we don't touch it again. */
 				*estimatedclauses = bms_add_member(*estimatedclauses, listidx);

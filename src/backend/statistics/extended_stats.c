@@ -96,7 +96,7 @@ BuildRelationExtStatistics(Relation onerel, double totalrows,
 													stat->columns, stats);
 			else if (t == STATS_EXT_DEPENDENCIES)
 				dependencies = statext_dependencies_build(numrows, rows,
-														  stat->columns, stats);
+													   stat->columns, stats);
 		}
 
 		/* store the statistics in the catalog */
@@ -469,9 +469,9 @@ choose_best_statistics(List *stats, Bitmapset *attnums, char requiredkind)
 		numkeys = bms_num_members(info->keys);
 
 		/*
-		 * Use these statistics when it increases the number of matched clauses
-		 * or when it matches the same number of attributes but these stats
-		 * have fewer keys than any previous match.
+		 * Use these statistics when it increases the number of matched
+		 * clauses or when it matches the same number of attributes but these
+		 * stats have fewer keys than any previous match.
 		 */
 		if (num_matched > best_num_matched ||
 			(num_matched == best_num_matched && numkeys < best_match_keys))

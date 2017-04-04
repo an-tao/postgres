@@ -59,7 +59,7 @@ typedef struct MVDependency
 {
 	double		degree;			/* degree of validity (0-1) */
 	AttrNumber	nattributes;	/* number of attributes */
-	AttrNumber	attributes[FLEXIBLE_ARRAY_MEMBER];	/* attribute numbers */
+	AttrNumber	attributes[FLEXIBLE_ARRAY_MEMBER];		/* attribute numbers */
 } MVDependency;
 
 /* size of the struct excluding the deps array */
@@ -85,14 +85,14 @@ extern void BuildRelationExtStatistics(Relation onerel, double totalrows,
 						   int natts, VacAttrStats **vacattrstats);
 extern bool statext_is_kind_built(HeapTuple htup, char kind);
 extern Selectivity dependencies_clauselist_selectivity(PlannerInfo *root,
-					   List *clauses,
-					   int varRelid,
-					   JoinType jointype,
-					   SpecialJoinInfo *sjinfo,
-					   RelOptInfo *rel,
-					   Bitmapset **estimatedclauses);
+									List *clauses,
+									int varRelid,
+									JoinType jointype,
+									SpecialJoinInfo *sjinfo,
+									RelOptInfo *rel,
+									Bitmapset **estimatedclauses);
 extern bool has_stats_of_kind(List *stats, char requiredkind);
 extern StatisticExtInfo *choose_best_statistics(List *stats,
-									Bitmapset *attnums, char requiredkind);
+					   Bitmapset *attnums, char requiredkind);
 
 #endif   /* STATISTICS_H */

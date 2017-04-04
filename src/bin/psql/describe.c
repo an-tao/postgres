@@ -2349,7 +2349,7 @@ describeOneTableDetails(const char *schemaname,
 
 				for (i = 0; i < tuples; i++)
 				{
-					bool	gotone = false;
+					bool		gotone = false;
 
 					printfPQExpBuffer(&buf, "    ");
 

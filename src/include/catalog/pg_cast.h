@@ -259,8 +259,8 @@ DATA(insert (  3361  17    0 i b ));
 DATA(insert (  3361  25    0 i i ));
 
 /* pg_dependencies can be coerced to, but not from, bytea and text */
-DATA(insert (  3402	 17    0 i b ));
-DATA(insert (  3402	 25    0 i i ));
+DATA(insert (  3402  17    0 i b ));
+DATA(insert (  3402  25    0 i i ));
 
 /*
  * Datetime category

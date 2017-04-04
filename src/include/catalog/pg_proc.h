@@ -2777,7 +2777,7 @@ DATA(insert OID = 3373 (  pg_dependencies_out	PGNSP PGUID 12 1 0 0 0 f f f f t f
 DESCR("I/O");
 DATA(insert OID = 3374 (  pg_dependencies_recv	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 3402 "2281" _null_ _null_ _null_ _null_ _null_ pg_dependencies_recv _null_ _null_ _null_ ));
 DESCR("I/O");
-DATA(insert OID = 3377 (  pg_dependencies_send	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 17 "3402" _null_ _null_ _null_ _null_ _null_	pg_dependencies_send _null_ _null_ _null_ ));
+DATA(insert OID = 3377 (  pg_dependencies_send	PGNSP PGUID 12 1 0 0 0 f f f f t f s s 1 0 17 "3402" _null_ _null_ _null_ _null_ _null_ pg_dependencies_send _null_ _null_ _null_ ));
 DESCR("I/O");
 
 DATA(insert OID = 1928 (  pg_stat_get_numscans			PGNSP PGUID 12 1 0 0 0 f f f f t f s r 1 0 20 "26" _null_ _null_ _null_ _null_ _null_ pg_stat_get_numscans _null_ _null_ _null_ ));
