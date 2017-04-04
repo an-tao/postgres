@@ -33,6 +33,16 @@
 #include "utils/typcache.h"
 
 /*
+ * DEPENDENCY_MIN_GROUP_SIZE defines how many matching sets of (k-1)
+ * attributes are required to exist with the same k value before we count this
+ * towards the functional dependencies. Having this set too low is more likely
+ * to cause false positives of functional dependencies and too high a value
+ * would be too strict, and may miss detection of functional dependencies.
+ */
+#define DEPENDENCY_MIN_GROUP_SIZE 3
+
+
+/*
  * Internal state for DependencyGenerator of dependencies. Dependencies are similar to
  * k-permutations of n elements, except that the order does not matter for the
  * first (k-1) elements. That is, (a,b=>c) and (b,a=>c) are equivalent.
@@ -216,22 +226,7 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	SortItem   *items;
 	Datum	   *values;
 	bool	   *isnull;
-
 	int		   *attnums;
-
-	/*
-	 * min_group_size defines how many matching sets of (k-1) attributes are
-	 * required to exist with the same k value before we count this towards
-	 * the functional dependencies. Having this set too low is more likely to
-	 * cause false positives of functional dependencies and too high a value
-	 * would be too strict, and may miss detection of functional dependencies.
-	 *
-	 * XXX Maybe the threshold should be somehow related to the number of
-	 * distinct values in the combination of columns we're analyzing. Assuming
-	 * the distribution is uniform, we can estimate the average group size and
-	 * use it as a threshold, similarly to what we do for MCV lists.
-	 */
-	int			min_group_size = 3;
 
 	/* counters valid within a group */
 	int			group_size = 0;
@@ -247,9 +242,9 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	mss = multi_sort_init(k);
 
 	/* data for the sort */
-	items = (SortItem *) palloc0(numrows * sizeof(SortItem));
-	values = (Datum *) palloc0(sizeof(Datum) * nvalues);
-	isnull = (bool *) palloc0(sizeof(bool) * nvalues);
+	items = (SortItem *) palloc(numrows * sizeof(SortItem));
+	values = (Datum *) palloc(sizeof(Datum) * nvalues);
+	isnull = (bool *) palloc(sizeof(bool) * nvalues);
 
 	/* fix the pointers to values/isnull */
 	for (i = 0; i < numrows; i++)
@@ -261,7 +256,7 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 	/*
 	 * Transform the bms into an array, to make accessing i-th member easier.
 	 */
-	attnums = palloc(sizeof(int) * bms_num_members(attrs));
+	attnums = (int *) palloc(sizeof(int) * bms_num_members(attrs));
 	i = 0;
 	j = -1;
 	while ((j = bms_next_member(attrs, j)) >= 0)
@@ -330,27 +325,34 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 		 * all the items (i==numrows), or because the i-th item is not equal
 		 * to the preceding one.
 		 */
-		if ((i == numrows) ||
-			(multi_sort_compare_dims(0, (k - 2), &items[i - 1], &items[i], mss) != 0))
+		if (i == numrows ||
+			multi_sort_compare_dims(0, k - 2, &items[i - 1], &items[i], mss) != 0)
 		{
 			/*
 			 * Do accounting for the preceding group, and reset counters.
 			 *
 			 * If there were no contradicting rows in the group, count the
 			 * rows as supporting.
+			 *
+			 * XXX Maybe the threshold here should be somehow related to the number
+			 * of distinct values in the combination of columns we're
+			 * analyzing. Assuming the distribution is uniform, we can
+			 * estimate the average group size and use it as a threshold,
+			 * similarly to what we do for MCV lists.
 			 */
-			if ((n_violations == 0) && (group_size >= min_group_size))
+			if (n_violations == 0 && group_size >= DEPENDENCY_MIN_GROUP_SIZE)
 				n_supporting_rows += group_size;
 
 			/* current values start a new group */
 			n_violations = 0;
-			group_size = 0;
+			group_size = 1;
+			continue;
 		}
-		/* first colums match, but the last one does not (so contradicting) */
-		else if (multi_sort_compare_dim((k - 1), &items[i - 1], &items[i], mss) != 0)
-			n_violations += 1;
+		/* first columns match, but the last one does not (so contradicting) */
+		else if (multi_sort_compare_dim(k - 1, &items[i - 1], &items[i], mss) != 0)
+			n_violations++;
 
-		group_size += 1;
+		group_size++;
 	}
 
 	pfree(items);
@@ -913,7 +915,7 @@ dependency_compatible_clause(Node *clause, Index relid, AttrNumber *attnum)
  * (c) has the highest degree of validity
  *
  * This guarantees that we eliminate the most redundant conditions first
- * (see the comment at clauselist_ext_selectivity_deps).
+ * (see the comment in dependencies_clauselist_selectivity).
  */
 static MVDependency *
 find_strongest_dependency(StatisticExtInfo * stats, MVDependencies * dependencies,
@@ -1016,9 +1018,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 	 * dependency selectivity estimations. Along the way we'll record all of
 	 * the attnums for each clause in a list which we'll reference later so we
 	 * don't need to repeat the same work again. We'll also keep track of all
-	 * attnums seen. This is only so we can reject the whole list, if we
-	 * happen to not find at least two distinct attnums, which will, of course
-	 * be useless to a multivariate statistics object.
+	 * attnums seen.
 	 */
 	listidx = 0;
 	foreach(l, clauses)
