@@ -1014,8 +1014,7 @@ estimate_size(PlannerInfo *root, RelOptInfo *baserel,
 							   0,
 							   JOIN_INNER,
 							   NULL,
-							   NULL,
-							   false);
+							   NULL);
 
 	nrows = clamp_row_est(nrows);
 

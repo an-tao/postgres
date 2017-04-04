@@ -67,8 +67,6 @@ it will do, if:
     (b) The relation given actually has any extended statistics defined which
         are actually built.
 
-    (c) tryextstats is True.
-
 When the above conditions are met, clauselist_selectivity() first attempts to
 pass the clause list off to the extended statistics selectivity estimation
 function. This functions may not find any clauses which is can perform any

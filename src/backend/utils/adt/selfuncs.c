@@ -1635,8 +1635,7 @@ booltestsel(PlannerInfo *root, BoolTestType booltesttype, Node *arg,
 													varRelid,
 													jointype,
 													sjinfo,
-													NULL,
-													false);
+													NULL);
 				break;
 			case IS_FALSE:
 			case IS_NOT_TRUE:
@@ -1644,8 +1643,7 @@ booltestsel(PlannerInfo *root, BoolTestType booltesttype, Node *arg,
 														  varRelid,
 														  jointype,
 														  sjinfo,
-														  NULL,
-														  false);
+														  NULL);
 				break;
 			default:
 				elog(ERROR, "unrecognized booltesttype: %d",
@@ -6443,8 +6441,7 @@ genericcostestimate(PlannerInfo *root,
 											  index->rel->relid,
 											  JOIN_INNER,
 											  NULL,
-											  index->rel,
-											  true);
+											  index->rel);
 
 	/*
 	 * If caller didn't give us an estimate, estimate the number of index
@@ -6766,8 +6763,7 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 												  index->rel->relid,
 												  JOIN_INNER,
 												  NULL,
-												  index->rel,
-												  true);
+												  index->rel);
 		numIndexTuples = btreeSelectivity * index->rel->tuples;
 
 		/*
@@ -7527,8 +7523,7 @@ gincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 											   index->rel->relid,
 											   JOIN_INNER,
 											   NULL,
-											   index->rel,
-											   true);
+											   index->rel);
 
 	/* fetch estimated page cost for tablespace containing index */
 	get_tablespace_page_costs(index->reltablespace,
@@ -7761,7 +7756,7 @@ brincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 		clauselist_selectivity(root, indexQuals,
 							   path->indexinfo->rel->relid,
 							   JOIN_INNER, NULL,
-							   path->indexinfo->rel, true);
+							   path->indexinfo->rel);
 	*indexCorrelation = 1;
 
 	/*

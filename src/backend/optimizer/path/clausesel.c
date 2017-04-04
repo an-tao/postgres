@@ -62,9 +62,8 @@ static void addRangeClause(RangeQueryClause **rqlist, Node *clause,
  * probabilities, and in reality they are often NOT independent.  So,
  * we want to be smarter where we can.
  *
- * When 'tryextstats' is true, and 'rel' is not null, we'll try to apply
- * selectivity estimates using any extended statistcs on 'rel'. Currently this
- * is limited only to base relations with an rtekind of RTE_RELATION.
+ * When 'rel' is not null and rtekind = RTE_RELATION, we'll try to apply
+ * selectivity estimates using any extended statistcs on 'rel'.
  *
  * If we identify such extended statistics exist, we try to apply them.
  * Currently we only have (soft) functional dependencies, so apply these in as
@@ -103,8 +102,7 @@ clauselist_selectivity(PlannerInfo *root,
 					   int varRelid,
 					   JoinType jointype,
 					   SpecialJoinInfo *sjinfo,
-					   RelOptInfo *rel,
-					   bool tryextstats)
+					   RelOptInfo *rel)
 {
 	Selectivity s1 = 1.0;
 	RangeQueryClause *rqlist = NULL;
@@ -119,14 +117,13 @@ clauselist_selectivity(PlannerInfo *root,
 	 */
 	if (list_length(clauses) == 1)
 		return clause_selectivity(root, (Node *) linitial(clauses),
-							  varRelid, jointype, sjinfo, rel, tryextstats);
+							  varRelid, jointype, sjinfo, rel);
 
 	/*
-	 * If enabled, and we have the correct relation type, then attempt to
-	 * perform selectivity estimation using extended statistics.
+	 * If we have a valid rel and we have the correct rte kind, then attempt
+	 * to perform selectivity estimation using extended statistics.
 	 */
-	if (tryextstats && rel && rel->rtekind == RTE_RELATION &&
-		rel->statlist != NIL)
+	if (rel && rel->rtekind == RTE_RELATION && rel->statlist != NIL)
 	{
 		/*
 		 * Try to estimate with multivariate functional dependency statistics.
@@ -172,8 +169,7 @@ clauselist_selectivity(PlannerInfo *root,
 			continue;
 
 		/* Always compute the selectivity using clause_selectivity */
-		s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo, rel,
-								tryextstats);
+		s2 = clause_selectivity(root, clause, varRelid, jointype, sjinfo, rel);
 
 		/*
 		 * Check for being passed a RestrictInfo.
@@ -539,8 +535,7 @@ clause_selectivity(PlannerInfo *root,
 				   int varRelid,
 				   JoinType jointype,
 				   SpecialJoinInfo *sjinfo,
-				   RelOptInfo *rel,
-				   bool tryextstats)
+				   RelOptInfo *rel)
 {
 	Selectivity s1 = 0.5;		/* default for any unhandled clause type */
 	RestrictInfo *rinfo = NULL;
@@ -661,8 +656,7 @@ clause_selectivity(PlannerInfo *root,
 									  varRelid,
 									  jointype,
 									  sjinfo,
-									  rel,
-									  tryextstats);
+									  rel);
 	}
 	else if (and_clause(clause))
 	{
@@ -672,8 +666,7 @@ clause_selectivity(PlannerInfo *root,
 									varRelid,
 									jointype,
 									sjinfo,
-									rel,
-									tryextstats);
+									rel);
 	}
 	else if (or_clause(clause))
 	{
@@ -693,8 +686,7 @@ clause_selectivity(PlannerInfo *root,
 												varRelid,
 												jointype,
 												sjinfo,
-												rel,
-												tryextstats);
+												rel);
 
 			s1 = s1 + s2 - s1 * s2;
 		}
@@ -788,8 +780,7 @@ clause_selectivity(PlannerInfo *root,
 								varRelid,
 								jointype,
 								sjinfo,
-								rel,
-								tryextstats);
+								rel);
 	}
 	else if (IsA(clause, CoerceToDomain))
 	{
@@ -799,8 +790,7 @@ clause_selectivity(PlannerInfo *root,
 								varRelid,
 								jointype,
 								sjinfo,
-								rel,
-								tryextstats);
+								rel);
 	}
 	else
 	{
