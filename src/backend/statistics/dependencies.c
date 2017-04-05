@@ -33,16 +33,6 @@
 #include "utils/typcache.h"
 
 /*
- * DEPENDENCY_MIN_GROUP_SIZE defines how many matching sets of (k-1)
- * attributes are required to exist with the same k value before we count this
- * towards the functional dependencies. Having this set too low is more likely
- * to cause false positives of functional dependencies and too high a value
- * would be too strict, and may miss detection of functional dependencies.
- */
-#define DEPENDENCY_MIN_GROUP_SIZE 3
-
-
-/*
  * Internal state for DependencyGenerator of dependencies. Dependencies are similar to
  * k-permutations of n elements, except that the order does not matter for the
  * first (k-1) elements. That is, (a,b=>c) and (b,a=>c) are equivalent.
@@ -321,21 +311,13 @@ dependency_degree(int numrows, HeapTuple *rows, int k, AttrNumber *dependency,
 		multi_sort_compare_dims(0, k - 2, &items[i - 1], &items[i], mss) != 0)
 		{
 			/*
-			 * Do accounting for the preceding group, and reset counters.
-			 *
-			 * If there were no contradicting rows in the group, count the
-			 * rows as supporting.
-			 *
-			 * XXX Maybe the threshold here should be somehow related to the
-			 * number of distinct values in the combination of columns we're
-			 * analyzing. Assuming the distribution is uniform, we can
-			 * estimate the average group size and use it as a threshold,
-			 * similarly to what we do for MCV lists.
+			 * If no violations were found in the group then track the rows of
+			 * the group as supporting the functional dependency.
 			 */
-			if (n_violations == 0 && group_size >= DEPENDENCY_MIN_GROUP_SIZE)
+			if (n_violations == 0)
 				n_supporting_rows += group_size;
 
-			/* current values start a new group */
+			/* Reset counters for the new group */
 			n_violations = 0;
 			group_size = 1;
 			continue;
