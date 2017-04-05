@@ -201,6 +201,21 @@ struct HeapTupleHeaderData
 										 * upgrade support */
 #define HEAP_MOVED (HEAP_MOVED_OFF | HEAP_MOVED_IN)
 
+/*
+ * A WARM chain usually consists of two parts. Each of these parts are HOT
+ * chains in themselves i.e. all indexed columns has the same value, but a WARM
+ * update separates these parts. We need a mechanism to identify which part a
+ * tuple belongs to. We can't just look at if it's a
+ * HeapTupleHeaderIsWarmUpdated() because during WARM update, both old and new
+ * tuples are marked as WARM tuples.
+ *
+ * We need another infomask bit for this. But we use the same infomask bit that
+ * was earlier used for by old-style VACUUM FULL. This is safe because
+ * HEAP_WARM_TUPLE flag will always be set along with HEAP_WARM_UPDATED. So if
+ * HEAP_WARM_TUPLE and HEAP_WARM_UPDATED is set then we know that it's
+ * referring to red part of the WARM chain.
+ */
+#define HEAP_WARM_TUPLE			0x4000
 #define HEAP_XACT_MASK			0xFFF0	/* visibility-related bits */
 
 /*
@@ -260,7 +275,11 @@ struct HeapTupleHeaderData
  * information stored in t_infomask2:
  */
 #define HEAP_NATTS_MASK			0x07FF	/* 11 bits for number of attributes */
-/* bits 0x0800 are available */
+#define HEAP_WARM_UPDATED		0x0800	/*
+										 * This or a prior version of this
+										 * tuple in the current HOT chain was
+										 * once WARM updated
+										 */
 #define HEAP_LATEST_TUPLE		0x1000	/*
 										 * This is the last tuple in chain and
 										 * ip_posid points to the root line
@@ -271,7 +290,7 @@ struct HeapTupleHeaderData
 #define HEAP_HOT_UPDATED		0x4000	/* tuple was HOT-updated */
 #define HEAP_ONLY_TUPLE			0x8000	/* this is heap-only tuple */
 
-#define HEAP2_XACT_MASK			0xF000	/* visibility-related bits */
+#define HEAP2_XACT_MASK			0xF800	/* visibility-related bits */
 
 
 /*
@@ -396,7 +415,7 @@ struct HeapTupleHeaderData
 /* SetCmin is reasonably simple since we never need a combo CID */
 #define HeapTupleHeaderSetCmin(tup, cid) \
 do { \
-	Assert(!((tup)->t_infomask & HEAP_MOVED)); \
+	Assert(!HeapTupleHeaderIsMoved(tup)); \
 	(tup)->t_choice.t_heap.t_field3.t_cid = (cid); \
 	(tup)->t_infomask &= ~HEAP_COMBOCID; \
 } while (0)
@@ -404,7 +423,7 @@ do { \
 /* SetCmax must be used after HeapTupleHeaderAdjustCmax; see combocid.c */
 #define HeapTupleHeaderSetCmax(tup, cid, iscombo) \
 do { \
-	Assert(!((tup)->t_infomask & HEAP_MOVED)); \
+	Assert(!HeapTupleHeaderIsMoved(tup)); \
 	(tup)->t_choice.t_heap.t_field3.t_cid = (cid); \
 	if (iscombo) \
 		(tup)->t_infomask |= HEAP_COMBOCID; \
@@ -414,7 +433,7 @@ do { \
 
 #define HeapTupleHeaderGetXvac(tup) \
 ( \
-	((tup)->t_infomask & HEAP_MOVED) ? \
+	HeapTupleHeaderIsMoved(tup) ? \
 		(tup)->t_choice.t_heap.t_field3.t_xvac \
 	: \
 		InvalidTransactionId \
@@ -422,7 +441,7 @@ do { \
 
 #define HeapTupleHeaderSetXvac(tup, xid) \
 do { \
-	Assert((tup)->t_infomask & HEAP_MOVED); \
+	Assert(HeapTupleHeaderIsMoved(tup)); \
 	(tup)->t_choice.t_heap.t_field3.t_xvac = (xid); \
 } while (0)
 
@@ -508,6 +527,21 @@ do { \
 #define HeapTupleHeaderIsHeapOnly(tup) \
 ( \
   ((tup)->t_infomask2 & HEAP_ONLY_TUPLE) != 0 \
+)
+
+#define HeapTupleHeaderSetWarmUpdated(tup) \
+do { \
+	(tup)->t_infomask2 |= HEAP_WARM_UPDATED; \
+} while (0)
+
+#define HeapTupleHeaderClearWarmUpdated(tup) \
+do { \
+	(tup)->t_infomask2 &= ~HEAP_WARM_UPDATED; \
+} while (0)
+
+#define HeapTupleHeaderIsWarmUpdated(tup) \
+( \
+  ((tup)->t_infomask2 & HEAP_WARM_UPDATED) != 0 \
 )
 
 /*
@@ -632,6 +666,58 @@ do { \
 #define HeapTupleHeaderHasRootOffset(tup) \
 ( \
 	((tup)->t_infomask2 & HEAP_LATEST_TUPLE) != 0 \
+)
+
+/*
+ * Macros to check if tuple is a moved-off/in tuple by VACUUM FULL in from
+ * pre-9.0 era. Such tuple must not have HEAP_WARM_TUPLE flag set.
+ *
+ * Beware of multiple evaluations of the argument.
+ */
+#define HeapTupleHeaderIsMovedOff(tuple) \
+( \
+	!HeapTupleHeaderIsWarmUpdated((tuple)) && \
+	((tuple)->t_infomask & HEAP_MOVED_OFF) \
+)
+
+#define HeapTupleHeaderIsMovedIn(tuple) \
+( \
+	!HeapTupleHeaderIsWarmUpdated((tuple)) && \
+	((tuple)->t_infomask & HEAP_MOVED_IN) \
+)
+
+#define HeapTupleHeaderIsMoved(tuple) \
+( \
+	!HeapTupleHeaderIsWarmUpdated((tuple)) && \
+	((tuple)->t_infomask & HEAP_MOVED) \
+)
+
+/*
+ * Check if tuple belongs to the second part of the WARM chain.
+ *
+ * Beware of multiple evaluations of the argument.
+ */
+#define HeapTupleHeaderIsWarm(tuple) \
+( \
+	HeapTupleHeaderIsWarmUpdated(tuple) && \
+	(((tuple)->t_infomask & HEAP_WARM_TUPLE) != 0) \
+)
+
+/*
+ * Mark tuple as a member of the second part of the chain. Must only be done on
+ * a tuple which is already marked a WARM-tuple.
+ *
+ * Beware of multiple evaluations of the argument.
+ */
+#define HeapTupleHeaderSetWarm(tuple) \
+( \
+	AssertMacro(HeapTupleHeaderIsWarmUpdated(tuple)), \
+	(tuple)->t_infomask |= HEAP_WARM_TUPLE \
+)
+
+#define HeapTupleHeaderClearWarm(tuple) \
+( \
+	(tuple)->t_infomask &= ~HEAP_WARM_TUPLE \
 )
 
 /*
@@ -784,6 +870,24 @@ struct MinimalTupleData
 
 #define HeapTupleClearHeapOnly(tuple) \
 		HeapTupleHeaderClearHeapOnly((tuple)->t_data)
+
+#define HeapTupleIsWarmUpdated(tuple) \
+		HeapTupleHeaderIsWarmUpdated((tuple)->t_data)
+
+#define HeapTupleSetWarmUpdated(tuple) \
+		HeapTupleHeaderSetWarmUpdated((tuple)->t_data)
+
+#define HeapTupleClearWarmUpdated(tuple) \
+		HeapTupleHeaderClearWarmUpdated((tuple)->t_data)
+
+#define HeapTupleIsWarm(tuple) \
+		HeapTupleHeaderIsWarm((tuple)->t_data)
+
+#define HeapTupleSetWarm(tuple) \
+		HeapTupleHeaderSetWarm((tuple)->t_data)
+
+#define HeapTupleClearWarm(tuple) \
+		HeapTupleHeaderClearWarm((tuple)->t_data)
 
 #define HeapTupleGetOid(tuple) \
 		HeapTupleHeaderGetOid((tuple)->t_data)

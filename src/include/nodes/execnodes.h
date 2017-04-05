@@ -133,6 +133,7 @@ typedef struct IndexInfo
 	NodeTag		type;
 	int			ii_NumIndexAttrs;
 	AttrNumber	ii_KeyAttrNumbers[INDEX_MAX_KEYS];
+	Bitmapset  *ii_indxattrs;	/* bitmap of all columns used in this index */
 	List	   *ii_Expressions; /* list of Expr */
 	List	   *ii_ExpressionsState;	/* list of ExprState */
 	List	   *ii_Predicate;	/* list of Expr */

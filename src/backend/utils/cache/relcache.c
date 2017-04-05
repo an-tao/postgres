@@ -2339,6 +2339,7 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 	list_free_deep(relation->rd_fkeylist);
 	list_free(relation->rd_indexlist);
 	bms_free(relation->rd_indexattr);
+	bms_free(relation->rd_exprindexattr);
 	bms_free(relation->rd_keyattr);
 	bms_free(relation->rd_pkattr);
 	bms_free(relation->rd_idattr);
@@ -4354,6 +4355,13 @@ RelationGetIndexList(Relation relation)
 		return list_copy(relation->rd_indexlist);
 
 	/*
+	 * If the index list was invalidated, we better also invalidate the index
+	 * attribute list (which should automatically invalidate other attributes
+	 * such as primary key and replica identity)
+	 */
+	relation->rd_indexattr = NULL;
+
+	/*
 	 * We build the list we intend to return (in the caller's context) while
 	 * doing the scan.  After successfully completing the scan, we copy that
 	 * list into the relcache entry.  This avoids cache-context memory leakage
@@ -4836,15 +4844,20 @@ Bitmapset *
 RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 {
 	Bitmapset  *indexattrs;		/* indexed columns */
+	Bitmapset  *exprindexattrs;	/* indexed columns in expression/prediacate
+									 indexes */
 	Bitmapset  *uindexattrs;	/* columns in unique indexes */
 	Bitmapset  *pkindexattrs;	/* columns in the primary index */
 	Bitmapset  *idindexattrs;	/* columns in the replica identity */
+	Bitmapset  *indxnotreadyattrs;	/* columns in not ready indexes */
 	List	   *indexoidlist;
 	List	   *newindexoidlist;
+	List	   *indexattrsList;
 	Oid			relpkindex;
 	Oid			relreplindex;
 	ListCell   *l;
 	MemoryContext oldcxt;
+	bool		supportswarm = true;/* True if the table can be WARM updated */
 
 	/* Quick exit if we already computed the result. */
 	if (relation->rd_indexattr != NULL)
@@ -4859,6 +4872,10 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 				return bms_copy(relation->rd_pkattr);
 			case INDEX_ATTR_BITMAP_IDENTITY_KEY:
 				return bms_copy(relation->rd_idattr);
+			case INDEX_ATTR_BITMAP_EXPR_PREDICATE:
+				return bms_copy(relation->rd_exprindexattr);
+			case INDEX_ATTR_BITMAP_NOTREADY:
+				return bms_copy(relation->rd_indxnotreadyattr);
 			default:
 				elog(ERROR, "unknown attrKind %u", attrKind);
 		}
@@ -4899,9 +4916,12 @@ restart:
 	 * won't be returned at all by RelationGetIndexList.
 	 */
 	indexattrs = NULL;
+	exprindexattrs = NULL;
 	uindexattrs = NULL;
 	pkindexattrs = NULL;
 	idindexattrs = NULL;
+	indxnotreadyattrs = NULL;
+	indexattrsList = NIL;
 	foreach(l, indexoidlist)
 	{
 		Oid			indexOid = lfirst_oid(l);
@@ -4911,6 +4931,7 @@ restart:
 		bool		isKey;		/* candidate key */
 		bool		isPK;		/* primary key */
 		bool		isIDKey;	/* replica identity index */
+		Bitmapset	*thisindexattrs = NULL;
 
 		indexDesc = index_open(indexOid, AccessShareLock);
 
@@ -4935,7 +4956,14 @@ restart:
 
 			if (attrnum != 0)
 			{
+				thisindexattrs = bms_add_member(thisindexattrs,
+							   attrnum - FirstLowInvalidHeapAttributeNumber);
+
 				indexattrs = bms_add_member(indexattrs,
+							   attrnum - FirstLowInvalidHeapAttributeNumber);
+
+				if (!indexInfo->ii_ReadyForInserts)
+					indxnotreadyattrs = bms_add_member(indxnotreadyattrs,
 							   attrnum - FirstLowInvalidHeapAttributeNumber);
 
 				if (isKey)
@@ -4953,10 +4981,31 @@ restart:
 		}
 
 		/* Collect all attributes used in expressions, too */
-		pull_varattnos((Node *) indexInfo->ii_Expressions, 1, &indexattrs);
+		pull_varattnos((Node *) indexInfo->ii_Expressions, 1, &exprindexattrs);
 
 		/* Collect all attributes in the index predicate, too */
-		pull_varattnos((Node *) indexInfo->ii_Predicate, 1, &indexattrs);
+		pull_varattnos((Node *) indexInfo->ii_Predicate, 1, &exprindexattrs);
+
+		/*
+		 * indexattrs should include attributes referenced in index expressions
+		 * and predicates too.
+		 */
+		indexattrs = bms_add_members(indexattrs, exprindexattrs);
+		thisindexattrs = bms_add_members(thisindexattrs, exprindexattrs);
+
+		if (!indexInfo->ii_ReadyForInserts)
+			indxnotreadyattrs = bms_add_members(indxnotreadyattrs,
+					exprindexattrs);
+
+		/*
+		 * Check if the index has amrecheck method defined. If the method is
+		 * not defined, the index does not support WARM update. Completely
+		 * disable WARM updates on such tables.
+		 */
+		if (!indexDesc->rd_amroutine->amrecheck)
+			supportswarm = false;
+
+		indexattrsList = lappend(indexattrsList, thisindexattrs);
 
 		index_close(indexDesc, AccessShareLock);
 	}
@@ -4985,19 +5034,28 @@ restart:
 		bms_free(pkindexattrs);
 		bms_free(idindexattrs);
 		bms_free(indexattrs);
-
+		list_free_deep(indexattrsList);
 		goto restart;
 	}
+
+	/* Remember if the table can do WARM updates */
+	relation->rd_supportswarm = (RelationWarmUpdatesEnabled(relation) && supportswarm);
 
 	/* Don't leak the old values of these bitmaps, if any */
 	bms_free(relation->rd_indexattr);
 	relation->rd_indexattr = NULL;
+	bms_free(relation->rd_exprindexattr);
+	relation->rd_exprindexattr = NULL;
 	bms_free(relation->rd_keyattr);
 	relation->rd_keyattr = NULL;
 	bms_free(relation->rd_pkattr);
 	relation->rd_pkattr = NULL;
 	bms_free(relation->rd_idattr);
 	relation->rd_idattr = NULL;
+	bms_free(relation->rd_indxnotreadyattr);
+	relation->rd_indxnotreadyattr = NULL;
+	list_free_deep(relation->rd_indexattrsList);
+	relation->rd_indexattrsList = NIL;
 
 	/*
 	 * Now save copies of the bitmaps in the relcache entry.  We intentionally
@@ -5010,7 +5068,21 @@ restart:
 	relation->rd_keyattr = bms_copy(uindexattrs);
 	relation->rd_pkattr = bms_copy(pkindexattrs);
 	relation->rd_idattr = bms_copy(idindexattrs);
-	relation->rd_indexattr = bms_copy(indexattrs);
+	relation->rd_exprindexattr = bms_copy(exprindexattrs);
+	relation->rd_indexattr = bms_copy(bms_union(indexattrs, exprindexattrs));
+	relation->rd_indxnotreadyattr = bms_copy(indxnotreadyattrs);
+
+	/*
+	 * create a deep copy of the list, copying each bitmap in the
+	 * CurrentMemoryContext.
+	 */
+	foreach(l, indexattrsList)
+	{
+		Bitmapset *b = (Bitmapset *) lfirst(l);
+		relation->rd_indexattrsList = lappend(relation->rd_indexattrsList,
+				bms_copy(b));
+	}
+
 	MemoryContextSwitchTo(oldcxt);
 
 	/* We return our original working copy for caller to play with */
@@ -5024,10 +5096,42 @@ restart:
 			return bms_copy(relation->rd_pkattr);
 		case INDEX_ATTR_BITMAP_IDENTITY_KEY:
 			return idindexattrs;
+		case INDEX_ATTR_BITMAP_EXPR_PREDICATE:
+			return exprindexattrs;
+		case INDEX_ATTR_BITMAP_NOTREADY:
+			return indxnotreadyattrs;
 		default:
 			elog(ERROR, "unknown attrKind %u", attrKind);
 			return NULL;
 	}
+}
+
+/*
+ * Get a list of bitmaps, where each bitmap contains a list of attributes used
+ * by one index.
+ *
+ * The actual information is computed in RelationGetIndexAttrBitmap, but
+ * currently the only consumer of this function calls it immediately after
+ * calling RelationGetIndexAttrBitmap, we should be fine. We don't expect any
+ * relcache invalidation to come between these two calls and hence don't expect
+ * the cached information to change underneath.
+ */
+List *
+RelationGetIndexAttrList(Relation relation)
+{
+	ListCell   *l;
+	List	   *indexattrsList = NIL;
+
+	/*
+	 * Create a deep copy of the list by copying bitmaps in the
+	 * CurrentMemoryContext.
+	 */
+	foreach(l, relation->rd_indexattrsList)
+	{
+		Bitmapset *b = (Bitmapset *) lfirst(l);
+		indexattrsList = lappend(indexattrsList, bms_copy(b));
+	}
+	return indexattrsList;
 }
 
 /*
@@ -5636,6 +5740,7 @@ load_relcache_init_file(bool shared)
 		rel->rd_keyattr = NULL;
 		rel->rd_pkattr = NULL;
 		rel->rd_idattr = NULL;
+		rel->rd_indxnotreadyattr = NULL;
 		rel->rd_pubactions = NULL;
 		rel->rd_statvalid = false;
 		rel->rd_statlist = NIL;

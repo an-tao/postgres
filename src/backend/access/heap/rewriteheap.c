@@ -404,6 +404,14 @@ rewrite_heap_tuple(RewriteState state,
 		old_tuple->t_data->t_infomask & HEAP_XACT_MASK;
 
 	/*
+	 * We must clear the HEAP_WARM_TUPLE flag if the HEAP_WARM_UPDATED is
+	 * cleared above.
+	 */
+	if (HeapTupleHeaderIsWarmUpdated(old_tuple->t_data))
+		HeapTupleHeaderClearWarm(new_tuple->t_data);
+
+
+	/*
 	 * While we have our hands on the tuple, we may as well freeze any
 	 * eligible xmin or xmax, so that future VACUUM effort can be saved.
 	 */
@@ -428,7 +436,7 @@ rewrite_heap_tuple(RewriteState state,
 		memset(&hashkey, 0, sizeof(hashkey));
 		hashkey.xmin = HeapTupleHeaderGetUpdateXid(old_tuple->t_data);
 
-		/* 
+		/*
 		 * We've already checked that this is not the last tuple in the chain,
 		 * so fetch the next TID in the chain.
 		 */
@@ -737,7 +745,7 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
 		newitemid = PageGetItemId(page, newoff);
 		onpage_tup = (HeapTupleHeader) PageGetItem(page, newitemid);
 
-		/* 
+		/*
 		 * Set t_ctid just to ensure that block number is copied correctly, but
 		 * then immediately mark the tuple as the latest.
 		 */

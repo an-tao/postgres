@@ -142,8 +142,8 @@ IndexNext(IndexScanState *node)
 					   false);	/* don't pfree */
 
 		/*
-		 * If the index was lossy, we have to recheck the index quals using
-		 * the fetched tuple.
+		 * If the index was lossy or the tuple was WARM, we have to recheck
+		 * the index quals using the fetched tuple.
 		 */
 		if (scandesc->xs_recheck)
 		{

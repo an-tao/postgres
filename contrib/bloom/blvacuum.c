@@ -88,7 +88,7 @@ blbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		while (itup < itupEnd)
 		{
 			/* Do we have to delete this tuple? */
-			if (callback(&itup->heapPtr, callback_state))
+			if (callback(&itup->heapPtr, false, callback_state) == IBDCR_DELETE)
 			{
 				/* Yes; adjust count of tuples that will be left on page */
 				BloomPageGetOpaque(page)->maxoff--;

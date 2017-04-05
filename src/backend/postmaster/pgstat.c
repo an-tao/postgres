@@ -1888,7 +1888,7 @@ pgstat_count_heap_insert(Relation rel, PgStat_Counter n)
  * pgstat_count_heap_update - count a tuple update
  */
 void
-pgstat_count_heap_update(Relation rel, bool hot)
+pgstat_count_heap_update(Relation rel, bool hot, bool warm)
 {
 	PgStat_TableStatus *pgstat_info = rel->pgstat_info;
 
@@ -1906,6 +1906,8 @@ pgstat_count_heap_update(Relation rel, bool hot)
 		/* t_tuples_hot_updated is nontransactional, so just advance it */
 		if (hot)
 			pgstat_info->t_counts.t_tuples_hot_updated++;
+		else if (warm)
+			pgstat_info->t_counts.t_tuples_warm_updated++;
 	}
 }
 
@@ -4521,6 +4523,7 @@ pgstat_get_tab_entry(PgStat_StatDBEntry *dbentry, Oid tableoid, bool create)
 		result->tuples_updated = 0;
 		result->tuples_deleted = 0;
 		result->tuples_hot_updated = 0;
+		result->tuples_warm_updated = 0;
 		result->n_live_tuples = 0;
 		result->n_dead_tuples = 0;
 		result->changes_since_analyze = 0;
@@ -5630,6 +5633,7 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			tabentry->tuples_updated = tabmsg->t_counts.t_tuples_updated;
 			tabentry->tuples_deleted = tabmsg->t_counts.t_tuples_deleted;
 			tabentry->tuples_hot_updated = tabmsg->t_counts.t_tuples_hot_updated;
+			tabentry->tuples_warm_updated = tabmsg->t_counts.t_tuples_warm_updated;
 			tabentry->n_live_tuples = tabmsg->t_counts.t_delta_live_tuples;
 			tabentry->n_dead_tuples = tabmsg->t_counts.t_delta_dead_tuples;
 			tabentry->changes_since_analyze = tabmsg->t_counts.t_changed_tuples;
@@ -5657,6 +5661,7 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			tabentry->tuples_updated += tabmsg->t_counts.t_tuples_updated;
 			tabentry->tuples_deleted += tabmsg->t_counts.t_tuples_deleted;
 			tabentry->tuples_hot_updated += tabmsg->t_counts.t_tuples_hot_updated;
+			tabentry->tuples_warm_updated += tabmsg->t_counts.t_tuples_warm_updated;
 			/* If table was truncated, first reset the live/dead counters */
 			if (tabmsg->t_counts.t_truncated)
 			{

@@ -146,6 +146,7 @@ bthandler(PG_FUNCTION_ARGS)
 	amroutine->ambuild = btbuild;
 	amroutine->ambuildempty = btbuildempty;
 	amroutine->aminsert = btinsert;
+	amroutine->amwarminsert = btwarminsert;
 	amroutine->ambulkdelete = btbulkdelete;
 	amroutine->amvacuumcleanup = btvacuumcleanup;
 	amroutine->amcanreturn = btcanreturn;
@@ -163,6 +164,8 @@ bthandler(PG_FUNCTION_ARGS)
 	amroutine->amestimateparallelscan = btestimateparallelscan;
 	amroutine->aminitparallelscan = btinitparallelscan;
 	amroutine->amparallelrescan = btparallelrescan;
+	amroutine->amrecheck = btrecheck;
+	amroutine->amiswarm = btiswarm;
 
 	PG_RETURN_POINTER(amroutine);
 }
@@ -315,11 +318,12 @@ btbuildempty(Relation index)
  *		Descend the tree recursively, find the appropriate location for our
  *		new tuple, and put it there.
  */
-bool
-btinsert(Relation rel, Datum *values, bool *isnull,
+static bool
+btinsert_internal(Relation rel, Datum *values, bool *isnull,
 		 ItemPointer ht_ctid, Relation heapRel,
 		 IndexUniqueCheck checkUnique,
-		 IndexInfo *indexInfo)
+		 IndexInfo *indexInfo,
+		 bool warm_update)
 {
 	bool		result;
 	IndexTuple	itup;
@@ -328,11 +332,36 @@ btinsert(Relation rel, Datum *values, bool *isnull,
 	itup = index_form_tuple(RelationGetDescr(rel), values, isnull);
 	itup->t_tid = *ht_ctid;
 
+	if (warm_update)
+		ItemPointerSetFlags(&itup->t_tid, BTREE_INDEX_WARM_POINTER);
+	else
+		ItemPointerClearFlags(&itup->t_tid);
+
 	result = _bt_doinsert(rel, itup, checkUnique, heapRel);
 
 	pfree(itup);
 
 	return result;
+}
+
+bool
+btinsert(Relation rel, Datum *values, bool *isnull,
+		 ItemPointer ht_ctid, Relation heapRel,
+		 IndexUniqueCheck checkUnique,
+		 IndexInfo *indexInfo)
+{
+	return btinsert_internal(rel, values, isnull, ht_ctid, heapRel,
+			checkUnique, indexInfo, false);
+}
+
+bool
+btwarminsert(Relation rel, Datum *values, bool *isnull,
+		 ItemPointer ht_ctid, Relation heapRel,
+		 IndexUniqueCheck checkUnique,
+		 IndexInfo *indexInfo)
+{
+	return btinsert_internal(rel, values, isnull, ht_ctid, heapRel,
+			checkUnique, indexInfo, true);
 }
 
 /*
@@ -392,6 +421,20 @@ btgettuple(IndexScanDesc scan, ScanDirection dir)
 						palloc(MaxIndexTuplesPerPage * sizeof(int));
 				if (so->numKilled < MaxIndexTuplesPerPage)
 					so->killedItems[so->numKilled++] = so->currPos.itemIndex;
+			}
+			else if (scan->warm_prior_tuple)
+			{
+				/*
+				 * Check if the previously fetched tuple should be marked with
+				 * a WARM flag. Similar to killedItems, we don't let to overrun
+				 * the array if the indexscan reverses the direction and we see
+				 * the same tuple twice.
+				 */
+				if (so->setWarmItems == NULL)
+					so->setWarmItems = (int *)
+						palloc(MaxIndexTuplesPerPage * sizeof(int));
+				if (so->numSet < MaxIndexTuplesPerPage)
+					so->setWarmItems[so->numSet++] = so->currPos.itemIndex;
 			}
 
 			/*
@@ -499,6 +542,9 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	so->killedItems = NULL;		/* until needed */
 	so->numKilled = 0;
 
+	so->setWarmItems = NULL;
+	so->numSet = 0;
+
 	/*
 	 * We don't know yet whether the scan will be index-only, so we do not
 	 * allocate the tuple workspace arrays until btrescan.  However, we set up
@@ -528,6 +574,9 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 		/* Before leaving current page, deal with any killed items */
 		if (so->numKilled > 0)
 			_bt_killitems(scan);
+		/* Also deal with items which could be marked WARM */
+		if (so->numSet > 0)
+			_bt_warmitems(scan);
 		BTScanPosUnpinIfPinned(so->currPos);
 		BTScanPosInvalidate(so->currPos);
 	}
@@ -587,6 +636,9 @@ btendscan(IndexScanDesc scan)
 		/* Before leaving current page, deal with any killed items */
 		if (so->numKilled > 0)
 			_bt_killitems(scan);
+		/* Also deal with items which could be marked WARM */
+		if (so->numSet > 0)
+			_bt_warmitems(scan);
 		BTScanPosUnpinIfPinned(so->currPos);
 	}
 
@@ -603,6 +655,8 @@ btendscan(IndexScanDesc scan)
 		MemoryContextDelete(so->arrayContext);
 	if (so->killedItems != NULL)
 		pfree(so->killedItems);
+	if (so->setWarmItems != NULL)
+		pfree(so->setWarmItems);
 	if (so->currTuples != NULL)
 		pfree(so->currTuples);
 	/* so->markTuples should not be pfree'd, see btrescan */
@@ -675,6 +729,9 @@ btrestrpos(IndexScanDesc scan)
 			/* Before leaving current page, deal with any killed items */
 			if (so->numKilled > 0)
 				_bt_killitems(scan);
+			/* Also deal with items which could be marked WARM */
+			if (so->numSet > 0)
+				_bt_warmitems(scan);
 			BTScanPosUnpinIfPinned(so->currPos);
 		}
 
@@ -1103,7 +1160,7 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 								 RBM_NORMAL, info->strategy);
 		LockBufferForCleanup(buf);
 		_bt_checkpage(rel, buf);
-		_bt_delitems_vacuum(rel, buf, NULL, 0, vstate.lastBlockVacuumed);
+		_bt_handleitems_vacuum(rel, buf, NULL, 0, NULL, 0);
 		_bt_relbuf(rel, buf);
 	}
 
@@ -1201,6 +1258,8 @@ restart:
 	{
 		OffsetNumber deletable[MaxOffsetNumber];
 		int			ndeletable;
+		OffsetNumber clearwarm[MaxOffsetNumber];
+		int			nclearwarm;
 		OffsetNumber offnum,
 					minoff,
 					maxoff;
@@ -1239,7 +1298,7 @@ restart:
 		 * Scan over all items to see which ones need deleted according to the
 		 * callback function.
 		 */
-		ndeletable = 0;
+		ndeletable = nclearwarm = 0;
 		minoff = P_FIRSTDATAKEY(opaque);
 		maxoff = PageGetMaxOffsetNumber(page);
 		if (callback)
@@ -1250,6 +1309,9 @@ restart:
 			{
 				IndexTuple	itup;
 				ItemPointer htup;
+				int			flags;
+				bool		is_warm = false;
+				IndexBulkDeleteCallbackResult	result;
 
 				itup = (IndexTuple) PageGetItem(page,
 												PageGetItemId(page, offnum));
@@ -1276,16 +1338,36 @@ restart:
 				 * applies to *any* type of index that marks index tuples as
 				 * killed.
 				 */
-				if (callback(htup, callback_state))
+				flags = ItemPointerGetFlags(&itup->t_tid);
+				is_warm = ((flags & BTREE_INDEX_WARM_POINTER) != 0);
+
+				if (is_warm)
+					stats->num_warm_pointers++;
+				else
+					stats->num_clear_pointers++;
+
+				result = callback(htup, is_warm, callback_state);
+				if (result == IBDCR_DELETE)
+				{
+					if (is_warm)
+						stats->warm_pointers_removed++;
+					else
+						stats->clear_pointers_removed++;
 					deletable[ndeletable++] = offnum;
+				}
+				else if (result == IBDCR_CLEAR_WARM)
+				{
+					clearwarm[nclearwarm++] = offnum;
+				}
 			}
 		}
 
 		/*
-		 * Apply any needed deletes.  We issue just one _bt_delitems_vacuum()
-		 * call per page, so as to minimize WAL traffic.
+		 * Apply any needed deletes and clearing.  We issue just one
+		 * _bt_handleitems_vacuum() call per page, so as to minimize WAL
+		 * traffic.
 		 */
-		if (ndeletable > 0)
+		if (ndeletable > 0 || nclearwarm > 0)
 		{
 			/*
 			 * Notice that the issued XLOG_BTREE_VACUUM WAL record includes
@@ -1301,8 +1383,8 @@ restart:
 			 * doesn't seem worth the amount of bookkeeping it'd take to avoid
 			 * that.
 			 */
-			_bt_delitems_vacuum(rel, buf, deletable, ndeletable,
-								vstate->lastBlockVacuumed);
+			_bt_handleitems_vacuum(rel, buf, deletable, ndeletable,
+								clearwarm, nclearwarm);
 
 			/*
 			 * Remember highest leaf page number we've issued a
@@ -1312,6 +1394,7 @@ restart:
 				vstate->lastBlockVacuumed = blkno;
 
 			stats->tuples_removed += ndeletable;
+			stats->pointers_cleared += nclearwarm;
 			/* must recompute maxoff */
 			maxoff = PageGetMaxOffsetNumber(page);
 		}

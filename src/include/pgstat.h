@@ -105,6 +105,7 @@ typedef struct PgStat_TableCounts
 	PgStat_Counter t_tuples_updated;
 	PgStat_Counter t_tuples_deleted;
 	PgStat_Counter t_tuples_hot_updated;
+	PgStat_Counter t_tuples_warm_updated;
 	bool		t_truncated;
 
 	PgStat_Counter t_delta_live_tuples;
@@ -625,6 +626,7 @@ typedef struct PgStat_StatTabEntry
 	PgStat_Counter tuples_updated;
 	PgStat_Counter tuples_deleted;
 	PgStat_Counter tuples_hot_updated;
+	PgStat_Counter tuples_warm_updated;
 
 	PgStat_Counter n_live_tuples;
 	PgStat_Counter n_dead_tuples;
@@ -1285,7 +1287,7 @@ pgstat_report_wait_end(void)
 	(pgStatBlockWriteTime += (n))
 
 extern void pgstat_count_heap_insert(Relation rel, PgStat_Counter n);
-extern void pgstat_count_heap_update(Relation rel, bool hot);
+extern void pgstat_count_heap_update(Relation rel, bool hot, bool warm);
 extern void pgstat_count_heap_delete(Relation rel);
 extern void pgstat_count_truncate(Relation rel);
 extern void pgstat_update_heap_dead_tuples(Relation rel, int delta);

@@ -694,7 +694,14 @@ DefineIndex(Oid relationId,
 	 * visible to other transactions before we start to build the index. That
 	 * will prevent them from making incompatible HOT updates.  The new index
 	 * will be marked not indisready and not indisvalid, so that no one else
-	 * tries to either insert into it or use it for queries.
+	 * tries to either insert into it or use it for queries. In addition to
+	 * that, WARM updates will be disallowed if an update is modifying one of
+	 * the columns used by this new index. This is necessary to ensure that we
+	 * don't create WARM tuples which do not have corresponding entry in this
+	 * index. It must be noted that during the second phase, we will index only
+	 * those heap tuples whose root line pointer is not already in the index,
+	 * hence it's important that all tuples in a given chain, has the same
+	 * value for any indexed column (including this new index).
 	 *
 	 * We must commit our current transaction so that the index becomes
 	 * visible; then start another.  Note that all the data structures we just
@@ -742,7 +749,10 @@ DefineIndex(Oid relationId,
 	 * marked as "not-ready-for-inserts".  The index is consulted while
 	 * deciding HOT-safety though.  This arrangement ensures that no new HOT
 	 * chains can be created where the new tuple and the old tuple in the
-	 * chain have different index keys.
+	 * chain have different index keys. Also, the new index is consulted for
+	 * deciding whether a WARM update is possible, and WARM update is not done
+	 * if a column used by this index is being updated. This ensures that we
+	 * don't create WARM tuples which are not indexed by this index.
 	 *
 	 * We now take a new snapshot, and build the index using all tuples that
 	 * are visible in this snapshot.  We can be sure that any HOT updates to
@@ -777,7 +787,8 @@ DefineIndex(Oid relationId,
 	/*
 	 * Update the pg_index row to mark the index as ready for inserts. Once we
 	 * commit this transaction, any new transactions that open the table must
-	 * insert new entries into the index for insertions and non-HOT updates.
+	 * insert new entries into the index for insertions and non-HOT updates or
+	 * WARM updates where this index needs new entry.
 	 */
 	index_set_state_flags(indexRelationId, INDEX_CREATE_SET_READY);
 

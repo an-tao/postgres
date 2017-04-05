@@ -161,15 +161,15 @@ ALTER SERVER alt_fserv1 RENAME TO alt_fserv3;   -- OK
 SELECT fdwname FROM pg_foreign_data_wrapper WHERE fdwname like 'alt_fdw%';
  fdwname  
 ----------
- alt_fdw2
  alt_fdw3
+ alt_fdw2
 (2 rows)
 
 SELECT srvname FROM pg_foreign_server WHERE srvname like 'alt_fserv%';
   srvname   
 ------------
- alt_fserv2
  alt_fserv3
+ alt_fserv2
 (2 rows)
 
 --

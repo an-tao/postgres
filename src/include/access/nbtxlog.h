@@ -142,7 +142,8 @@ typedef struct xl_btree_reuse_page
 /*
  * This is what we need to know about vacuum of individual leaf index tuples.
  * The WAL record can represent deletion of any number of index tuples on a
- * single index page when executed by VACUUM.
+ * single index page when executed by VACUUM. It also includes tuples which
+ * are cleared of WARM bits by VACUUM.
  *
  * For MVCC scans, lastBlockVacuumed will be set to InvalidBlockNumber.
  * For a non-MVCC index scans there is an additional correctness requirement
@@ -165,11 +166,12 @@ typedef struct xl_btree_reuse_page
 typedef struct xl_btree_vacuum
 {
 	BlockNumber lastBlockVacuumed;
-
-	/* TARGET OFFSET NUMBERS FOLLOW */
+	uint16		ndelitems;
+	uint16		nclearitems;
+	/* ndelitems + nclearitems TARGET OFFSET NUMBERS FOLLOW */
 } xl_btree_vacuum;
 
-#define SizeOfBtreeVacuum	(offsetof(xl_btree_vacuum, lastBlockVacuumed) + sizeof(BlockNumber))
+#define SizeOfBtreeVacuum	(offsetof(xl_btree_vacuum, nclearitems) + sizeof(uint16))
 
 /*
  * This is what we need to know about marking an empty branch for deletion.

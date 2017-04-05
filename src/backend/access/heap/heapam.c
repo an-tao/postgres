@@ -97,9 +97,12 @@ static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 				HeapTuple newtup, OffsetNumber root_offnum,
 				HeapTuple old_key_tup,
 				bool all_visible_cleared, bool new_all_visible_cleared);
-static Bitmapset *HeapDetermineModifiedColumns(Relation relation,
+static void HeapCheckColumns(Relation relation,
 							 Bitmapset *interesting_cols,
-							 HeapTuple oldtup, HeapTuple newtup);
+							 HeapTuple oldtup, HeapTuple newtup,
+							 Bitmapset **toasted_attrs,
+							 Bitmapset **compressed_attrs,
+							 Bitmapset **modified_attrs);
 static bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
 					 LockTupleMode mode, LockWaitPolicy wait_policy,
 					 bool *have_tuple_lock);
@@ -1974,6 +1977,212 @@ heap_fetch(Relation relation,
 }
 
 /*
+ * Check status of a (possibly) WARM chain.
+ *
+ * This function looks at a HOT/WARM chain starting at tid and return a bitmask
+ * of information. We only follow the chain as long as it's known to be valid
+ * HOT chain. Information returned by the function consists of:
+ *
+ *  HCWC_WARM_UPDATED_TUPLE - a tuple with HEAP_WARM_UPDATED is found somewhere
+ *  						  in the chain. Note that when a tuple is WARM
+ *  						  updated, both old and new versions are marked
+ *  						  with this flag. So presence of this flag
+ *  						  indicates that a WARM update was performed on
+ *  						  this chain, but the update may have either
+ *  						  committed or aborted.
+ *
+ *  HCWC_WARM_TUPLE  - a tuple with HEAP_WARM_TUPLE is found somewhere in
+ *					  the chain. This flag is set only on the new version of
+ *					  the tuple while performing WARM update.
+ *
+ *  HCWC_CLEAR_TUPLE - a tuple without HEAP_WARM_TUPLE is found somewhere in
+ *  					 the chain. This either implies that the WARM updated
+ *  					 either aborted or it's recent enough that the old
+ *  					 tuple is still not pruned away by chain pruning logic.
+ *
+ *	If stop_at_warm is true, we stop when the first HEAP_WARM_UPDATED tuple is
+ *	found and return information collected so far.
+ */
+HeapCheckWarmChainStatus
+heap_check_warm_chain(Page dp, ItemPointer tid, bool stop_at_warm)
+{
+	TransactionId				prev_xmax = InvalidTransactionId;
+	OffsetNumber				offnum;
+	HeapTupleData				heapTuple;
+	HeapCheckWarmChainStatus	status = 0;
+
+	offnum = ItemPointerGetOffsetNumber(tid);
+	heapTuple.t_self = *tid;
+	/* Scan through possible multiple members of HOT-chain */
+	for (;;)
+	{
+		ItemId		lp;
+
+		/* check for bogus TID */
+		if (offnum < FirstOffsetNumber || offnum > PageGetMaxOffsetNumber(dp))
+			break;
+
+		lp = PageGetItemId(dp, offnum);
+
+		/* check for unused, dead, or redirected items */
+		if (!ItemIdIsNormal(lp))
+		{
+			if (ItemIdIsRedirected(lp))
+			{
+				/* Follow the redirect */
+				offnum = ItemIdGetRedirect(lp);
+				continue;
+			}
+			/* else must be end of chain */
+			break;
+		}
+
+		heapTuple.t_data = (HeapTupleHeader) PageGetItem(dp, lp);
+		ItemPointerSetOffsetNumber(&heapTuple.t_self, offnum);
+
+		/*
+		 * The xmin should match the previous xmax value, else chain is
+		 * broken.
+		 */
+		if (TransactionIdIsValid(prev_xmax) &&
+			!TransactionIdEquals(prev_xmax,
+								 HeapTupleHeaderGetXmin(heapTuple.t_data)))
+			break;
+
+
+		if (HeapTupleHeaderIsWarmUpdated(heapTuple.t_data))
+		{
+			/* We found a WARM_UPDATED tuple */
+			status |= HCWC_WARM_UPDATED_TUPLE;
+
+			/*
+			 * If we've been told to stop at the first WARM_UPDATED tuple, just
+			 * return whatever information collected so far.
+			 */
+			if (stop_at_warm)
+				return status;
+
+			/*
+			 * Remember whether it's a CLEAR or a WARM tuple.
+			 */
+			if (HeapTupleHeaderIsWarm(heapTuple.t_data))
+				status |= HCWC_WARM_TUPLE;
+			else
+				status |= HCWC_CLEAR_TUPLE;
+		}
+		else
+			/* Must be a regular, non-WARM tuple */
+			status |= HCWC_CLEAR_TUPLE;
+
+		/*
+		 * Check to see if HOT chain continues past this tuple; if so fetch
+		 * the next offnum and loop around.
+		 */
+		if (!HeapTupleIsHotUpdated(&heapTuple))
+			break;
+
+		/*
+		 * It can't be a HOT chain if the tuple contains root line pointer
+		 */
+		if (HeapTupleHeaderHasRootOffset(heapTuple.t_data))
+			break;
+
+		offnum = ItemPointerGetOffsetNumber(&heapTuple.t_data->t_ctid);
+		prev_xmax = HeapTupleHeaderGetUpdateXid(heapTuple.t_data);
+	}
+
+	/* All OK. No need to recheck */
+	return status;
+}
+
+/*
+ * Scan through the WARM chain starting at tid and reset all WARM related
+ * flags. At the end, the chain will have all characteristics of a regular HOT
+ * chain.
+ *
+ * Return the number of cleared offnums. Cleared offnums are returned in the
+ * passed-in cleared_offnums array. The caller must ensure that the array is
+ * large enough to hold maximum offnums that can be cleared by this invokation
+ * of heap_clear_warm_chain().
+ */
+int
+heap_clear_warm_chain(Page dp, ItemPointer tid, OffsetNumber *cleared_offnums)
+{
+	TransactionId				prev_xmax = InvalidTransactionId;
+	OffsetNumber				offnum;
+	HeapTupleData				heapTuple;
+	int							num_cleared = 0;
+
+	offnum = ItemPointerGetOffsetNumber(tid);
+	heapTuple.t_self = *tid;
+	/* Scan through possible multiple members of HOT-chain */
+	for (;;)
+	{
+		ItemId		lp;
+
+		/* check for bogus TID */
+		if (offnum < FirstOffsetNumber || offnum > PageGetMaxOffsetNumber(dp))
+			break;
+
+		lp = PageGetItemId(dp, offnum);
+
+		/* check for unused, dead, or redirected items */
+		if (!ItemIdIsNormal(lp))
+		{
+			if (ItemIdIsRedirected(lp))
+			{
+				/* Follow the redirect */
+				offnum = ItemIdGetRedirect(lp);
+				continue;
+			}
+			/* else must be end of chain */
+			break;
+		}
+
+		heapTuple.t_data = (HeapTupleHeader) PageGetItem(dp, lp);
+		ItemPointerSetOffsetNumber(&heapTuple.t_self, offnum);
+
+		/*
+		 * The xmin should match the previous xmax value, else chain is
+		 * broken.
+		 */
+		if (TransactionIdIsValid(prev_xmax) &&
+			!TransactionIdEquals(prev_xmax,
+								 HeapTupleHeaderGetXmin(heapTuple.t_data)))
+			break;
+
+
+		/*
+		 * Clear WARM_UPDATED and WARM flags.
+		 */
+		if (HeapTupleHeaderIsWarmUpdated(heapTuple.t_data))
+		{
+			HeapTupleHeaderClearWarmUpdated(heapTuple.t_data);
+			HeapTupleHeaderClearWarm(heapTuple.t_data);
+			cleared_offnums[num_cleared++] = offnum;
+		}
+
+		/*
+		 * Check to see if HOT chain continues past this tuple; if so fetch
+		 * the next offnum and loop around.
+		 */
+		if (!HeapTupleIsHotUpdated(&heapTuple))
+			break;
+
+		/*
+		 * It can't be a HOT chain if the tuple contains root line pointer
+		 */
+		if (HeapTupleHeaderHasRootOffset(heapTuple.t_data))
+			break;
+
+		offnum = ItemPointerGetOffsetNumber(&heapTuple.t_data->t_ctid);
+		prev_xmax = HeapTupleHeaderGetUpdateXid(heapTuple.t_data);
+	}
+
+	return num_cleared;
+}
+
+/*
  *	heap_hot_search_buffer	- search HOT chain for tuple satisfying snapshot
  *
  * On entry, *tid is the TID of a tuple (either a simple tuple, or the root
@@ -1993,11 +2202,15 @@ heap_fetch(Relation relation,
  * Unlike heap_fetch, the caller must already have pin and (at least) share
  * lock on the buffer; it is still pinned/locked at exit.  Also unlike
  * heap_fetch, we do not report any pgstats count; caller may do so if wanted.
+ *
+ * recheck should be set false on entry by caller, will be set true on exit
+ * if a WARM tuple is encountered.
  */
 bool
 heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 					   Snapshot snapshot, HeapTuple heapTuple,
-					   bool *all_dead, bool first_call)
+					   bool *all_dead, bool first_call,
+					   HeapCheckWarmChainStatus *status)
 {
 	Page		dp = (Page) BufferGetPage(buffer);
 	TransactionId prev_xmax = InvalidTransactionId;
@@ -2010,6 +2223,9 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	if (all_dead)
 		*all_dead = first_call;
 
+	if (status)
+		*status = 0;
+
 	Assert(TransactionIdIsValid(RecentGlobalXmin));
 
 	Assert(ItemPointerGetBlockNumber(tid) == BufferGetBlockNumber(buffer));
@@ -2018,6 +2234,22 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 	skip = !first_call;
 
 	heapTuple->t_self = *tid;
+
+
+	/*
+	 * Check status of the chain if the caller has asked for it. We do it only
+	 * once for each chain.
+	 *
+	 * XXX This is not very efficient right now, and we should look for
+	 * possible improvements here.
+	 *
+	 * XXX We currently don't support turning enable_warm OFF once it's
+	 * turned ON. But if we ever do that, we must not rely on
+	 * RelationWarmUpdatesEnabled check to decide whether recheck is needed
+	 * or not.
+	 */
+	if (RelationWarmUpdatesEnabled(relation) && status)
+		*status = heap_check_warm_chain(dp, &heapTuple->t_self, false);
 
 	/* Scan through possible multiple members of HOT-chain */
 	for (;;)
@@ -2051,9 +2283,12 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		ItemPointerSetOffsetNumber(&heapTuple->t_self, offnum);
 
 		/*
-		 * Shouldn't see a HEAP_ONLY tuple at chain start.
+		 * Shouldn't see a HEAP_ONLY tuple at chain start, unless we are
+		 * dealing with a WARM updated tuple in which case deferred triggers
+		 * may request to fetch a WARM tuple from middle of a chain.
 		 */
-		if (at_chain_start && HeapTupleIsHeapOnly(heapTuple))
+		if (at_chain_start && HeapTupleIsHeapOnly(heapTuple) &&
+				!HeapTupleIsWarmUpdated(heapTuple))
 			break;
 
 		/*
@@ -2114,7 +2349,8 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 		 * Check to see if HOT chain continues past this tuple; if so fetch
 		 * the next offnum and loop around.
 		 */
-		if (HeapTupleIsHotUpdated(heapTuple))
+		if (HeapTupleIsHotUpdated(heapTuple) &&
+			!HeapTupleHeaderHasRootOffset(heapTuple->t_data))
 		{
 			Assert(ItemPointerGetBlockNumber(&heapTuple->t_data->t_ctid) ==
 				   ItemPointerGetBlockNumber(tid));
@@ -2138,18 +2374,48 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
  */
 bool
 heap_hot_search(ItemPointer tid, Relation relation, Snapshot snapshot,
-				bool *all_dead)
+				bool *all_dead, bool *recheck, Buffer *cbuffer,
+				HeapTuple heapTuple)
 {
 	bool		result;
 	Buffer		buffer;
-	HeapTupleData heapTuple;
+	ItemPointerData ret_tid = *tid;
+	HeapCheckWarmChainStatus status = 0;
 
 	buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(tid));
 	LockBuffer(buffer, BUFFER_LOCK_SHARE);
-	result = heap_hot_search_buffer(tid, relation, buffer, snapshot,
-									&heapTuple, all_dead, true);
-	LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
-	ReleaseBuffer(buffer);
+	result = heap_hot_search_buffer(&ret_tid, relation, buffer, snapshot,
+									heapTuple, all_dead, true, &status);
+
+	/*
+	 * If the chain contains a WARM_UPDATED tuple, then we must do a recheck.
+	 */
+	if (HCWC_IS_WARM_UPDATED(status) && recheck)
+		*recheck = true;
+
+	/*
+	 * If we are returning a potential candidate tuple from this chain and the
+	 * caller has requested for "recheck" hint, keep the buffer locked and
+	 * pinned. The caller must release the lock and pin on the buffer in all
+	 * such cases.
+	 */
+	if (!result || !recheck || !(*recheck))
+	{
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
+		ReleaseBuffer(buffer);
+	}
+
+	/*
+	 * Set the caller supplied tid with the actual location of the tuple being
+	 * returned.
+	 */
+	if (result)
+	{
+		*tid = ret_tid;
+		if (cbuffer)
+			*cbuffer = buffer;
+	}
+
 	return result;
 }
 
@@ -2792,7 +3058,7 @@ heap_multi_insert(Relation relation, HeapTuple *tuples, int ntuples,
 		{
 			XLogRecPtr	recptr;
 			xl_heap_multi_insert *xlrec;
-			uint8		info = XLOG_HEAP2_MULTI_INSERT;
+			uint8		info = XLOG_HEAP_MULTI_INSERT;
 			char	   *tupledata;
 			int			totaldatalen;
 			char	   *scratchptr = scratch;
@@ -2889,7 +3155,7 @@ heap_multi_insert(Relation relation, HeapTuple *tuples, int ntuples,
 			/* filtering by origin on a row level is much more efficient */
 			XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
-			recptr = XLogInsert(RM_HEAP2_ID, info);
+			recptr = XLogInsert(RM_HEAP_ID, info);
 
 			PageSetLSN(page, recptr);
 		}
@@ -3045,7 +3311,7 @@ heap_delete(Relation relation, ItemPointer tid,
 	bool		all_visible_cleared = false;
 	HeapTuple	old_key_tuple = NULL;	/* replica identity of the tuple */
 	bool		old_key_copied = false;
-	OffsetNumber	root_offnum;
+	OffsetNumber	root_offnum = InvalidOffsetNumber;
 
 	Assert(ItemPointerIsValid(tid));
 
@@ -3278,7 +3544,7 @@ l1:
 							  &new_xmax, &new_infomask, &new_infomask2);
 
 	/*
-	 * heap_get_root_tuple_one() may call palloc, which is disallowed once we
+	 * heap_get_root_tuple() may call palloc, which is disallowed once we
 	 * enter the critical section. So check if the root offset is cached in the
 	 * tuple and if not, fetch that information hard way before entering the
 	 * critical section.
@@ -3313,7 +3579,9 @@ l1:
 	}
 
 	/* store transaction information of xact deleting the tuple */
-	tp.t_data->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
+	tp.t_data->t_infomask &= ~HEAP_XMAX_BITS;
+	if (HeapTupleHeaderIsMoved(tp.t_data))
+		tp.t_data->t_infomask &= ~HEAP_MOVED;
 	tp.t_data->t_infomask2 &= ~HEAP_KEYS_UPDATED;
 	tp.t_data->t_infomask |= new_infomask;
 	tp.t_data->t_infomask2 |= new_infomask2;
@@ -3508,15 +3776,21 @@ simple_heap_delete(Relation relation, ItemPointer tid)
 HTSU_Result
 heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
-			HeapUpdateFailureData *hufd, LockTupleMode *lockmode)
+			HeapUpdateFailureData *hufd, LockTupleMode *lockmode,
+			Bitmapset **modified_attrsp, bool *warm_update)
 {
 	HTSU_Result result;
 	TransactionId xid = GetCurrentTransactionId();
 	Bitmapset  *hot_attrs;
 	Bitmapset  *key_attrs;
 	Bitmapset  *id_attrs;
+	Bitmapset  *exprindx_attrs;
 	Bitmapset  *interesting_attrs;
 	Bitmapset  *modified_attrs;
+	Bitmapset  *notready_attrs;
+	Bitmapset  *compressed_attrs;
+	Bitmapset  *toasted_attrs;
+	List	   *indexattrsList;
 	ItemId		lp;
 	HeapTupleData oldtup;
 	HeapTuple	heaptup;
@@ -3524,8 +3798,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	bool		old_key_copied = false;
 	Page		page;
 	BlockNumber block;
-	OffsetNumber	offnum;
-	OffsetNumber	root_offnum;
+	OffsetNumber	root_offnum = InvalidOffsetNumber;
 	MultiXactStatus mxact_status;
 	Buffer		buffer,
 				newbuf,
@@ -3537,6 +3810,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	bool		have_tuple_lock = false;
 	bool		iscombo;
 	bool		use_hot_update = false;
+	bool		use_warm_update = false;
 	bool		hot_attrs_checked = false;
 	bool		key_intact;
 	bool		all_visible_cleared = false;
@@ -3562,6 +3836,10 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 				(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
 				 errmsg("cannot update tuples during a parallel operation")));
 
+	/* Assume no-warm update */
+	if (warm_update)
+		*warm_update = false;
+
 	/*
 	 * Fetch the list of attributes to be checked for various operations.
 	 *
@@ -3582,10 +3860,14 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	key_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_KEY);
 	id_attrs = RelationGetIndexAttrBitmap(relation,
 										  INDEX_ATTR_BITMAP_IDENTITY_KEY);
+	exprindx_attrs = RelationGetIndexAttrBitmap(relation,
+										  INDEX_ATTR_BITMAP_EXPR_PREDICATE);
+	notready_attrs = RelationGetIndexAttrBitmap(relation,
+										  INDEX_ATTR_BITMAP_NOTREADY);
 
+	indexattrsList = RelationGetIndexAttrList(relation);
 
 	block = ItemPointerGetBlockNumber(otid);
-	offnum = ItemPointerGetOffsetNumber(otid);
 	buffer = ReadBuffer(relation, block);
 	page = BufferGetPage(buffer);
 
@@ -3605,8 +3887,11 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 		interesting_attrs = bms_add_members(interesting_attrs, hot_attrs);
 		hot_attrs_checked = true;
 	}
+
 	interesting_attrs = bms_add_members(interesting_attrs, key_attrs);
 	interesting_attrs = bms_add_members(interesting_attrs, id_attrs);
+	interesting_attrs = bms_add_members(interesting_attrs, exprindx_attrs);
+	interesting_attrs = bms_add_members(interesting_attrs, notready_attrs);
 
 	/*
 	 * Before locking the buffer, pin the visibility map page if it appears to
@@ -3623,7 +3908,7 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	Assert(ItemIdIsNormal(lp));
 
 	/*
-	 * Fill in enough data in oldtup for HeapDetermineModifiedColumns to work
+	 * Fill in enough data in oldtup for HeapCheckColumns to work
 	 * properly.
 	 */
 	oldtup.t_tableOid = RelationGetRelid(relation);
@@ -3650,8 +3935,12 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 	}
 
 	/* Determine columns modified by the update. */
-	modified_attrs = HeapDetermineModifiedColumns(relation, interesting_attrs,
-												  &oldtup, newtup);
+	HeapCheckColumns(relation, interesting_attrs,
+								 &oldtup, newtup, &toasted_attrs,
+								 &compressed_attrs, &modified_attrs);
+
+	if (modified_attrsp)
+		*modified_attrsp = bms_copy(modified_attrs);
 
 	/*
 	 * If we're not updating any "key" column, we can grab a weaker lock type.
@@ -3908,8 +4197,10 @@ l2:
 		bms_free(hot_attrs);
 		bms_free(key_attrs);
 		bms_free(id_attrs);
+		bms_free(exprindx_attrs);
 		bms_free(modified_attrs);
 		bms_free(interesting_attrs);
+		bms_free(notready_attrs);
 		return result;
 	}
 
@@ -4034,7 +4325,6 @@ l2:
 		uint16		infomask_lock_old_tuple,
 					infomask2_lock_old_tuple;
 		bool		cleared_all_frozen = false;
-		OffsetNumber	root_offnum;
 
 		/*
 		 * To prevent concurrent sessions from updating the tuple, we have to
@@ -4073,7 +4363,9 @@ l2:
 		START_CRIT_SECTION();
 
 		/* Clear obsolete visibility flags ... */
-		oldtup.t_data->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
+		oldtup.t_data->t_infomask &= ~HEAP_XMAX_BITS;
+		if (HeapTupleHeaderIsMoved(oldtup.t_data))
+			oldtup.t_data->t_infomask &= ~HEAP_MOVED;
 		oldtup.t_data->t_infomask2 &= ~HEAP_KEYS_UPDATED;
 		HeapTupleClearHotUpdated(&oldtup);
 		/* ... and store info about transaction updating this tuple */
@@ -4227,6 +4519,75 @@ l2:
 		 */
 		if (hot_attrs_checked && !bms_overlap(modified_attrs, hot_attrs))
 			use_hot_update = true;
+		else
+		{
+			/*
+			 * If no WARM updates yet on this chain, let this update be a WARM
+			 * update. We must not do any WARM update even if the previous WARM
+			 * updated at the end aborted. That's why we look at
+			 * HEAP_WARM_UPDATED flag.
+			 *
+			 * We don't do WARM updates if one of the columns used in index
+			 * expressions is being modified. Since expressions may evaluate to
+			 * the same value, even when heap values change, we don't have a
+			 * good way to deal with duplicate key scans when expressions are
+			 * used in the index.
+			 *
+			 * We check if the HOT attrs are a subset of the modified
+			 * attributes. Since HOT attrs include all index attributes, this
+			 * allows to avoid doing a WARM update when all index attributes
+			 * are being updated. Performing a WARM update is not a great idea
+			 * because all indexes will receive a new entry anyways.
+			 *
+			 * We also disable WARM temporarily if we are modifying a column
+			 * which is used by a new index that's being added. We can't insert
+			 * new entries to such indexes and hence we must not allow creating
+			 * on WARM chains which are broken with respect to the new index
+			 * being added.
+			 *
+			 * Finally, we disable WARM if either the old or the new tuple has
+			 * toasted/compressed attributes. Detoasting and decompressing very
+			 * large attributes can make the recheck logic too slow and it can
+			 * make the code to determine modified attributes a lot slower too.
+			 * So if we see such attributes in either old or the new tuple, we
+			 * instead disable WARM. Now this is not full proof because the new
+			 * tuple may not have been toasted when we ran HeapCheckColumns. So
+			 * if the UPDATE is changing previously untoasted attributes to
+			 * toasted attributes, it will skip the check and we will end up
+			 * doing a WARM update. The recheck logic should be prepared to
+			 * handle toasted and compressed values from the heap.
+			 */
+			if (RelationWarmUpdatesEnabled(relation) &&
+				relation->rd_supportswarm &&
+				!HeapTupleIsWarmUpdated(&oldtup) &&
+				!bms_overlap(modified_attrs, exprindx_attrs) &&
+				!bms_is_subset(hot_attrs, modified_attrs) &&
+				!bms_overlap(notready_attrs, modified_attrs) &&
+				!bms_overlap(toasted_attrs, hot_attrs) &&
+				!bms_overlap(compressed_attrs, hot_attrs))
+			{
+				int num_indexes, num_updating_indexes;
+				ListCell *l;
+
+				/*
+				 * Everything else is Ok. Now check if the update will require
+				 * less than or equal to 50% index updates. Anything above
+				 * that, we can just do a regular update and save on WARM
+				 * cleanup cost.
+				 */
+				num_indexes = list_length(indexattrsList);
+				num_updating_indexes = 0;
+				foreach (l, indexattrsList)
+				{
+					Bitmapset  *b = (Bitmapset *) lfirst(l);
+					if (bms_overlap(b, modified_attrs))
+						num_updating_indexes++;
+				}
+
+				if ((double)num_updating_indexes/num_indexes <= 0.5)
+					use_warm_update = true;
+			}
+		}
 	}
 	else
 	{
@@ -4273,6 +4634,32 @@ l2:
 		HeapTupleSetHeapOnly(heaptup);
 		/* Mark the caller's copy too, in case different from heaptup */
 		HeapTupleSetHeapOnly(newtup);
+
+		/*
+		 * Even if we are doing a HOT update, we must carry forward the WARM
+		 * flag because we may have already inserted another index entry
+		 * pointing to our root and a third entry may create duplicates.
+		 *
+		 * Note: If we ever have a mechanism to avoid duplicate <key, TID> in
+		 * indexes, we could look at relaxing this restriction and allow even
+		 * more WARM udpates.
+		 */
+		if (HeapTupleIsWarmUpdated(&oldtup))
+		{
+			HeapTupleSetWarmUpdated(heaptup);
+			HeapTupleSetWarmUpdated(newtup);
+		}
+
+		/*
+		 * If the old tuple is a WARM tuple then mark the new tuple as a WARM
+		 * tuple as well.
+		 */
+		if (HeapTupleIsWarm(&oldtup))
+		{
+			HeapTupleSetWarm(heaptup);
+			HeapTupleSetWarm(newtup);
+		}
+
 		/*
 		 * For HOT (or WARM) updated tuples, we store the offset of the root
 		 * line pointer of this chain in the ip_posid field of the new tuple.
@@ -4285,12 +4672,45 @@ l2:
 		if (HeapTupleHeaderHasRootOffset(oldtup.t_data))
 			root_offnum = HeapTupleHeaderGetRootOffset(oldtup.t_data);
 	}
+	else if (use_warm_update)
+	{
+		/* Mark the old tuple as HOT-updated */
+		HeapTupleSetHotUpdated(&oldtup);
+		HeapTupleSetWarmUpdated(&oldtup);
+
+		/* And mark the new tuple as heap-only */
+		HeapTupleSetHeapOnly(heaptup);
+		/* Mark the new tuple as WARM tuple */
+		HeapTupleSetWarmUpdated(heaptup);
+		/* This update also starts the WARM chain */
+		HeapTupleSetWarm(heaptup);
+		Assert(!HeapTupleIsWarm(&oldtup));
+
+		/* Mark the caller's copy too, in case different from heaptup */
+		HeapTupleSetHeapOnly(newtup);
+		HeapTupleSetWarmUpdated(newtup);
+		HeapTupleSetWarm(newtup);
+
+		if (HeapTupleHeaderHasRootOffset(oldtup.t_data))
+			root_offnum = HeapTupleHeaderGetRootOffset(oldtup.t_data);
+		else
+			root_offnum = heap_get_root_tuple(page,
+					ItemPointerGetOffsetNumber(&(oldtup.t_self)));
+
+		/* Let the caller know we did a WARM update */
+		if (warm_update)
+			*warm_update = true;
+	}
 	else
 	{
 		/* Make sure tuples are correctly marked as not-HOT */
 		HeapTupleClearHotUpdated(&oldtup);
 		HeapTupleClearHeapOnly(heaptup);
 		HeapTupleClearHeapOnly(newtup);
+		HeapTupleClearWarmUpdated(heaptup);
+		HeapTupleClearWarmUpdated(newtup);
+		HeapTupleClearWarm(heaptup);
+		HeapTupleClearWarm(newtup);
 		root_offnum = InvalidOffsetNumber;
 	}
 
@@ -4309,7 +4729,9 @@ l2:
 	HeapTupleHeaderSetHeapLatest(newtup->t_data, root_offnum);
 
 	/* Clear obsolete visibility flags, possibly set by ourselves above... */
-	oldtup.t_data->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
+	oldtup.t_data->t_infomask &= ~HEAP_XMAX_BITS;
+	if (HeapTupleHeaderIsMoved(oldtup.t_data))
+		oldtup.t_data->t_infomask &= ~HEAP_MOVED;
 	oldtup.t_data->t_infomask2 &= ~HEAP_KEYS_UPDATED;
 	/* ... and store info about transaction updating this tuple */
 	Assert(TransactionIdIsValid(xmax_old_tuple));
@@ -4400,7 +4822,10 @@ l2:
 	if (have_tuple_lock)
 		UnlockTupleTuplock(relation, &(oldtup.t_self), *lockmode);
 
-	pgstat_count_heap_update(relation, use_hot_update);
+	/*
+	 * Count HOT and WARM updates separately
+	 */
+	pgstat_count_heap_update(relation, use_hot_update, use_warm_update);
 
 	/*
 	 * If heaptup is a private copy, release it.  Don't forget to copy t_self
@@ -4420,17 +4845,33 @@ l2:
 	bms_free(id_attrs);
 	bms_free(modified_attrs);
 	bms_free(interesting_attrs);
+	bms_free(exprindx_attrs);
+	bms_free(notready_attrs);
 
 	return HeapTupleMayBeUpdated;
 }
 
 /*
- * Check if the specified attribute's value is same in both given tuples.
- * Subroutine for HeapDetermineModifiedColumns.
+ * Check if the specified attribute is toasted or compressed in either
+ * the old or the new tuple. For compressed or toasted attributes, we only do a
+ * very simplistic check for the equality by running datumIsEqual on the
+ * compressed or toasted form. This helps us to perform HOT updates (if other
+ * conditions are favourable) when these attributes are not updated. But we
+ * might not be able to capture all possible scenarios such as when the
+ * toasted/compressed attribute is updated, but the modified value is same as
+ * the original value.
+ *
+ * For WARM updates, we don't care what the equality check returns for
+ * toasted/compressed attributes. If such attributes are used in any of the
+ * indexes, we don't perform WARM updates irrespective of whether they are
+ * modified or not.
+ *
+ * Subroutine for HeapCheckColumns.
  */
-static bool
-heap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
-					   HeapTuple tup1, HeapTuple tup2)
+static void
+heap_tuple_attr_check(TupleDesc tupdesc, int attrnum,
+					   HeapTuple tup1, HeapTuple tup2,
+					   bool *toasted, bool *compressed, bool *equal)
 {
 	Datum		value1,
 				value2;
@@ -4438,13 +4879,24 @@ heap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
 				isnull2;
 	Form_pg_attribute att;
 
+	*equal = true;
+	*toasted = *compressed = false;
+
 	/*
 	 * If it's a whole-tuple reference, say "not equal".  It's not really
 	 * worth supporting this case, since it could only succeed after a no-op
 	 * update, which is hardly a case worth optimizing for.
+	 *
+	 * XXX Does thie need special attention in WARM given that we don't want to
+	 * return "not equal" for something that is equal? But how does whole-tuple
+	 * reference ends up in the interesting_attrs list? Regression tests do not
+	 * have covergae for this case as of now.
 	 */
 	if (attrnum == 0)
-		return false;
+	{
+		*equal = false;
+		return;
+	}
 
 	/*
 	 * Likewise, automatically say "not equal" for any system attribute other
@@ -4455,12 +4907,16 @@ heap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
 	{
 		if (attrnum != ObjectIdAttributeNumber &&
 			attrnum != TableOidAttributeNumber)
-			return false;
+		{
+			*equal = false;
+			/* these attributes can neither be toasted not compressed */
+			return;
+		}
 	}
 
 	/*
 	 * Extract the corresponding values.  XXX this is pretty inefficient if
-	 * there are many indexed columns.  Should HeapDetermineModifiedColumns do
+	 * there are many indexed columns.  Should HeapCheckColumns do
 	 * a single heap_deform_tuple call on each tuple, instead?	But that
 	 * doesn't work for system columns ...
 	 */
@@ -4468,17 +4924,32 @@ heap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
 	value2 = heap_getattr(tup2, attrnum, tupdesc, &isnull2);
 
 	/*
+	 * If both are NULL, they can be considered equal.
+	 */
+	if (isnull1 && isnull2)
+	{
+		*equal = true;
+		*toasted = *compressed = false;
+		return;
+	}
+
+	/*
 	 * If one value is NULL and other is not, then they are certainly not
 	 * equal
 	 */
 	if (isnull1 != isnull2)
-		return false;
+		*equal = false;
 
-	/*
-	 * If both are NULL, they can be considered equal.
-	 */
-	if (isnull1)
-		return true;
+	/* attrnum == 0 is already handled above */
+	if ((attrnum < 0) && (*equal))
+	{
+		/*
+		 * The only allowed system columns are OIDs, so do this. OIDs can never
+		 * be compressed or toasted.
+		 */
+		*equal = (DatumGetObjectId(value1) == DatumGetObjectId(value2));
+		return;
+	}
 
 	/*
 	 * We do simple binary comparison of the two datums.  This may be overly
@@ -4489,46 +4960,90 @@ heap_tuple_attr_equals(TupleDesc tupdesc, int attrnum,
 	 * classes; furthermore, we cannot safely invoke user-defined functions
 	 * while holding exclusive buffer lock.
 	 */
-	if (attrnum <= 0)
+	Assert(attrnum <= tupdesc->natts);
+	att = tupdesc->attrs[attrnum - 1];
+
+	/*
+	 * If either the old or the new value is toasted, consider the attribute as
+	 * toasted. We don't check if the value is a NULL value.
+	 */
+	if ((att->attlen == -1) && !isnull1 &&
+		(VARATT_IS_EXTERNAL(value1) || VARATT_IS_EXTERNAL(value2)))
 	{
-		/* The only allowed system columns are OIDs, so do this */
-		return (DatumGetObjectId(value1) == DatumGetObjectId(value2));
+		*toasted = true;
 	}
-	else
+
+	/*
+	 * If either the old or the new value is compressed, consider the attribute
+	 * as compressed. We don't check if the value is a NULL value.
+	 */
+	if ((att->attlen == -1) && !isnull2 &&
+		(VARATT_IS_COMPRESSED(value1) || VARATT_IS_COMPRESSED(value2)))
 	{
-		Assert(attrnum <= tupdesc->natts);
-		att = tupdesc->attrs[attrnum - 1];
-		return datumIsEqual(value1, value2, att->attbyval, att->attlen);
+		*compressed = true;
+	}
+
+	/*
+	 * Check for equality but only if we haven't already determined above that
+	 * they are not equal. This can happen either because one of the attributes
+	 * is NULL.
+	 */
+	if (*equal)
+	{
+		*equal = datumIsEqual(value1, value2, att->attbyval, att->attlen);
 	}
 }
 
 /*
- * Check which columns are being updated.
+ * Check the old tuple and the new tuple for the given list of
+ * interesting_cols.
  *
- * Given an updated tuple, determine (and return into the output bitmapset),
- * from those listed as interesting, the set of columns that changed.
+ * Given an updated tuple, check if any of the interesting_cols are toasted or
+ * compressed, either in the old or the new tuple. Such columns are returned in
+ * the toasted_attrs and compressed_attrs respectively.
+ *
+ * Also check which columns are being changed in the update operation. For
+ * toasted/compressed columns, we only do a simple memcmp-based check without
+ * detoasing/decompressing the values. This implies that we might not be able
+ * to capture all cases where two values are equal.
  *
  * The input bitmapset is destructively modified; that is OK since this is
  * invoked at most once in heap_update.
  */
-static Bitmapset *
-HeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
-							 HeapTuple oldtup, HeapTuple newtup)
+void
+HeapCheckColumns(Relation relation, Bitmapset *interesting_cols,
+							 HeapTuple oldtup, HeapTuple newtup,
+							 Bitmapset **toasted_attrs,
+							 Bitmapset **compressed_attrs,
+							 Bitmapset **modified_attrs)
 {
 	int		attnum;
-	Bitmapset *modified = NULL;
+
+	*toasted_attrs = NULL;
+	*compressed_attrs = NULL;
+	*modified_attrs = NULL;
 
 	while ((attnum = bms_first_member(interesting_cols)) >= 0)
 	{
+		bool equal, compressed, toasted;
+
 		attnum += FirstLowInvalidHeapAttributeNumber;
 
-		if (!heap_tuple_attr_equals(RelationGetDescr(relation),
-								   attnum, oldtup, newtup))
-			modified = bms_add_member(modified,
+		heap_tuple_attr_check(RelationGetDescr(relation),
+								   attnum, oldtup, newtup, &toasted,
+								   &compressed, &equal);
+		if (!equal)
+			*modified_attrs = bms_add_member(*modified_attrs,
+									  attnum - FirstLowInvalidHeapAttributeNumber);
+		if (toasted)
+			*toasted_attrs = bms_add_member(*toasted_attrs,
+									  attnum - FirstLowInvalidHeapAttributeNumber);
+		if (compressed)
+			*compressed_attrs = bms_add_member(*compressed_attrs,
 									  attnum - FirstLowInvalidHeapAttributeNumber);
 	}
 
-	return modified;
+	return;
 }
 
 /*
@@ -4540,7 +5055,8 @@ HeapDetermineModifiedColumns(Relation relation, Bitmapset *interesting_cols,
  * via ereport().
  */
 void
-simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup)
+simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup,
+		Bitmapset **modified_attrs, bool *warm_update)
 {
 	HTSU_Result result;
 	HeapUpdateFailureData hufd;
@@ -4549,7 +5065,7 @@ simple_heap_update(Relation relation, ItemPointer otid, HeapTuple tup)
 	result = heap_update(relation, otid, tup,
 						 GetCurrentCommandId(true), InvalidSnapshot,
 						 true /* wait for commit */ ,
-						 &hufd, &lockmode);
+						 &hufd, &lockmode, modified_attrs, warm_update);
 	switch (result)
 	{
 		case HeapTupleSelfUpdated:
@@ -4640,7 +5156,6 @@ heap_lock_tuple(Relation relation, HeapTuple tuple,
 	Page		page;
 	Buffer		vmbuffer = InvalidBuffer;
 	BlockNumber	block;
-	OffsetNumber	offnum;
 	TransactionId xid,
 				xmax;
 	uint16		old_infomask,
@@ -4649,11 +5164,10 @@ heap_lock_tuple(Relation relation, HeapTuple tuple,
 	bool		first_time = true;
 	bool		have_tuple_lock = false;
 	bool		cleared_all_frozen = false;
-	OffsetNumber	root_offnum;
+	OffsetNumber	root_offnum = InvalidOffsetNumber;
 
 	*buffer = ReadBuffer(relation, ItemPointerGetBlockNumber(tid));
 	block = ItemPointerGetBlockNumber(tid);
-	offnum = ItemPointerGetOffsetNumber(tid);
 
 	/*
 	 * Before locking the buffer, pin the visibility map page if it appears to
@@ -5745,7 +6259,6 @@ heap_lock_updated_tuple_rec(Relation rel, ItemPointer tid, TransactionId xid,
 	bool		cleared_all_frozen = false;
 	Buffer		vmbuffer = InvalidBuffer;
 	BlockNumber block;
-	OffsetNumber offnum;
 
 	ItemPointerCopy(tid, &tupid);
 
@@ -5754,7 +6267,6 @@ heap_lock_updated_tuple_rec(Relation rel, ItemPointer tid, TransactionId xid,
 		new_infomask = 0;
 		new_xmax = InvalidTransactionId;
 		block = ItemPointerGetBlockNumber(&tupid);
-		offnum = ItemPointerGetOffsetNumber(&tupid);
 
 		ItemPointerCopy(&tupid, &(mytup.t_self));
 
@@ -6226,7 +6738,9 @@ heap_abort_speculative(Relation relation, HeapTuple tuple)
 	PageSetPrunable(page, RecentGlobalXmin);
 
 	/* store transaction information of xact deleting the tuple */
-	tp.t_data->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
+	tp.t_data->t_infomask &= ~HEAP_XMAX_BITS;
+	if (HeapTupleHeaderIsMoved(tp.t_data))
+		tp.t_data->t_infomask &= ~HEAP_MOVED;
 	tp.t_data->t_infomask2 &= ~HEAP_KEYS_UPDATED;
 
 	/*
@@ -6800,7 +7314,7 @@ heap_prepare_freeze_tuple(HeapTupleHeader tuple, TransactionId cutoff_xid,
 	 * Old-style VACUUM FULL is gone, but we have to keep this code as long as
 	 * we support having MOVED_OFF/MOVED_IN tuples in the database.
 	 */
-	if (tuple->t_infomask & HEAP_MOVED)
+	if (HeapTupleHeaderIsMoved(tuple))
 	{
 		xid = HeapTupleHeaderGetXvac(tuple);
 
@@ -6819,7 +7333,7 @@ heap_prepare_freeze_tuple(HeapTupleHeader tuple, TransactionId cutoff_xid,
 			 * have failed; whereas a non-dead MOVED_IN tuple must mean the
 			 * xvac transaction succeeded.
 			 */
-			if (tuple->t_infomask & HEAP_MOVED_OFF)
+			if (HeapTupleHeaderIsMovedOff(tuple))
 				frz->frzflags |= XLH_INVALID_XVAC;
 			else
 				frz->frzflags |= XLH_FREEZE_XVAC;
@@ -7289,7 +7803,7 @@ heap_tuple_needs_eventual_freeze(HeapTupleHeader tuple)
 			return true;
 	}
 
-	if (tuple->t_infomask & HEAP_MOVED)
+	if (HeapTupleHeaderIsMoved(tuple))
 	{
 		xid = HeapTupleHeaderGetXvac(tuple);
 		if (TransactionIdIsNormal(xid))
@@ -7372,7 +7886,7 @@ heap_tuple_needs_freeze(HeapTupleHeader tuple, TransactionId cutoff_xid,
 			return true;
 	}
 
-	if (tuple->t_infomask & HEAP_MOVED)
+	if (HeapTupleHeaderIsMoved(tuple))
 	{
 		xid = HeapTupleHeaderGetXvac(tuple);
 		if (TransactionIdIsNormal(xid) &&
@@ -7398,7 +7912,7 @@ HeapTupleHeaderAdvanceLatestRemovedXid(HeapTupleHeader tuple,
 	TransactionId xmax = HeapTupleHeaderGetUpdateXid(tuple);
 	TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
 
-	if (tuple->t_infomask & HEAP_MOVED)
+	if (HeapTupleHeaderIsMoved(tuple))
 	{
 		if (TransactionIdPrecedes(*latestRemovedXid, xvac))
 			*latestRemovedXid = xvac;
@@ -7442,6 +7956,36 @@ log_heap_cleanup_info(RelFileNode rnode, TransactionId latestRemovedXid)
 	XLogRegisterData((char *) &xlrec, SizeOfHeapCleanupInfo);
 
 	recptr = XLogInsert(RM_HEAP2_ID, XLOG_HEAP2_CLEANUP_INFO);
+
+	return recptr;
+}
+
+/*
+ * Perform XLogInsert for a heap-warm-clear operation.  Caller must already
+ * have modified the buffer and marked it dirty.
+ */
+XLogRecPtr
+log_heap_warmclear(Relation reln, Buffer buffer,
+			   OffsetNumber *cleared, int ncleared)
+{
+	xl_heap_warmclear	xlrec;
+	XLogRecPtr			recptr;
+
+	/* Caller should not call me on a non-WAL-logged relation */
+	Assert(RelationNeedsWAL(reln));
+
+	xlrec.ncleared = ncleared;
+
+	XLogBeginInsert();
+	XLogRegisterData((char *) &xlrec, SizeOfHeapWarmClear);
+
+	XLogRegisterBuffer(0, buffer, REGBUF_STANDARD);
+
+	if (ncleared > 0)
+		XLogRegisterBufData(0, (char *) cleared,
+							ncleared * sizeof(OffsetNumber));
+
+	recptr = XLogInsert(RM_HEAP2_ID, XLOG_HEAP2_WARMCLEAR);
 
 	return recptr;
 }
@@ -7601,6 +8145,7 @@ log_heap_update(Relation reln, Buffer oldbuf,
 	bool		need_tuple_data = RelationIsLogicallyLogged(reln);
 	bool		init;
 	int			bufflags;
+	bool		warm_update = false;
 
 	/* Caller should not call me on a non-WAL-logged relation */
 	Assert(RelationNeedsWAL(reln));
@@ -7611,6 +8156,9 @@ log_heap_update(Relation reln, Buffer oldbuf,
 		info = XLOG_HEAP_HOT_UPDATE;
 	else
 		info = XLOG_HEAP_UPDATE;
+
+	if (HeapTupleIsWarmUpdated(newtup))
+		warm_update = true;
 
 	/*
 	 * If the old and new tuple are on the same page, we only need to log the
@@ -7685,6 +8233,8 @@ log_heap_update(Relation reln, Buffer oldbuf,
 				xlrec.flags |= XLH_UPDATE_CONTAINS_OLD_KEY;
 		}
 	}
+	if (warm_update)
+		xlrec.flags |= XLH_UPDATE_WARM_UPDATE;
 
 	/* If new tuple is the single and first tuple on page... */
 	if (ItemPointerGetOffsetNumber(&(newtup->t_self)) == FirstOffsetNumber &&
@@ -8099,6 +8649,60 @@ heap_xlog_clean(XLogReaderState *record)
 		XLogRecordPageWithFreeSpace(rnode, blkno, freespace);
 }
 
+
+/*
+ * Handles HEAP2_WARMCLEAR record type
+ */
+static void
+heap_xlog_warmclear(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_heap_warmclear	*xlrec = (xl_heap_warmclear *) XLogRecGetData(record);
+	Buffer		buffer;
+	RelFileNode rnode;
+	BlockNumber blkno;
+	XLogRedoAction action;
+
+	XLogRecGetBlockTag(record, 0, &rnode, NULL, &blkno);
+
+	/*
+	 * If we have a full-page image, restore it (using a cleanup lock) and
+	 * we're done.
+	 */
+	action = XLogReadBufferForRedoExtended(record, 0, RBM_NORMAL, true,
+										   &buffer);
+	if (action == BLK_NEEDS_REDO)
+	{
+		Page		page = (Page) BufferGetPage(buffer);
+		OffsetNumber *cleared;
+		int			ncleared;
+		Size		datalen;
+		int			i;
+
+		cleared = (OffsetNumber *) XLogRecGetBlockData(record, 0, &datalen);
+
+		ncleared = xlrec->ncleared;
+
+		for (i = 0; i < ncleared; i++)
+		{
+			ItemId			lp;
+			OffsetNumber	offnum = cleared[i];
+			HeapTupleData	heapTuple;
+
+			lp = PageGetItemId(page, offnum);
+			heapTuple.t_data = (HeapTupleHeader) PageGetItem(page, lp);
+
+			HeapTupleHeaderClearWarmUpdated(heapTuple.t_data);
+			HeapTupleHeaderClearWarm(heapTuple.t_data);
+		}
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
 /*
  * Replay XLOG_HEAP2_VISIBLE record.
  *
@@ -8345,7 +8949,9 @@ heap_xlog_delete(XLogReaderState *record)
 
 		htup = (HeapTupleHeader) PageGetItem(page, lp);
 
-		htup->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
+		htup->t_infomask &= ~HEAP_XMAX_BITS;
+		if (HeapTupleHeaderIsMoved(htup))
+			htup->t_infomask &= ~HEAP_MOVED;
 		htup->t_infomask2 &= ~HEAP_KEYS_UPDATED;
 		HeapTupleHeaderClearHotUpdated(htup);
 		fix_infomask_from_infobits(xlrec->infobits_set,
@@ -8366,7 +8972,7 @@ heap_xlog_delete(XLogReaderState *record)
 		if (!HeapTupleHeaderHasRootOffset(htup))
 		{
 			OffsetNumber	root_offnum;
-			root_offnum = heap_get_root_tuple(page, xlrec->offnum); 
+			root_offnum = heap_get_root_tuple(page, xlrec->offnum);
 			HeapTupleHeaderSetHeapLatest(htup, root_offnum);
 		}
 
@@ -8662,16 +9268,22 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 	Size		freespace = 0;
 	XLogRedoAction oldaction;
 	XLogRedoAction newaction;
+	bool		warm_update = false;
 
 	/* initialize to keep the compiler quiet */
 	oldtup.t_data = NULL;
 	oldtup.t_len = 0;
+
+	if (xlrec->flags & XLH_UPDATE_WARM_UPDATE)
+		warm_update = true;
 
 	XLogRecGetBlockTag(record, 0, &rnode, NULL, &newblk);
 	if (XLogRecGetBlockTag(record, 1, NULL, NULL, &oldblk))
 	{
 		/* HOT updates are never done across pages */
 		Assert(!hot_update);
+		/* WARM updates are never done across pages */
+		Assert(!warm_update);
 	}
 	else
 		oldblk = newblk;
@@ -8731,6 +9343,11 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 								   &htup->t_infomask2);
 		HeapTupleHeaderSetXmax(htup, xlrec->old_xmax);
 		HeapTupleHeaderSetCmax(htup, FirstCommandId, false);
+
+		/* Mark the old tuple has a WARM tuple */
+		if (warm_update)
+			HeapTupleHeaderSetWarmUpdated(htup);
+
 		/* Set forward chain link in t_ctid */
 		HeapTupleHeaderSetNextTid(htup, &newtid);
 
@@ -8866,6 +9483,10 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		HeapTupleHeaderSetCmin(htup, FirstCommandId);
 		HeapTupleHeaderSetXmax(htup, xlrec->new_xmax);
 
+		/* Mark the new tuple has a WARM tuple */
+		if (warm_update)
+			HeapTupleHeaderSetWarmUpdated(htup);
+
 		offnum = PageAddItem(page, (Item) htup, newlen, offnum, true, true);
 		if (offnum == InvalidOffsetNumber)
 			elog(PANIC, "failed to add tuple");
@@ -8993,7 +9614,9 @@ heap_xlog_lock(XLogReaderState *record)
 
 		htup = (HeapTupleHeader) PageGetItem(page, lp);
 
-		htup->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
+		htup->t_infomask &= ~HEAP_XMAX_BITS;
+		if (HeapTupleHeaderIsMoved(htup))
+			htup->t_infomask &= ~HEAP_MOVED;
 		htup->t_infomask2 &= ~HEAP_KEYS_UPDATED;
 		fix_infomask_from_infobits(xlrec->infobits_set, &htup->t_infomask,
 								   &htup->t_infomask2);
@@ -9072,7 +9695,9 @@ heap_xlog_lock_updated(XLogReaderState *record)
 
 		htup = (HeapTupleHeader) PageGetItem(page, lp);
 
-		htup->t_infomask &= ~(HEAP_XMAX_BITS | HEAP_MOVED);
+		htup->t_infomask &= ~HEAP_XMAX_BITS;
+		if (HeapTupleHeaderIsMoved(htup))
+			htup->t_infomask &= ~HEAP_MOVED;
 		htup->t_infomask2 &= ~HEAP_KEYS_UPDATED;
 		fix_infomask_from_infobits(xlrec->infobits_set, &htup->t_infomask,
 								   &htup->t_infomask2);
@@ -9141,6 +9766,9 @@ heap_redo(XLogReaderState *record)
 		case XLOG_HEAP_INSERT:
 			heap_xlog_insert(record);
 			break;
+		case XLOG_HEAP_MULTI_INSERT:
+			heap_xlog_multi_insert(record);
+			break;
 		case XLOG_HEAP_DELETE:
 			heap_xlog_delete(record);
 			break;
@@ -9169,7 +9797,7 @@ heap2_redo(XLogReaderState *record)
 {
 	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
-	switch (info & XLOG_HEAP_OPMASK)
+	switch (info & XLOG_HEAP2_OPMASK)
 	{
 		case XLOG_HEAP2_CLEAN:
 			heap_xlog_clean(record);
@@ -9183,9 +9811,6 @@ heap2_redo(XLogReaderState *record)
 		case XLOG_HEAP2_VISIBLE:
 			heap_xlog_visible(record);
 			break;
-		case XLOG_HEAP2_MULTI_INSERT:
-			heap_xlog_multi_insert(record);
-			break;
 		case XLOG_HEAP2_LOCK_UPDATED:
 			heap_xlog_lock_updated(record);
 			break;
@@ -9198,6 +9823,9 @@ heap2_redo(XLogReaderState *record)
 			break;
 		case XLOG_HEAP2_REWRITE:
 			heap_xlog_logical_rewrite(record);
+			break;
+		case XLOG_HEAP2_WARMCLEAR:
+			heap_xlog_warmclear(record);
 			break;
 		default:
 			elog(PANIC, "heap2_redo: unknown op code %u", info);

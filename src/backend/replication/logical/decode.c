@@ -347,7 +347,7 @@ DecodeStandbyOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 static void
 DecodeHeap2Op(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 {
-	uint8		info = XLogRecGetInfo(buf->record) & XLOG_HEAP_OPMASK;
+	uint8		info = XLogRecGetInfo(buf->record) & XLOG_HEAP2_OPMASK;
 	TransactionId xid = XLogRecGetXid(buf->record);
 	SnapBuild  *builder = ctx->snapshot_builder;
 
@@ -359,10 +359,6 @@ DecodeHeap2Op(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 
 	switch (info)
 	{
-		case XLOG_HEAP2_MULTI_INSERT:
-			if (SnapBuildProcessChange(builder, xid, buf->origptr))
-				DecodeMultiInsert(ctx, buf);
-			break;
 		case XLOG_HEAP2_NEW_CID:
 			{
 				xl_heap_new_cid *xlrec;
@@ -390,6 +386,7 @@ DecodeHeap2Op(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 		case XLOG_HEAP2_CLEANUP_INFO:
 		case XLOG_HEAP2_VISIBLE:
 		case XLOG_HEAP2_LOCK_UPDATED:
+		case XLOG_HEAP2_WARMCLEAR:
 			break;
 		default:
 			elog(ERROR, "unexpected RM_HEAP2_ID record type: %u", info);
@@ -417,6 +414,10 @@ DecodeHeapOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 		case XLOG_HEAP_INSERT:
 			if (SnapBuildProcessChange(builder, xid, buf->origptr))
 				DecodeInsert(ctx, buf);
+			break;
+		case XLOG_HEAP_MULTI_INSERT:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr))
+				DecodeMultiInsert(ctx, buf);
 			break;
 
 			/*
@@ -809,7 +810,7 @@ DecodeDelete(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 }
 
 /*
- * Decode XLOG_HEAP2_MULTI_INSERT_insert record into multiple tuplebufs.
+ * Decode XLOG_HEAP_MULTI_INSERT_insert record into multiple tuplebufs.
  *
  * Currently MULTI_INSERT will always contain the full tuples.
  */

@@ -1,0 +1,930 @@
+CREATE TABLE updtst_tab1 (a integer unique, b int, c text, d text);
+CREATE INDEX updtst_indx1 ON updtst_tab1 (b);
+INSERT INTO updtst_tab1
+       SELECT generate_series(1,10000), generate_series(70001, 80000), 'foo', 'bar';
+-- This should be a HOT update as non-index key is updated, but the
+-- page won't have any free space, so probably a non-HOT update
+UPDATE updtst_tab1 SET c = 'foo1' WHERE a = 1;
+-- Next update should be a HOT update as dead space is recycled
+UPDATE updtst_tab1 SET c = 'foo2' WHERE a = 1;
+-- And next too
+UPDATE updtst_tab1 SET c = 'foo3' WHERE a = 1;
+-- Now update one of the index key columns
+UPDATE updtst_tab1 SET b = b + 70000 WHERE a = 1;
+-- Ensure that the correct row is fetched
+SELECT * FROM updtst_tab1 WHERE a = 1;
+ a |   b    |  c   |  d  
+---+--------+------+-----
+ 1 | 140001 | foo3 | bar
+(1 row)
+
+SELECT * FROM updtst_tab1 WHERE b = 70001 + 70000;
+ a |   b    |  c   |  d  
+---+--------+------+-----
+ 1 | 140001 | foo3 | bar
+(1 row)
+
+-- Even when seqscan is disabled and indexscan is forced
+SET enable_seqscan = false;
+EXPLAIN (costs off) SELECT * FROM updtst_tab1 WHERE b = 70001 + 70000;
+               QUERY PLAN                
+-----------------------------------------
+ Bitmap Heap Scan on updtst_tab1
+   Recheck Cond: (b = 140001)
+   ->  Bitmap Index Scan on updtst_indx1
+         Index Cond: (b = 140001)
+(4 rows)
+
+SELECT * FROM updtst_tab1 WHERE b = 70001 + 70000;
+ a |   b    |  c   |  d  
+---+--------+------+-----
+ 1 | 140001 | foo3 | bar
+(1 row)
+
+-- Check if index only scan works correctly
+EXPLAIN (costs off) SELECT b FROM updtst_tab1 WHERE b = 70001 + 70000;
+               QUERY PLAN                
+-----------------------------------------
+ Bitmap Heap Scan on updtst_tab1
+   Recheck Cond: (b = 140001)
+   ->  Bitmap Index Scan on updtst_indx1
+         Index Cond: (b = 140001)
+(4 rows)
+
+SELECT b FROM updtst_tab1 WHERE b = 70001 + 70000;
+   b    
+--------
+ 140001
+(1 row)
+
+-- Table must be vacuumed to force index-only scan
+VACUUM updtst_tab1;
+EXPLAIN (costs off) SELECT b FROM updtst_tab1 WHERE b = 70001 + 70000;
+                    QUERY PLAN                     
+---------------------------------------------------
+ Index Only Scan using updtst_indx1 on updtst_tab1
+   Index Cond: (b = 140001)
+(2 rows)
+
+SELECT b FROM updtst_tab1 WHERE b = 70001 + 70000;
+   b    
+--------
+ 140001
+(1 row)
+
+SET enable_seqscan = true;
+DROP TABLE updtst_tab1;
+------------------
+CREATE TABLE updtst_tab2 (a integer unique, b int, c text, d text) WITH (fillfactor = 80);
+CREATE INDEX updtst_indx2 ON updtst_tab2 (b);
+INSERT INTO updtst_tab2
+       SELECT generate_series(1,100), generate_series(701, 800), 'foo', 'bar';
+UPDATE updtst_tab2 SET b = b + 700 WHERE a = 1;
+UPDATE updtst_tab2 SET c = 'foo1'  WHERE a = 1;
+UPDATE updtst_tab2 SET c = 'foo2'  WHERE a = 1;
+UPDATE updtst_tab2 SET c = 'foo3'  WHERE a = 1;
+UPDATE updtst_tab2 SET b = b - 700 WHERE a = 1;
+UPDATE updtst_tab2 SET c = 'foo4'  WHERE a = 1;
+UPDATE updtst_tab2 SET c = 'foo5'  WHERE a = 1;
+UPDATE updtst_tab2 SET c = 'foo6'  WHERE a = 1;
+SELECT count(*) FROM updtst_tab2 WHERE c = 'foo';
+ count 
+-------
+    99
+(1 row)
+
+SELECT * FROM updtst_tab2 WHERE c = 'foo6';
+ a |  b  |  c   |  d  
+---+-----+------+-----
+ 1 | 701 | foo6 | bar
+(1 row)
+
+EXPLAIN (costs off) SELECT * FROM updtst_tab2 WHERE b = 701;
+               QUERY PLAN                
+-----------------------------------------
+ Bitmap Heap Scan on updtst_tab2
+   Recheck Cond: (b = 701)
+   ->  Bitmap Index Scan on updtst_indx2
+         Index Cond: (b = 701)
+(4 rows)
+
+SELECT * FROM updtst_tab2 WHERE a = 1;
+ a |  b  |  c   |  d  
+---+-----+------+-----
+ 1 | 701 | foo6 | bar
+(1 row)
+
+SET enable_seqscan = false;
+EXPLAIN (costs off) SELECT * FROM updtst_tab2 WHERE b = 701;
+               QUERY PLAN                
+-----------------------------------------
+ Bitmap Heap Scan on updtst_tab2
+   Recheck Cond: (b = 701)
+   ->  Bitmap Index Scan on updtst_indx2
+         Index Cond: (b = 701)
+(4 rows)
+
+SELECT * FROM updtst_tab2 WHERE b = 701;
+ a |  b  |  c   |  d  
+---+-----+------+-----
+ 1 | 701 | foo6 | bar
+(1 row)
+
+VACUUM updtst_tab2;
+EXPLAIN (costs off) SELECT b FROM updtst_tab2 WHERE b = 701;
+                    QUERY PLAN                     
+---------------------------------------------------
+ Index Only Scan using updtst_indx2 on updtst_tab2
+   Index Cond: (b = 701)
+(2 rows)
+
+SELECT b FROM updtst_tab2 WHERE b = 701;
+  b  
+-----
+ 701
+(1 row)
+
+SET enable_seqscan = true;
+DROP TABLE updtst_tab2;
+------------------
+CREATE TABLE updtst_tab3 (a integer unique, b int, c text, d text) WITH (fillfactor = 80);
+CREATE INDEX updtst_indx3 ON updtst_tab3 (b);
+INSERT INTO updtst_tab3
+       SELECT generate_series(1,100), generate_series(701, 800), 'foo', 'bar';
+BEGIN;
+UPDATE updtst_tab3 SET c = 'foo1', b = b + 700 WHERE a = 1;
+UPDATE updtst_tab3 SET c = 'foo2'  WHERE a = 1;
+UPDATE updtst_tab3 SET c = 'foo3'  WHERE a = 1;
+UPDATE updtst_tab3 SET b = b - 700 WHERE a = 1;
+UPDATE updtst_tab3 SET c = 'foo4'  WHERE a = 1;
+UPDATE updtst_tab3 SET c = 'foo5'  WHERE a = 1;
+UPDATE updtst_tab3 SET c = 'foo6'  WHERE a = 1;
+-- Abort the transaction and ensure the original tuple is visible correctly
+ROLLBACK;
+BEGIN;
+UPDATE updtst_tab3 SET c = 'foo11', b = b + 750 WHERE b = 701;
+UPDATE updtst_tab3 SET c = 'foo12'  WHERE a = 1;
+UPDATE updtst_tab3 SET b = b - 30 WHERE a = 1;
+COMMIT;
+SELECT count(*) FROM updtst_tab3 WHERE c = 'foo';
+ count 
+-------
+    99
+(1 row)
+
+SELECT * FROM updtst_tab3 WHERE c = 'foo6';
+ a | b | c | d 
+---+---+---+---
+(0 rows)
+
+SELECT * FROM updtst_tab3 WHERE c = 'foo12';
+ a |  b   |   c   |  d  
+---+------+-------+-----
+ 1 | 1421 | foo12 | bar
+(1 row)
+
+SELECT * FROM updtst_tab3 WHERE b = 701;
+ a | b | c | d 
+---+---+---+---
+(0 rows)
+
+SELECT * FROM updtst_tab3 WHERE b = 1421;
+ a |  b   |   c   |  d  
+---+------+-------+-----
+ 1 | 1421 | foo12 | bar
+(1 row)
+
+SELECT * FROM updtst_tab3 WHERE a = 1;
+ a |  b   |   c   |  d  
+---+------+-------+-----
+ 1 | 1421 | foo12 | bar
+(1 row)
+
+SELECT * FROM updtst_tab3 WHERE b = 701;
+ a | b | c | d 
+---+---+---+---
+(0 rows)
+
+SELECT * FROM updtst_tab3 WHERE b = 1421;
+ a |  b   |   c   |  d  
+---+------+-------+-----
+ 1 | 1421 | foo12 | bar
+(1 row)
+
+VACUUM updtst_tab3;
+EXPLAIN (costs off) SELECT b FROM updtst_tab3 WHERE b = 701;
+       QUERY PLAN        
+-------------------------
+ Seq Scan on updtst_tab3
+   Filter: (b = 701)
+(2 rows)
+
+SELECT b FROM updtst_tab3 WHERE b = 701;
+ b 
+---
+(0 rows)
+
+SELECT b FROM updtst_tab3 WHERE b = 1421;
+  b   
+------
+ 1421
+(1 row)
+
+BEGIN;
+UPDATE updtst_tab3 SET c = 'foo21', b = b + 700 WHERE a = 2;
+UPDATE updtst_tab3 SET c = 'foo22'  WHERE a = 2;
+UPDATE updtst_tab3 SET c = 'foo23'  WHERE a = 2;
+UPDATE updtst_tab3 SET b = b - 700 WHERE a = 2;
+UPDATE updtst_tab3 SET c = 'foo24'  WHERE a = 2;
+UPDATE updtst_tab3 SET c = 'foo25'  WHERE a = 2;
+UPDATE updtst_tab3 SET c = 'foo26'  WHERE a = 2;
+-- Abort the transaction and ensure the original tuple is visible correctly
+ROLLBACK;
+SET enable_seqscan = false;
+BEGIN;
+UPDATE updtst_tab3 SET c = 'foo21', b = b + 750 WHERE b = 702;
+UPDATE updtst_tab3 SET c = 'foo22'  WHERE a = 2;
+UPDATE updtst_tab3 SET b = b - 30 WHERE a = 2;
+COMMIT;
+SELECT count(*) FROM updtst_tab3 WHERE c = 'foo';
+ count 
+-------
+    98
+(1 row)
+
+SELECT * FROM updtst_tab3 WHERE c = 'foo26';
+ a | b | c | d 
+---+---+---+---
+(0 rows)
+
+SELECT * FROM updtst_tab3 WHERE c = 'foo22';
+ a |  b   |   c   |  d  
+---+------+-------+-----
+ 2 | 1422 | foo22 | bar
+(1 row)
+
+SELECT * FROM updtst_tab3 WHERE b = 702;
+ a | b | c | d 
+---+---+---+---
+(0 rows)
+
+SELECT * FROM updtst_tab3 WHERE b = 1422;
+ a |  b   |   c   |  d  
+---+------+-------+-----
+ 2 | 1422 | foo22 | bar
+(1 row)
+
+SELECT * FROM updtst_tab3 WHERE a = 2;
+ a |  b   |   c   |  d  
+---+------+-------+-----
+ 2 | 1422 | foo22 | bar
+(1 row)
+
+-- Try fetching both old and new value using updtst_indx3
+SELECT * FROM updtst_tab3 WHERE b = 702;
+ a | b | c | d 
+---+---+---+---
+(0 rows)
+
+SELECT * FROM updtst_tab3 WHERE b = 1422;
+ a |  b   |   c   |  d  
+---+------+-------+-----
+ 2 | 1422 | foo22 | bar
+(1 row)
+
+VACUUM updtst_tab3;
+EXPLAIN (costs off) SELECT b FROM updtst_tab3 WHERE b = 702;
+                    QUERY PLAN                     
+---------------------------------------------------
+ Index Only Scan using updtst_indx3 on updtst_tab3
+   Index Cond: (b = 702)
+(2 rows)
+
+SELECT b FROM updtst_tab3 WHERE b = 702;
+ b 
+---
+(0 rows)
+
+SELECT b FROM updtst_tab3 WHERE b = 1422;
+  b   
+------
+ 1422
+(1 row)
+
+SET enable_seqscan = true;
+DROP TABLE updtst_tab3;
+------------------
+CREATE TABLE test_warm (a text unique, b text);
+CREATE INDEX test_warmindx ON test_warm (lower(a));
+INSERT INTO test_warm values ('test', 'foo');
+UPDATE test_warm SET a = 'TEST';
+select *, ctid from test_warm where lower(a) = 'test';
+  a   |  b  | ctid  
+------+-----+-------
+ TEST | foo | (0,2)
+(1 row)
+
+explain select * from test_warm where lower(a) = 'test';
+                                 QUERY PLAN                                 
+----------------------------------------------------------------------------
+ Bitmap Heap Scan on test_warm  (cost=4.18..12.65 rows=4 width=64)
+   Recheck Cond: (lower(a) = 'test'::text)
+   ->  Bitmap Index Scan on test_warmindx  (cost=0.00..4.18 rows=4 width=0)
+         Index Cond: (lower(a) = 'test'::text)
+(4 rows)
+
+select *, ctid from test_warm where lower(a) = 'test';
+  a   |  b  | ctid  
+------+-----+-------
+ TEST | foo | (0,2)
+(1 row)
+
+select *, ctid from test_warm where a = 'test';
+ a | b | ctid 
+---+---+------
+(0 rows)
+
+select *, ctid from test_warm where a = 'TEST';
+  a   |  b  | ctid  
+------+-----+-------
+ TEST | foo | (0,2)
+(1 row)
+
+set enable_bitmapscan TO false;
+explain select * from test_warm where lower(a) = 'test';
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
+ Index Scan using test_warmindx on test_warm  (cost=0.15..20.22 rows=4 width=64)
+   Index Cond: (lower(a) = 'test'::text)
+(2 rows)
+
+select *, ctid from test_warm where lower(a) = 'test';
+  a   |  b  | ctid  
+------+-----+-------
+ TEST | foo | (0,2)
+(1 row)
+
+DROP TABLE test_warm;
+--- Test with toast data types
+CREATE TABLE test_toast_warm (a int unique, b text, c int);
+CREATE INDEX test_toast_warm_index ON test_toast_warm(b);
+-- insert a large enough value to cause index datum compression
+INSERT INTO test_toast_warm VALUES (1, repeat('a', 600), 100);
+INSERT INTO test_toast_warm VALUES (2, repeat('b', 2), 100);
+INSERT INTO test_toast_warm VALUES (3, repeat('c', 4), 100);
+INSERT INTO test_toast_warm VALUES (4, repeat('d', 63), 100);
+INSERT INTO test_toast_warm VALUES (5, repeat('e', 126), 100);
+INSERT INTO test_toast_warm VALUES (6, repeat('f', 127), 100);
+INSERT INTO test_toast_warm VALUES (7, repeat('g', 128), 100);
+INSERT INTO test_toast_warm VALUES (8, repeat('h', 3200), 100);
+UPDATE test_toast_warm SET b = repeat('q', 600) WHERE a = 1;
+UPDATE test_toast_warm SET b = repeat('r', 2) WHERE a = 2;
+UPDATE test_toast_warm SET b = repeat('s', 4) WHERE a = 3;
+UPDATE test_toast_warm SET b = repeat('t', 63) WHERE a = 4;
+UPDATE test_toast_warm SET b = repeat('u', 126) WHERE a = 5;
+UPDATE test_toast_warm SET b = repeat('v', 127) WHERE a = 6;
+UPDATE test_toast_warm SET b = repeat('w', 128) WHERE a = 7;
+UPDATE test_toast_warm SET b = repeat('x', 3200) WHERE a = 8;
+SET enable_seqscan TO false;
+EXPLAIN (costs off) SELECT a, b FROM test_toast_warm WHERE a = 1;
+                        QUERY PLAN                         
+-----------------------------------------------------------
+ Index Scan using test_toast_warm_a_key on test_toast_warm
+   Index Cond: (a = 1)
+(2 rows)
+
+EXPLAIN (costs off) SELECT a, b FROM test_toast_warm WHERE b = repeat('a', 600);
+                                                                                                                                                                                                                                                                                                                      QUERY PLAN                                                                                                                                                                                                                                                                                                                      
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Index Scan using test_toast_warm_index on test_toast_warm
+   Index Cond: (b = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'::text)
+(2 rows)
+
+EXPLAIN (costs off) SELECT b FROM test_toast_warm WHERE b = repeat('a', 600);
+                                                                                                                                                                                                                                                                                                                      QUERY PLAN                                                                                                                                                                                                                                                                                                                      
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Index Only Scan using test_toast_warm_index on test_toast_warm
+   Index Cond: (b = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'::text)
+(2 rows)
+
+SELECT a, b FROM test_toast_warm WHERE a = 1;
+ a |                                                                                                                                                                                                                                                                                                            b                                                                                                                                                                                                                                                                                                             
+---+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 1 | qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('a', 600);
+ a | b 
+---+---
+(0 rows)
+
+SELECT b FROM test_toast_warm WHERE b = repeat('a', 600);
+ b 
+---
+(0 rows)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('q', 600);
+ a |                                                                                                                                                                                                                                                                                                            b                                                                                                                                                                                                                                                                                                             
+---+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 1 | qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+(1 row)
+
+SELECT b FROM test_toast_warm WHERE b = repeat('q', 600);
+                                                                                                                                                                                                                                                                                                            b                                                                                                                                                                                                                                                                                                             
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('r', 2);
+ a | b  
+---+----
+ 2 | rr
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('s', 4);
+ a |  b   
+---+------
+ 3 | ssss
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('t', 63);
+ a |                                b                                
+---+-----------------------------------------------------------------
+ 4 | ttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('u', 126);
+ a |                                                               b                                                                
+---+--------------------------------------------------------------------------------------------------------------------------------
+ 5 | uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('v', 127);
+ a |                                                                b                                                                
+---+---------------------------------------------------------------------------------------------------------------------------------
+ 6 | vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('w', 128);
+ a |                                                                b                                                                 
+---+----------------------------------------------------------------------------------------------------------------------------------
+ 7 | wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('x', 3200);
+ a |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                b                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+---+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 8 | xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+(1 row)
+
+SET enable_seqscan TO true;
+SET enable_indexscan TO false;
+EXPLAIN (costs off) SELECT a, b FROM test_toast_warm WHERE b = repeat('q', 600);
+                                                                                                                                                                                                                                                                                                                    QUERY PLAN                                                                                                                                                                                                                                                                                                                    
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Seq Scan on test_toast_warm
+   Filter: (b = 'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'::text)
+(2 rows)
+
+EXPLAIN (costs off) SELECT b FROM test_toast_warm WHERE b = repeat('q', 600);
+                                                                                                                                                                                                                                                                                                                    QUERY PLAN                                                                                                                                                                                                                                                                                                                    
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Seq Scan on test_toast_warm
+   Filter: (b = 'qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq'::text)
+(2 rows)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('q', 600);
+ a |                                                                                                                                                                                                                                                                                                            b                                                                                                                                                                                                                                                                                                             
+---+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 1 | qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+(1 row)
+
+SELECT b FROM test_toast_warm WHERE b = repeat('q', 600);
+                                                                                                                                                                                                                                                                                                            b                                                                                                                                                                                                                                                                                                             
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('r', 2);
+ a | b  
+---+----
+ 2 | rr
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('s', 4);
+ a |  b   
+---+------
+ 3 | ssss
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('t', 63);
+ a |                                b                                
+---+-----------------------------------------------------------------
+ 4 | ttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('u', 126);
+ a |                                                               b                                                                
+---+--------------------------------------------------------------------------------------------------------------------------------
+ 5 | uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('v', 127);
+ a |                                                                b                                                                
+---+---------------------------------------------------------------------------------------------------------------------------------
+ 6 | vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('w', 128);
+ a |                                                                b                                                                 
+---+----------------------------------------------------------------------------------------------------------------------------------
+ 7 | wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = repeat('x', 3200);
+ a |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                b                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+---+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 8 | xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+(1 row)
+
+DROP TABLE test_toast_warm;
+-- Test with numeric data type
+CREATE TABLE test_toast_warm (a int unique, b numeric(10,2), c int);
+CREATE INDEX test_toast_warm_index ON test_toast_warm(b);
+INSERT INTO test_toast_warm VALUES (1, 10.2, 100);
+INSERT INTO test_toast_warm VALUES (2, 11.22, 100);
+INSERT INTO test_toast_warm VALUES (3, 12.222, 100);
+INSERT INTO test_toast_warm VALUES (4, 13.20, 100);
+INSERT INTO test_toast_warm VALUES (5, 14.201, 100);
+UPDATE test_toast_warm SET b = 100.2 WHERE a = 1;
+UPDATE test_toast_warm SET b = 101.22 WHERE a = 2;
+UPDATE test_toast_warm SET b = 102.222 WHERE a = 3;
+UPDATE test_toast_warm SET b = 103.20 WHERE a = 4;
+UPDATE test_toast_warm SET b = 104.201 WHERE a = 5;
+SELECT * FROM test_toast_warm;
+ a |   b    |  c  
+---+--------+-----
+ 1 | 100.20 | 100
+ 2 | 101.22 | 100
+ 3 | 102.22 | 100
+ 4 | 103.20 | 100
+ 5 | 104.20 | 100
+(5 rows)
+
+SET enable_seqscan TO false;
+EXPLAIN (costs off) SELECT a, b FROM test_toast_warm WHERE a = 1;
+                        QUERY PLAN                         
+-----------------------------------------------------------
+ Index Scan using test_toast_warm_a_key on test_toast_warm
+   Index Cond: (a = 1)
+(2 rows)
+
+EXPLAIN (costs off) SELECT a, b FROM test_toast_warm WHERE b = 10.2;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Bitmap Heap Scan on test_toast_warm
+   Recheck Cond: (b = 10.2)
+   ->  Bitmap Index Scan on test_toast_warm_index
+         Index Cond: (b = 10.2)
+(4 rows)
+
+EXPLAIN (costs off) SELECT b FROM test_toast_warm WHERE b = 100.2;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Bitmap Heap Scan on test_toast_warm
+   Recheck Cond: (b = 100.2)
+   ->  Bitmap Index Scan on test_toast_warm_index
+         Index Cond: (b = 100.2)
+(4 rows)
+
+SELECT a, b FROM test_toast_warm WHERE a = 1;
+ a |   b    
+---+--------
+ 1 | 100.20
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = 10.2;
+ a | b 
+---+---
+(0 rows)
+
+SELECT b FROM test_toast_warm WHERE b = 10.2;
+ b 
+---
+(0 rows)
+
+SELECT a, b FROM test_toast_warm WHERE b = 100.2;
+ a |   b    
+---+--------
+ 1 | 100.20
+(1 row)
+
+SELECT b FROM test_toast_warm WHERE b = 100.2;
+   b    
+--------
+ 100.20
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = 101.22;
+ a |   b    
+---+--------
+ 2 | 101.22
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = 102.222;
+ a | b 
+---+---
+(0 rows)
+
+SELECT a, b FROM test_toast_warm WHERE b = 102.22;
+ a |   b    
+---+--------
+ 3 | 102.22
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = 103.20;
+ a |   b    
+---+--------
+ 4 | 103.20
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = 104.201;
+ a | b 
+---+---
+(0 rows)
+
+SELECT a, b FROM test_toast_warm WHERE b = 104.20;
+ a |   b    
+---+--------
+ 5 | 104.20
+(1 row)
+
+SET enable_seqscan TO true;
+SET enable_indexscan TO false;
+EXPLAIN (costs off) SELECT a, b FROM test_toast_warm WHERE a = 1;
+         QUERY PLAN          
+-----------------------------
+ Seq Scan on test_toast_warm
+   Filter: (a = 1)
+(2 rows)
+
+EXPLAIN (costs off) SELECT a, b FROM test_toast_warm WHERE b = 10.2;
+         QUERY PLAN          
+-----------------------------
+ Seq Scan on test_toast_warm
+   Filter: (b = 10.2)
+(2 rows)
+
+EXPLAIN (costs off) SELECT b FROM test_toast_warm WHERE b = 100.2;
+         QUERY PLAN          
+-----------------------------
+ Seq Scan on test_toast_warm
+   Filter: (b = 100.2)
+(2 rows)
+
+SELECT a, b FROM test_toast_warm WHERE a = 1;
+ a |   b    
+---+--------
+ 1 | 100.20
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = 10.2;
+ a | b 
+---+---
+(0 rows)
+
+SELECT b FROM test_toast_warm WHERE b = 10.2;
+ b 
+---
+(0 rows)
+
+SELECT a, b FROM test_toast_warm WHERE b = 100.2;
+ a |   b    
+---+--------
+ 1 | 100.20
+(1 row)
+
+SELECT b FROM test_toast_warm WHERE b = 100.2;
+   b    
+--------
+ 100.20
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = 101.22;
+ a |   b    
+---+--------
+ 2 | 101.22
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = 102.222;
+ a | b 
+---+---
+(0 rows)
+
+SELECT a, b FROM test_toast_warm WHERE b = 102.22;
+ a |   b    
+---+--------
+ 3 | 102.22
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = 103.20;
+ a |   b    
+---+--------
+ 4 | 103.20
+(1 row)
+
+SELECT a, b FROM test_toast_warm WHERE b = 104.201;
+ a | b 
+---+---
+(0 rows)
+
+SELECT a, b FROM test_toast_warm WHERE b = 104.20;
+ a |   b    
+---+--------
+ 5 | 104.20
+(1 row)
+
+DROP TABLE test_toast_warm;
+-- Toasted heap attributes
+CREATE TABLE toasttest(descr text , cnt int DEFAULT 0, f1 text, f2 text);
+CREATE INDEX testindx1 ON toasttest(descr);
+CREATE INDEX testindx2 ON toasttest(f1);
+INSERT INTO toasttest(descr, f1, f2) VALUES('two-compressed', repeat('1234567890',1000), repeat('1234567890',1000));
+INSERT INTO toasttest(descr, f1, f2) VALUES('two-toasted', repeat('1234567890',20000), repeat('1234567890',50000));
+INSERT INTO toasttest(descr, f1, f2) VALUES('one-compressed,one-toasted', repeat('1234567890',1000), repeat('1234567890',50000));
+SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest;
+ ctid  |                                                                                                substring                                                                                                 
+-------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (0,1) | (two-compressed,0,12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012
+ (0,2) | (two-toasted,0,12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345
+ (0,3) | ("one-compressed,one-toasted",0,123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678
+(3 rows)
+
+-- UPDATE f1 by doing string manipulation, but the updated value remains the
+-- same as the old value
+UPDATE toasttest SET cnt = cnt +1, f1 = trim(leading '-' from '-'||f1) RETURNING substring(toasttest::text, 1, 200);
+                                                                                                substring                                                                                                 
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (two-compressed,1,12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012
+ (two-toasted,1,12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345
+ ("one-compressed,one-toasted",1,123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678
+(3 rows)
+
+EXPLAIN (analyze, costs off, timing off, summary off) SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest;
+                  QUERY PLAN                   
+-----------------------------------------------
+ Seq Scan on toasttest (actual rows=3 loops=1)
+(1 row)
+
+SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest;
+ ctid  |                                                                                                substring                                                                                                 
+-------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (0,4) | (two-compressed,1,12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012
+ (0,5) | (two-toasted,1,12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345
+ (0,6) | ("one-compressed,one-toasted",1,123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678
+(3 rows)
+
+SET enable_seqscan TO false;
+SET seq_page_cost = 10000;
+EXPLAIN (analyze, costs off, timing off, summary off) SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest ORDER BY f1;
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ Index Scan using testindx2 on toasttest (actual rows=3 loops=1)
+(1 row)
+
+SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest ORDER BY f1;
+ ctid  |                                                                                                substring                                                                                                 
+-------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (0,6) | ("one-compressed,one-toasted",1,123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678
+ (0,4) | (two-compressed,1,12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012
+ (0,5) | (two-toasted,1,12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345
+(3 rows)
+
+SET enable_seqscan TO true;
+SET seq_page_cost TO default;
+-- UPDATE f1 for real this time
+UPDATE toasttest SET cnt = cnt +1, f1 = '-'||f1 RETURNING substring(toasttest::text, 1, 200);
+                                                                                                substring                                                                                                 
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (two-compressed,2,-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901
+ (two-toasted,2,-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234
+ ("one-compressed,one-toasted",2,-12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567
+(3 rows)
+
+EXPLAIN (analyze, costs off, timing off, summary off) SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest;
+                  QUERY PLAN                   
+-----------------------------------------------
+ Seq Scan on toasttest (actual rows=3 loops=1)
+(1 row)
+
+SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest;
+ ctid  |                                                                                                substring                                                                                                 
+-------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (0,7) | (two-compressed,2,-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901
+ (0,8) | (two-toasted,2,-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234
+ (0,9) | ("one-compressed,one-toasted",2,-12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567
+(3 rows)
+
+SET enable_seqscan TO false;
+SET seq_page_cost = 10000;
+EXPLAIN (analyze, costs off, timing off, summary off) SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest ORDER BY f1;
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ Index Scan using testindx2 on toasttest (actual rows=3 loops=1)
+(1 row)
+
+SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest ORDER BY f1;
+ ctid  |                                                                                                substring                                                                                                 
+-------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (0,9) | ("one-compressed,one-toasted",2,-12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567
+ (0,7) | (two-compressed,2,-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901
+ (0,8) | (two-toasted,2,-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234
+(3 rows)
+
+SET enable_seqscan TO true;
+SET seq_page_cost TO default;
+-- UPDATE f1 from toasted to compressed
+UPDATE toasttest SET cnt = cnt +1, f1 = repeat('1234567890',1000) WHERE descr = 'two-toasted';
+EXPLAIN (analyze, costs off, timing off, summary off) SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest;
+                  QUERY PLAN                   
+-----------------------------------------------
+ Seq Scan on toasttest (actual rows=3 loops=1)
+(1 row)
+
+SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest;
+  ctid  |                                                                                                substring                                                                                                 
+--------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (0,7)  | (two-compressed,2,-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901
+ (0,9)  | ("one-compressed,one-toasted",2,-12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567
+ (0,10) | (two-toasted,3,12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345
+(3 rows)
+
+SET enable_seqscan TO false;
+SET seq_page_cost = 10000;
+EXPLAIN (analyze, costs off, timing off, summary off) SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest ORDER BY f1;
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ Index Scan using testindx2 on toasttest (actual rows=3 loops=1)
+(1 row)
+
+SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest ORDER BY f1;
+  ctid  |                                                                                                substring                                                                                                 
+--------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (0,9)  | ("one-compressed,one-toasted",2,-12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567
+ (0,7)  | (two-compressed,2,-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901
+ (0,10) | (two-toasted,3,12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345
+(3 rows)
+
+SET enable_seqscan TO true;
+SET seq_page_cost TO default;
+-- UPDATE f1 from compressed to toasted
+UPDATE toasttest SET cnt = cnt +1, f1 = repeat('1234567890',2000) WHERE descr = 'one-compressed,one-toasted';
+EXPLAIN (analyze, costs off, timing off, summary off) SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest;
+                  QUERY PLAN                   
+-----------------------------------------------
+ Seq Scan on toasttest (actual rows=3 loops=1)
+(1 row)
+
+SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest;
+  ctid  |                                                                                                substring                                                                                                 
+--------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (0,7)  | (two-compressed,2,-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901
+ (0,10) | (two-toasted,3,12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345
+ (0,11) | ("one-compressed,one-toasted",3,123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678
+(3 rows)
+
+SET enable_seqscan TO false;
+SET seq_page_cost = 10000;
+EXPLAIN (analyze, costs off, timing off, summary off) SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest ORDER BY f1;
+                           QUERY PLAN                            
+-----------------------------------------------------------------
+ Index Scan using testindx2 on toasttest (actual rows=3 loops=1)
+(1 row)
+
+SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest ORDER BY f1;
+  ctid  |                                                                                                substring                                                                                                 
+--------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ (0,7)  | (two-compressed,2,-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901
+ (0,10) | (two-toasted,3,12345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345
+ (0,11) | ("one-compressed,one-toasted",3,123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678
+(3 rows)
+
+SET enable_seqscan TO true;
+SET seq_page_cost TO default;
+DROP TABLE toasttest;
+-- Test enable_warm reloption
+CREATE TABLE testrelopt (a int unique, b int, c int) WITH (enable_warm = true);
+ALTER TABLE testrelopt SET (enable_warm = true);
+ALTER TABLE testrelopt RESET (enable_warm);
+-- should fail since we don't allow turning WARM off
+ALTER TABLE testrelopt SET (enable_warm = false);
+ERROR:  WARM updates cannot be disabled on the table "testrelopt"
+DROP TABLE testrelopt;
+CREATE TABLE testrelopt (a int unique, b int, c int) WITH (enable_warm = false);
+-- should be ok since the default is ON and we support turning WARM ON
+ALTER TABLE testrelopt RESET (enable_warm);
+ALTER TABLE testrelopt SET (enable_warm = true);
+-- should fail since we don't allow turning WARM off
+ALTER TABLE testrelopt SET (enable_warm = false);
+ERROR:  WARM updates cannot be disabled on the table "testrelopt"
+DROP TABLE testrelopt;

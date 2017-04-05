@@ -32,7 +32,7 @@
 #define XLOG_HEAP_INSERT		0x00
 #define XLOG_HEAP_DELETE		0x10
 #define XLOG_HEAP_UPDATE		0x20
-/* 0x030 is free, was XLOG_HEAP_MOVE */
+#define XLOG_HEAP_MULTI_INSERT	0x30
 #define XLOG_HEAP_HOT_UPDATE	0x40
 #define XLOG_HEAP_CONFIRM		0x50
 #define XLOG_HEAP_LOCK			0x60
@@ -47,17 +47,22 @@
 /*
  * We ran out of opcodes, so heapam.c now has a second RmgrId.  These opcodes
  * are associated with RM_HEAP2_ID, but are not logically different from
- * the ones above associated with RM_HEAP_ID.  XLOG_HEAP_OPMASK applies to
- * these, too.
+ * the ones above associated with RM_HEAP_ID.
+ *
+ * In PG 10, we moved XLOG_HEAP2_MULTI_INSERT to RM_HEAP_ID. That allows us to
+ * use 0x80 bit in RM_HEAP2_ID, thus potentially creating another 8 possible
+ * opcodes in RM_HEAP2_ID.
  */
 #define XLOG_HEAP2_REWRITE		0x00
 #define XLOG_HEAP2_CLEAN		0x10
 #define XLOG_HEAP2_FREEZE_PAGE	0x20
 #define XLOG_HEAP2_CLEANUP_INFO 0x30
 #define XLOG_HEAP2_VISIBLE		0x40
-#define XLOG_HEAP2_MULTI_INSERT 0x50
+#define XLOG_HEAP2_WARMCLEAR	0x50
 #define XLOG_HEAP2_LOCK_UPDATED 0x60
 #define XLOG_HEAP2_NEW_CID		0x70
+
+#define XLOG_HEAP2_OPMASK		0x70
 
 /*
  * xl_heap_insert/xl_heap_multi_insert flag values, 8 bits are available.
@@ -80,6 +85,7 @@
 #define XLH_UPDATE_CONTAINS_NEW_TUPLE			(1<<4)
 #define XLH_UPDATE_PREFIX_FROM_OLD				(1<<5)
 #define XLH_UPDATE_SUFFIX_FROM_OLD				(1<<6)
+#define XLH_UPDATE_WARM_UPDATE					(1<<7)
 
 /* convenience macro for checking whether any form of old tuple was logged */
 #define XLH_UPDATE_CONTAINS_OLD						\
@@ -224,6 +230,14 @@ typedef struct xl_heap_clean
 } xl_heap_clean;
 
 #define SizeOfHeapClean (offsetof(xl_heap_clean, ndead) + sizeof(uint16))
+
+typedef struct xl_heap_warmclear
+{
+	uint16		ncleared;
+	/* OFFSET NUMBERS are in the block reference 0 */
+} xl_heap_warmclear;
+
+#define SizeOfHeapWarmClear (offsetof(xl_heap_warmclear, ncleared) + sizeof(uint16))
 
 /*
  * Cleanup_info is required in some cases during a lazy VACUUM.
@@ -388,6 +402,8 @@ extern XLogRecPtr log_heap_clean(Relation reln, Buffer buffer,
 			   OffsetNumber *nowdead, int ndead,
 			   OffsetNumber *nowunused, int nunused,
 			   TransactionId latestRemovedXid);
+extern XLogRecPtr log_heap_warmclear(Relation reln, Buffer buffer,
+			   OffsetNumber *cleared, int ncleared);
 extern XLogRecPtr log_heap_freeze(Relation reln, Buffer buffer,
 				TransactionId cutoff_xid, xl_heap_freeze_tuple *tuples,
 				int ntuples);

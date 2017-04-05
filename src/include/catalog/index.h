@@ -89,6 +89,13 @@ extern void FormIndexDatum(IndexInfo *indexInfo,
 			   Datum *values,
 			   bool *isnull);
 
+extern void FormIndexPlainDatum(IndexInfo *indexInfo,
+			   Relation heapRel,
+			   HeapTuple heapTup,
+			   Datum *values,
+			   bool *isnull,
+			   bool *isavail);
+
 extern void index_build(Relation heapRelation,
 			Relation indexRelation,
 			IndexInfo *indexInfo,

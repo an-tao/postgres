@@ -59,6 +59,8 @@ _hash_next(IndexScanDesc scan, ScanDirection dir)
 	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, offnum));
 	so->hashso_heappos = itup->t_tid;
 
+	if (scan->xs_want_itup)
+		scan->xs_itup = itup;
 	return true;
 }
 
@@ -366,6 +368,9 @@ _hash_first(IndexScanDesc scan, ScanDirection dir)
 	page = BufferGetPage(buf);
 	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, offnum));
 	so->hashso_heappos = itup->t_tid;
+
+	if (scan->xs_want_itup)
+		scan->xs_itup = itup;
 
 	return true;
 }

@@ -202,7 +202,8 @@ gistbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 				iid = PageGetItemId(page, i);
 				idxtuple = (IndexTuple) PageGetItem(page, iid);
 
-				if (callback(&(idxtuple->t_tid), callback_state))
+				if (callback(&(idxtuple->t_tid), false, callback_state) ==
+						IBDCR_DELETE)
 					todelete[ntodelete++] = i;
 				else
 					stats->num_index_tuples += 1;

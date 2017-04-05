@@ -197,7 +197,8 @@ index_insert(Relation indexRelation,
 			 ItemPointer heap_t_ctid,
 			 Relation heapRelation,
 			 IndexUniqueCheck checkUnique,
-			 IndexInfo *indexInfo)
+			 IndexInfo *indexInfo,
+			 bool warm_update)
 {
 	RELATION_CHECKS;
 	CHECK_REL_PROCEDURE(aminsert);
@@ -207,6 +208,12 @@ index_insert(Relation indexRelation,
 									   (HeapTuple) NULL,
 									   InvalidBuffer);
 
+	if (warm_update)
+	{
+		Assert(indexRelation->rd_amroutine->amwarminsert != NULL);
+		return indexRelation->rd_amroutine->amwarminsert(indexRelation, values,
+				isnull, heap_t_ctid, heapRelation, checkUnique, indexInfo);
+	}
 	return indexRelation->rd_amroutine->aminsert(indexRelation, values, isnull,
 												 heap_t_ctid, heapRelation,
 												 checkUnique, indexInfo);
@@ -291,6 +298,25 @@ index_beginscan_internal(Relation indexRelation,
 	scan->parallel_scan = pscan;
 	scan->xs_temp_snap = temp_snap;
 
+	/*
+	 * If the index supports recheck, make sure that index tuple is saved
+	 * during index scans. Also build and cache IndexInfo which is used by
+	 * amrecheck routine.
+	 *
+	 * XXX Ideally, we should look at all indexes on the table and check if
+	 * WARM is at all supported on the base table. If WARM is not supported
+	 * then we don't need to do any recheck. RelationGetIndexAttrBitmap() does
+	 * do that and sets rd_supportswarm after looking at all indexes. But we
+	 * don't know if the function was called earlier in the session when we're
+	 * here. We can't call it now because there exists a risk of causing
+	 * deadlock.
+	 */
+	if (indexRelation->rd_amroutine->amrecheck)
+	{
+		scan->xs_want_itup = true;
+		scan->indexInfo = BuildIndexInfo(indexRelation);
+	}
+
 	return scan;
 }
 
@@ -327,6 +353,7 @@ index_rescan(IndexScanDesc scan,
 	scan->xs_continue_hot = false;
 
 	scan->kill_prior_tuple = false;		/* for safety */
+	scan->warm_prior_tuple = false;		/* for safety */
 
 	scan->indexRelation->rd_amroutine->amrescan(scan, keys, nkeys,
 												orderbys, norderbys);
@@ -357,6 +384,10 @@ index_endscan(IndexScanDesc scan)
 
 	if (scan->xs_temp_snap)
 		UnregisterSnapshot(scan->xs_snapshot);
+
+	/* Free cached IndexInfo, if any */
+	if (scan->indexInfo)
+		pfree(scan->indexInfo);
 
 	/* Release the scan data structure itself */
 	IndexScanEnd(scan);
@@ -402,6 +433,7 @@ index_restrpos(IndexScanDesc scan)
 	scan->xs_continue_hot = false;
 
 	scan->kill_prior_tuple = false;		/* for safety */
+	scan->warm_prior_tuple = false;		/* for safety */
 
 	scan->indexRelation->rd_amroutine->amrestrpos(scan);
 }
@@ -535,13 +567,14 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 	/*
 	 * The AM's amgettuple proc finds the next index entry matching the scan
 	 * keys, and puts the TID into scan->xs_ctup.t_self.  It should also set
-	 * scan->xs_recheck and possibly scan->xs_itup/scan->xs_hitup, though we
+	 * scan->xs_tuple_recheck and possibly scan->xs_itup/scan->xs_hitup, though we
 	 * pay no attention to those fields here.
 	 */
 	found = scan->indexRelation->rd_amroutine->amgettuple(scan, direction);
 
-	/* Reset kill flag immediately for safety */
+	/* Reset kill/warm flags immediately for safety */
 	scan->kill_prior_tuple = false;
+	scan->warm_prior_tuple = false;
 
 	/* If we're out of index entries, we're done */
 	if (!found)
@@ -574,7 +607,7 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
  * dropped in a future index_getnext_tid, index_fetch_heap or index_endscan
  * call).
  *
- * Note: caller must check scan->xs_recheck, and perform rechecking of the
+ * Note: caller must check scan->xs_tuple_recheck, and perform rechecking of the
  * scan keys if required.  We do not do that here because we don't have
  * enough information to do it efficiently in the general case.
  * ----------------
@@ -585,6 +618,8 @@ index_fetch_heap(IndexScanDesc scan)
 	ItemPointer tid = &scan->xs_ctup.t_self;
 	bool		all_dead = false;
 	bool		got_heap_tuple;
+	HeapTuple	heaptup = NULL;
+
 
 	/* We can skip the buffer-switching logic if we're in mid-HOT chain. */
 	if (!scan->xs_continue_hot)
@@ -605,37 +640,171 @@ index_fetch_heap(IndexScanDesc scan)
 
 	/* Obtain share-lock on the buffer so we can examine visibility */
 	LockBuffer(scan->xs_cbuf, BUFFER_LOCK_SHARE);
+
+	/*
+	 * Fetch the status of the WARM chain just once per HOT chain. We cache the
+	 * result in xs_hot_chain_status when the HOT chain is searched for the
+	 * first time.
+	 */
 	got_heap_tuple = heap_hot_search_buffer(tid, scan->heapRelation,
 											scan->xs_cbuf,
 											scan->xs_snapshot,
 											&scan->xs_ctup,
 											&all_dead,
-											!scan->xs_continue_hot);
-	LockBuffer(scan->xs_cbuf, BUFFER_LOCK_UNLOCK);
+											!scan->xs_continue_hot,
+											scan->xs_continue_hot ? NULL : &scan->xs_hot_chain_status);
 
 	if (got_heap_tuple)
 	{
+		bool res = true;
+		bool tuple_recheck = true;
+		bool is_warm;
+
+		/*
+		 * Ok we got a tuple which satisfies the snapshot, but if its part of a
+		 * WARM chain, we must do additional checks to ensure that we are
+		 * indeed returning a correct tuple. Note that if the index AM does not
+		 * implement amrecheck method, then we don't any additional checks
+		 * since WARM must have been disabled on such tables.
+		 */
+		if (scan->xs_itup && scan->indexRelation->rd_amroutine->amrecheck)
+		{
+			is_warm = scan->indexRelation->rd_amroutine->amiswarm(scan->indexRelation,
+						scan->xs_itup);
+
+			/*
+			 * If the chain has only WARM tuples then a WARM index pointer must
+			 * satisfy all tuples in the chain. So we need not do any recheck,
+			 * but but res to true. On the other hand a WARM pointer to a CLEAR
+			 * chain would not satisfy any tuple in the chain. So we just set
+			 * res to false and avoid a recheck.
+			 *
+			 * If the chain has only CLEAR tuples then a WARM index pointer
+			 * must not satisfy any tuple from the chain. A WARM pointer to a
+			 * CLEAR chain can only occur because of an aborted WARM update. We
+			 * can kill such WARM pointers immediately.
+			 */
+			if (HCWC_IS_ALL_WARM(scan->xs_hot_chain_status))
+			{
+				if (is_warm)
+				{
+					tuple_recheck = false;
+					res = true;
+				}
+			}
+			else if (HCWC_IS_ALL_CLEAR(scan->xs_hot_chain_status))
+			{
+				if (is_warm)
+				{
+					tuple_recheck = false;
+					res = false;
+					scan->kill_prior_tuple = true;
+				}
+			}
+		}
+		else
+		{
+			/*
+			 * We can't do and should not do recheck if the index tuple is not
+			 * available or when the index AM does not implement a recheck
+			 * method.
+			 */
+			tuple_recheck = false;
+		}
+
+		/*
+		 * Ok. We must recheck to decide whether to return a tuple from the
+		 * current index pointer.
+		 *
+		 * XXX If the heap tuple has toasted data, we should get a copy of the
+		 * tuple, drop the buffer lock and then work with the copy. Otherwise
+		 * we might risk getting into a deadlock.
+		 *
+		 * XXX In theory, we don't allow WARM updates when either old and new
+		 * tuple has toasted attributes. But if we ever hit a situation where
+		 * we are presented with a heap tuple with toasted values, recheck
+		 * should be able to handle that.
+		 */
+		if (tuple_recheck)
+		{
+			if (HeapTupleHasExternal(&scan->xs_ctup))
+			{
+				heaptup = heap_copytuple(&scan->xs_ctup);
+				LockBuffer(scan->xs_cbuf, BUFFER_LOCK_UNLOCK);
+			}
+			else
+				heaptup = &scan->xs_ctup;
+
+			Assert(RelationWarmUpdatesEnabled(scan->heapRelation));
+			res = scan->indexRelation->rd_amroutine->amrecheck(
+						scan->indexRelation,
+						scan->indexInfo,
+						scan->xs_itup,
+						scan->heapRelation,
+						heaptup);
+
+			/*
+			 * If it's a CLEAR pointer to a chain with only WARM tuples then it
+			 * could be the only index pointer pointing to this chain or it
+			 * could be a duplicate CLEAR pointer resulted from an aborted
+			 * vacuum. We consult the recheck result and either kill the
+			 * pointer or mark it WARM to match the state of the chain. This
+			 * avoid repeated evaluation of recheck when the index is
+			 * repeatedly used to query the table.
+			 */
+			if (!is_warm && HCWC_IS_ALL_WARM(scan->xs_hot_chain_status))
+			{
+				if (!res)
+					scan->kill_prior_tuple = true;
+				else
+					scan->warm_prior_tuple = true;
+			}
+
+			/*
+			 * XXX Can we have a CLEAR pointer to a CLEAR chain and still not
+			 * see any tuple from the chain? Should we just Assert that res
+			 * must always be true?
+			 */
+			if (!is_warm && HCWC_IS_ALL_CLEAR(scan->xs_hot_chain_status))
+			{
+				Assert(res);
+				if (!res)
+					scan->kill_prior_tuple = true;
+			}
+		}
+
+		if (heaptup && heaptup != &scan->xs_ctup)
+			heap_freetuple(heaptup);
+		else
+			LockBuffer(scan->xs_cbuf, BUFFER_LOCK_UNLOCK);
+
 		/*
 		 * Only in a non-MVCC snapshot can more than one member of the HOT
 		 * chain be visible.
 		 */
 		scan->xs_continue_hot = !IsMVCCSnapshot(scan->xs_snapshot);
 		pgstat_count_heap_fetch(scan->indexRelation);
-		return &scan->xs_ctup;
+
+		if (res)
+			return &scan->xs_ctup;
 	}
+	else
+	{
+		LockBuffer(scan->xs_cbuf, BUFFER_LOCK_UNLOCK);
 
-	/* We've reached the end of the HOT chain. */
-	scan->xs_continue_hot = false;
+		/* We've reached the end of the HOT chain. */
+		scan->xs_continue_hot = false;
 
-	/*
-	 * If we scanned a whole HOT chain and found only dead tuples, tell index
-	 * AM to kill its entry for that TID (this will take effect in the next
-	 * amgettuple call, in index_getnext_tid).  We do not do this when in
-	 * recovery because it may violate MVCC to do so.  See comments in
-	 * RelationGetIndexScan().
-	 */
-	if (!scan->xactStartedInRecovery)
-		scan->kill_prior_tuple = all_dead;
+		/*
+		 * If we scanned a whole HOT chain and found only dead tuples, tell index
+		 * AM to kill its entry for that TID (this will take effect in the next
+		 * amgettuple call, in index_getnext_tid).  We do not do this when in
+		 * recovery because it may violate MVCC to do so.  See comments in
+		 * RelationGetIndexScan().
+		 */
+		if (!scan->xactStartedInRecovery)
+			scan->kill_prior_tuple = all_dead;
+	}
 
 	return NULL;
 }
@@ -719,6 +888,7 @@ index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap)
 
 	/* just make sure this is false... */
 	scan->kill_prior_tuple = false;
+	scan->warm_prior_tuple = false;
 
 	/*
 	 * have the am's getbitmap proc do all the work.

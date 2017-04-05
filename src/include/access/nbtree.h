@@ -392,6 +392,9 @@ typedef struct BTScanOpaqueData
 	int		   *killedItems;	/* currPos.items indexes of killed items */
 	int			numKilled;		/* number of currently stored items */
 
+	/* info about items that are marked as WARM */
+	int		   *setWarmItems;
+	int			numSet;
 	/*
 	 * If we are doing an index-only scan, these are the tuple storage
 	 * workspaces for the currPos and markPos respectively.  Each is of size
@@ -428,12 +431,22 @@ typedef BTScanOpaqueData *BTScanOpaque;
 #define SK_BT_NULLS_FIRST	(INDOPTION_NULLS_FIRST << SK_BT_INDOPTION_SHIFT)
 
 /*
+ * Flags overloaded on t_tid.ip_posid field. They are managed by
+ * ItemPointerSetFlags and corresponing routines.
+ */
+#define BTREE_INDEX_WARM_POINTER	0x01
+
+/*
  * external entry points for btree, in nbtree.c
  */
 extern IndexBuildResult *btbuild(Relation heap, Relation index,
 		struct IndexInfo *indexInfo);
 extern void btbuildempty(Relation index);
 extern bool btinsert(Relation rel, Datum *values, bool *isnull,
+		 ItemPointer ht_ctid, Relation heapRel,
+		 IndexUniqueCheck checkUnique,
+		 struct IndexInfo *indexInfo);
+extern bool btwarminsert(Relation rel, Datum *values, bool *isnull,
 		 ItemPointer ht_ctid, Relation heapRel,
 		 IndexUniqueCheck checkUnique,
 		 struct IndexInfo *indexInfo);
@@ -488,10 +501,12 @@ extern void _bt_pageinit(Page page, Size size);
 extern bool _bt_page_recyclable(Page page);
 extern void _bt_delitems_delete(Relation rel, Buffer buf,
 					OffsetNumber *itemnos, int nitems, Relation heapRel);
-extern void _bt_delitems_vacuum(Relation rel, Buffer buf,
-					OffsetNumber *itemnos, int nitems,
-					BlockNumber lastBlockVacuumed);
+extern void _bt_handleitems_vacuum(Relation rel, Buffer buf,
+					OffsetNumber *delitemnos, int ndelitems,
+					OffsetNumber *clearitemnos, int nclearitems);
 extern int	_bt_pagedel(Relation rel, Buffer buf);
+extern void	_bt_clear_items(Page page, OffsetNumber *clearitemnos,
+					uint16 nclearitems);
 
 /*
  * prototypes for functions in nbtsearch.c
@@ -528,6 +543,7 @@ extern IndexTuple _bt_checkkeys(IndexScanDesc scan,
 			  Page page, OffsetNumber offnum,
 			  ScanDirection dir, bool *continuescan);
 extern void _bt_killitems(IndexScanDesc scan);
+extern void _bt_warmitems(IndexScanDesc scan);
 extern BTCycleId _bt_vacuum_cycleid(Relation rel);
 extern BTCycleId _bt_start_vacuum(Relation rel);
 extern void _bt_end_vacuum(Relation rel);
@@ -538,6 +554,10 @@ extern bytea *btoptions(Datum reloptions, bool validate);
 extern bool btproperty(Oid index_oid, int attno,
 		   IndexAMProperty prop, const char *propname,
 		   bool *res, bool *isnull);
+extern bool btrecheck(Relation indexRel, struct IndexInfo *indexInfo,
+		IndexTuple indexTuple,
+		Relation heapRel, HeapTuple heapTuple);
+extern bool btiswarm(Relation indexRel, IndexTuple itup);
 
 /*
  * prototypes for functions in nbtvalidate.c

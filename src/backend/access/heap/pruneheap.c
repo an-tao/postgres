@@ -834,6 +834,13 @@ heap_get_root_tuples_internal(Page page, OffsetNumber target_offnum,
 			if (!HeapTupleHeaderIsHotUpdated(htup))
 				continue;
 
+			/*
+			 * If the tuple has root line pointer, it must be the end of the
+			 * chain
+			 */
+			if (HeapTupleHeaderHasRootOffset(htup))
+				break;
+
 			/* Set up to scan the HOT-chain */
 			nextoffnum = ItemPointerGetOffsetNumber(&htup->t_ctid);
 			priorXmax = HeapTupleHeaderGetUpdateXid(htup);
@@ -928,6 +935,6 @@ heap_get_root_tuple(Page page, OffsetNumber target_offnum)
 void
 heap_get_root_tuples(Page page, OffsetNumber *root_offsets)
 {
-	return heap_get_root_tuples_internal(page, InvalidOffsetNumber,
+	heap_get_root_tuples_internal(page, InvalidOffsetNumber,
 			root_offsets);
 }

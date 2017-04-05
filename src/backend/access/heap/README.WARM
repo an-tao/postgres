@@ -1,0 +1,400 @@
+src/backend/access/heap/README.WARM
+
+Write Amplification Reduction Method (WARM)
+===========================================
+
+The Heap Only Tuple (HOT) feature greatly eliminated redudant index
+entries and allowed re-use of the dead space occupied by previously
+updated or deleted tuples (see src/backend/access/heap/README.HOT)
+
+One of the necessary conditions for satisfying HOT update is that the
+update must not change a column used in any of the indexes on the table.
+The condition is sometimes hard to meet, especially for complex
+workloads with several indexes on large yet frequently updated tables.
+Worse, sometimes only one or two index columns may be updated, but the
+regular non-HOT update will still insert a new index entry in every
+index on the table, irrespective of whether the key pertaining to the
+index is changed or not.
+
+WARM is a technique devised to address these problems.
+
+
+Update Chains With Multiple Index Entries Pointing to the Root
+--------------------------------------------------------------
+
+When a non-HOT update is caused by an index key change, a new index
+entry must be inserted for the changed index. But if the index key
+hasn't changed for other indexes, we don't really need to insert a new
+entry. Even though the existing index entry is pointing to the old
+tuple, the new tuple is reachable via the t_ctid chain. To keep things
+simple, a WARM update requires that the heap block must have enough
+space to store the new version of the tuple. This is same as HOT
+updates.
+
+In WARM, we ensure that every index entry always points to the root of
+the WARM chain. In fact, a WARM chain looks exactly like a HOT chain
+except for the fact that there could be multiple index entries pointing
+to the root of the chain. So when new entry is inserted in an index for
+updated tuple, and if we are doing a WARM update, the new entry is made
+point to the root of the WARM chain.
+
+For example, if we have a table with two columns and two indexes on each of the
+column. When a tuple is first inserted into the table, we have exactly one
+index entry pointing to the tuple from both indexes.
+
+	lp [1]
+	[1111, aaaa]
+
+	Index1's entry (1111) points to 1
+	Index2's entry (aaaa) also points to 1
+
+Now if the tuple's second column is updated and if there is room on the
+page, we perform a WARM update. To do so, Index1 does not get any new
+entry and Index2's new entry will still point to the root tuple of the
+chain.
+
+	lp [1]  [2]
+	[1111, aaaa]->[1111, bbbb]
+
+	Index1's entry (1111) points to 1
+	Index2's old entry (aaaa) points to 1
+	Index2's new entry (bbbb) also points to 1
+
+"A update chain which has more than one index entries pointing to its
+root line pointer is called WARM chain and the action that creates a
+WARM chain is called WARM update."
+
+Since all indexes always point to the root of the WARM chain, even when
+there are more than one index entries, WARM chains can be pruned and
+dead tuples can be removed without a need to do corresponding index
+cleanup.
+
+While this solves the problem of pruning dead tuples from a HOT/WARM
+chain, it also opens up a new technical challenge because now we have a
+situation where a heap tuple is reachable from multiple index entries,
+each having a different index key. While MVCC still ensures that only
+valid tuples are returned, a tuple with a wrong index key may be
+returned because of wrong index entries. In the above example, tuple
+[1111, bbbb] is reachable from both keys (aaaa) as well as (bbbb). For
+this reason, tuples returned from a WARM chain must always be rechecked
+for index key-match.
+
+Recheck Index Key Againt Heap Tuple
+-----------------------------------
+
+Since every Index AM has it's own notion of index tuples, each Index AM
+must implement its own method to recheck heap tuples. For example, a
+hash index stores the hash value of the column and hence recheck routine
+for hash AM must first compute the hash value of the heap attribute and
+then compare it against the value stored in the index tuple.
+
+The patch currently implement recheck routines only for btree
+indexes. If the table has an index which doesn't support recheck
+routine, WARM updates are disabled on such tables.
+
+Problem With Duplicate (key, ctid) Index Entries
+------------------------------------------------
+
+The index-key recheck logic works as long as there are no duplicate
+index keys, both pointing to the same WARM chain. In that case, the same
+valid tuple will be reachable via multiple index keys, yet satisfying
+the index key checks. In the above example, if the tuple [1111, bbbb] is
+again updated to [1111, aaaa] and if we insert a new index entry (aaaa)
+pointing to the root line pointer, we will end up with the following
+structure:
+
+	lp [1]  [2]  [3]
+	[1111, aaaa]->[1111, bbbb]->[1111, aaaa]
+
+	Index1's entry (1111) points to 1
+	Index2's oldest entry (aaaa) points to 1
+	Index2's old entry (bbbb) also points to 1
+	Index2's new entry (aaaa) also points to 1
+
+We must solve this problem to ensure that the same tuple is not
+reachable via multiple index pointers. There are couple of ways to
+address this issue:
+
+1. Do not allow WARM update to a tuple from a WARM chain. This
+guarantees that there can never be duplicate index entries to the same
+root line pointer because we must have checked for old and new index
+keys while doing the first WARM update.
+
+2. Do not allow duplicate (key, ctid) index pointers. In the above
+example, since (aaaa, 1) already exists in the index, we must not insert
+a duplicate index entry.
+
+The patch currently implements 1 i.e. do not do WARM updates to a tuple
+from a WARM chain. HOT updates are fine because they do not add a new
+index entry.
+
+Even with the restriction, this is a significant improvement because the
+number of regular UPDATEs are curtailed down to half.
+
+Expression and Partial Indexes
+------------------------------
+
+Expressions may evaluate to the same value even if the underlying column
+values have changed. A simple example is an index on "lower(col)" which
+will return the same value if the new heap value only differs in the
+case sensitivity. So we can not solely rely on the heap column check to
+decide whether or not to insert a new index entry for expression
+indexes. Similarly, for partial indexes, the predicate expression must
+be evaluated to decide whether or not to cause a new index entry when
+columns referred in the predicate expressions change.
+
+(None of these things are currently implemented and we squarely disallow
+WARM update if a column from expression indexes or predicate has
+changed).
+
+
+Efficiently Finding the Root Line Pointer
+-----------------------------------------
+
+During WARM update, we must be able to find the root line pointer of the
+tuple being updated. It must be noted that the t_ctid field in the heap
+tuple header is usually used to find the next tuple in the update chain.
+But the tuple that we are updating, must be the last tuple in the update
+chain. In such cases, the c_tid field usually points the tuple itself.
+So in theory, we could use the t_ctid to store additional information in
+the last tuple of the update chain, if the information about the tuple
+being the last tuple is stored elsewhere.
+
+We now utilize another bit from t_infomask2 to explicitly identify that
+this is the last tuple in the update chain.
+
+HEAP_LATEST_TUPLE - When this bit is set, the tuple is the last tuple in
+the update chain. The OffsetNumber part of t_ctid points to the root
+line pointer of the chain when HEAP_LATEST_TUPLE flag is set.
+
+If UPDATE operation is aborted, the last tuple in the update chain
+becomes dead. The root line pointer information stored in the tuple
+which remains the last valid tuple in the chain is also lost. In such
+rare cases, the root line pointer must be found in a hard way by
+scanning the entire heap page.
+
+Tracking WARM Chains
+--------------------
+
+When a tuple is WARM updated, the old, the new and every subsequent tuple in
+the chain is marked with a special HEAP_WARM_UPDATED flag. We use the last
+remaining bit in t_infomask2 to store this information.
+
+When a tuple is returned from a WARM chain, the caller must do additional
+checks to ensure that the tuple matches the index key. Even if the tuple
+precedes the WARM update in the chain, it must still be rechecked for the index
+key match (case when old tuple is returned by the new index key). So we must
+follow the update chain everytime to the end to check if this is a WARM
+chain.
+
+Converting WARM chains back to HOT chains (VACUUM ?)
+----------------------------------------------------
+
+The current implementation of WARM allows only one WARM update per
+chain. This simplifies the design and addresses certain issues around
+duplicate key scans. But this also implies that the benefit of WARM will be
+no more than 50%, which is still significant, but if we could return
+WARM chains back to normal status, we could do far more WARM updates.
+
+A distinct property of a WARM chain is that at least one index has more
+than one live index entries pointing to the root of the chain. In other
+words, if we can remove duplicate entry from every index or conclusively
+prove that there are no duplicate index entries for the root line
+pointer, the chain can again be marked as HOT.
+
+A WARM chain has two parts, separated by the tuple that caused WARM
+update. All tuples in each part has matching index keys, but certain
+index keys may not match between these two parts. Lets say we mark heap
+tuples in the second part with a special HEAP_WARM_TUPLE flag. Similarly, the
+new index entries caused by the first WARM update are also marked with
+INDEX_WARM_POINTER flags.
+
+There are two distinct parts of the WARM chain. The first part where none of
+the tuples have HEAP_WARM_TUPLE flag set, we call them CLEAR tuples. The second
+part where every tuple has the flag set, we call them WARM tuples. Each of
+these parts satisfy HOT property on its own i.e. all tuples have the same value
+for indexed columns. But these two parts are separated by the WARM update which
+breaks HOT property for one or more indexes.
+
+Heap chain: [1] [2] [3] [4]
+			[aaaa, 1111] -> [aaaa, 1111] -> [bbbb, 1111]W -> [bbbb, 1111]W
+
+Index1: 	(aaaa) points to 1 (satisfies only tuples without W)
+			(bbbb)W points to 1 (satisfies only tuples marked with W)
+
+Index2:		(1111) points to 1 (satisfies tuples with and without W)
+
+
+It's clear that for indexes with both CLEAR and WARM pointers, the CLEAR heap
+tuples will be reachable from CLEAR the index pointer and the WARM heap tuples
+will be reachable from the WARM index pointer. But for indexes which only have
+CLEAR pointers, both CLEAR and WARM heap tuples will be reachable from the
+CLEAR pointers. Note that such indexes must not have received a new index
+entry during WARM update.
+
+During first heap scan of VACUUM, we look for candidate WARM chains. A WARM
+chain is a candidate for conversion if all tuples in the WARM chain are either
+CLEAR tuples or WARM tuples. For all such candidate chains, we remember the
+root line pointer of the chain along with whether the chain has only CLEAR
+tuples or only WARM tuples.
+
+If we have a candidate WARM chain with WARM tuples, then our goal is to remove
+the CLEAR index pointers to such chains. On the other hand, if the candidate
+WARM chain has only CLEAR tuples, our goal is to remove all WARM index pointers
+to the chain. But there is a catch here. For Index2 above, we only have CLEAR
+index pointer, and since all heap tuples, WARM or CLEAR, are reachable only via
+this pointer, it must not be removed. In other words, we should remove CLEAR
+index pointer iff a WARM index pointer to the same root line pointer exists.
+Since index vacuum may visit these pointers in any order, we can't determine in
+a single index pass whether a WARM index pointer exists to a candidate WARM
+chain with all WARM tuples. So in the first index pass we count number of CLEAR
+and WARM pointers to each candidate chain. In the second pass, we remove the
+CLEAR pointer to a WARM chain if another WARM pointer to the chain exists. A
+WARM pointer to a chain with WARM tuples is always preserved, but such pointers
+are converted into CLEAR pointers during the second index scan. Similarly, a
+CLEAR pointer to a chain with CLEAR tuples is always preserved too. A WARM
+pointer to a chain with CLEAR tuples can always be removed since it can happen
+only in case of aborted WARM updates. Note that all index pointers, either
+CLEAR or WARM, to dead tuples are removed during the first index scan itself.
+
+Once we certainly know that all duplicate index pointers have been removed and
+the index pointers have been changed to CLEAR pointers, during the second heap
+scan, we convert the WARM chain by clearing HEAP_WARM_UPDATED and
+HEAP_WARM_TUPLE flags on the tuples.
+
+There are some more problems around aborted vacuums. For example, if vacuum
+aborts after converting WARM index pointer to a CLEAR pointer, but before we
+get chance to remove the existing CLEAR pointer, we will end up with two CLEAR
+pointers to the same root. But since the HEAP_WARM_UPDATED flag on the heap
+tuple is still set, further WARM updates to the chain will not be allowed. We
+will need some special handling for case with multiple CLEAR index pointers. We
+can either leave these WARM chains alone and let them die with a subsequent
+non-WARM update or must apply heap-recheck logic during index vacuum to find
+the dead pointer. But such rechecks will cause random access to the heap and
+won't be very optimal.  Given that vacuum-aborts are not common, we leave this
+case unhandled. We must still check for presence of multiple CLEAR index
+pointers and ensure that we don't accidently remove either of these pointers
+(unless we know which one of those is dead) and also must not allow WARM
+updates to chains with more than one CLEAR pointers.
+
+Tuning AutoVacuum and Manual VACUUM
+------------------ ------------------
+
+The current design of WARM cleanup requires two index passes. We optimise this
+by doing the second pass only for those indexes which have WARM index pointers.
+If we imagine a case where out of N indexes on a table only K gets updated,
+WARM update will create WARM pointers in only those K indexes. As a
+consequence, only those K indexes will require two index scans. When K << N,
+the cost of additional index scan should be limited.
+
+If an UPDATE requires WARM inserts in most of the indexes, then the cost of
+doing WARM updates and the overhead of WARM cleanup, may not be justified. The
+current design thus avoids doing WARM updates when more than 50% indexes
+require WARM inserts. For example, if you've a table with 4 indexes and an
+UPDATE is going to modify 3 of those indexes, WARM update won't be used. But if
+2 or less indexes are being updated, then WARM update will be used, if all
+other conditions are favourable.
+
+To give further control to the user, we've added a few more controlling
+parameters.
+
+autovacuum_warmcleanup_scale_factor - specifies the fraction of the total
+number of tuples for autovacuum to consider WARM cleanup on a table. For
+example, if set to 0.20, WARM cleanup will be done only if the percentage of
+the WARM chains is more than or equal to 20.
+
+autovacuum_warmcleanup_index_scale_factor - specifies the fraction of the WARM
+chains for autovacuum to consider WARM cleanup for a table. So if an index has
+very less WARM inserts, such an index can be skipped from WARM cleanup. Note
+that if an index is skipped, none of the candidate WARM chains pointed to by
+that index can be cleaned up.
+
+Both these parameters can also be specified on per-table basis.
+
+For a manual VACUUM, the user can use a newly added option to force WARM
+cleanup.
+
+Memory Management for VACUUM
+----------------------------
+
+Since WARM cleanup requires tracking of a lot more information than the regular
+VACUUM, we allocate a work area which is large enough to hold the required
+information, but still staying within the set maintenance_work_mem. Obviously,
+if the WARM cleanup is not requested or autovacuum has decided not to do WARM
+cleanup, then the entire memory is available for tracking the dead tuples. But
+when we are doing WARM cleanup, we fill up the work area such that dead tuples
+are added from one end and candidate WARM chains are added from the other end.
+When the allocated work memory is exhausted, we do one round of index and heap
+cleanup and then continue again.
+
+Disabling WARM on a per-table Basis
+-----------------------------------
+
+A new table level option (enable_warm) is added to enable or disable WARM on a
+given table. Note that while you can turn WARM ON, if it's currently OFF, you
+can't turn WARM OFF once it's turned ON. Changing the option requires an
+AccessExclusiveLock on the table.
+
+Online Cleanup of WARM pointers
+-------------------------------
+
+During normal index scans, if we find certain conditions, we can do online
+cleanup of the index pointers. This is very similar to how dead index pointers
+are tracked and marked with the LP_DEAD flag.
+
+During normal index scans, if we find a WARM chain with either all CLEAR or all
+WARM pointers then we do one of the following:
+
+1. If this is a WARM index pointer to a chain with WARM tuples, do nothing.
+2. If this is a CLEAR index pointer to a chain with WARM tuples
+	2a. If recheck returns false, kill the CLEAR pointer.
+	2b. If recheck returns true, convert the CLEAR pointer to a WARM pointer.
+3. If this is a WARM index pointer to a chain with CLEAR tuples, kill the
+   pointer.
+4. If this is a CLEAR index pointer to a chain with CLEAR tuples
+	4a. If recheck returns false, kill the CLEAR pointer
+	4b. If recheck returns true, do nothing.
+
+The choice of 2b is curious because by doing that we are actually making
+changes to the index which did not receive a WARM insert during WARM update.
+But this allows us to avoid repeated "recheck" of the tuple when the same tuple
+is accessed again and again. Since we only use hinting mechanism to mark the
+buffer dirty, this should not cause unnecessary IO.
+
+If we make any changes to the index pointer state, we never WAL log that
+operation.
+
+CREATE INDEX CONCURRENTLY
+-------------------------
+
+Currently CREATE INDEX CONCURRENTLY (CIC) is implemented as a 3-phase
+process.  In the first phase, we create catalog entry for the new index
+so that the index is visible to all other backends, but still don't use
+it for either read or write.  But we ensure that no new broken HOT
+chains are created by new transactions. In the second phase, we build
+the new index using a MVCC snapshot and then make the index available
+for inserts. We then do another pass over the index and insert any
+missing tuples, everytime indexing only it's root line pointer. See
+README.HOT for details about how HOT impacts CIC and how various
+challenges are tackeled.
+
+WARM poses another challenge because it allows creation of HOT chains
+even when an index key is changed. But since the index is not ready for
+insertion until the second phase is over, we might end up with a
+situation where the HOT chain has tuples with different index columns,
+yet only one of these values are indexed by the new index. Note that
+during the third phase, we only index tuples whose root line pointer is
+missing from the index. But we can't easily check if the existing index
+tuple is actually indexing the heap tuple visible to the new MVCC
+snapshot. Finding that information will require us to query the index
+again for every tuple in the chain, especially if it's a WARM tuple.
+This would require repeated access to the index. Another option would be
+to return index keys along with the heap TIDs when index is scanned for
+collecting all indexed TIDs during third phase. We can then compare the
+heap tuple against the already indexed key and decide whether or not to
+index the new tuple.
+
+We solve this problem more simply by disallowing WARM updates until the
+index is ready for insertion. We don't need to disallow WARM on a
+wholesale basis, but only those updates that change the columns of the
+new index are disallowed to be WARM updates.

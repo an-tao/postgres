@@ -513,6 +513,7 @@ ExecInsert(ModifyTableState *mtstate,
 
 			/* insert index entries for tuple */
 			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
+												 &(tuple->t_self), NULL,
 												 estate, true, &specConflict,
 												   arbiterIndexes);
 
@@ -559,6 +560,7 @@ ExecInsert(ModifyTableState *mtstate,
 			/* insert index entries for tuple */
 			if (resultRelInfo->ri_NumIndices > 0)
 				recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
+													   &(tuple->t_self), NULL,
 													   estate, false, NULL,
 													   arbiterIndexes);
 		}
@@ -892,6 +894,9 @@ ExecUpdate(ItemPointer tupleid,
 	HTSU_Result result;
 	HeapUpdateFailureData hufd;
 	List	   *recheckIndexes = NIL;
+	Bitmapset  *modified_attrs = NULL;
+	ItemPointerData	root_tid;
+	bool		warm_update;
 
 	/*
 	 * abort the operation if not running transactions
@@ -1008,7 +1013,7 @@ lreplace:;
 							 estate->es_output_cid,
 							 estate->es_crosscheck_snapshot,
 							 true /* wait for commit */ ,
-							 &hufd, &lockmode);
+							 &hufd, &lockmode, &modified_attrs, &warm_update);
 		switch (result)
 		{
 			case HeapTupleSelfUpdated:
@@ -1095,10 +1100,28 @@ lreplace:;
 		 * the t_self field.
 		 *
 		 * If it's a HOT update, we mustn't insert new index entries.
+		 *
+		 * If it's a WARM update, then we must insert new entries with TID
+		 * pointing to the root of the WARM chain.
 		 */
-		if (resultRelInfo->ri_NumIndices > 0 && !HeapTupleIsHeapOnly(tuple))
+		if (resultRelInfo->ri_NumIndices > 0 &&
+			(!HeapTupleIsHeapOnly(tuple) || warm_update))
+		{
+			if (warm_update)
+				ItemPointerSet(&root_tid,
+						ItemPointerGetBlockNumber(&(tuple->t_self)),
+						HeapTupleHeaderGetRootOffset(tuple->t_data));
+			else
+			{
+				ItemPointerCopy(&tuple->t_self, &root_tid);
+				bms_free(modified_attrs);
+				modified_attrs = NULL;
+			}
 			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
+												   &root_tid,
+												   modified_attrs,
 												   estate, false, NULL, NIL);
+		}
 	}
 
 	if (canSetTag)

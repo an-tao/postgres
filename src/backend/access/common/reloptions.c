@@ -88,6 +88,11 @@
  * Setting parallel_workers is safe, since it acts the same as
  * max_parallel_workers_per_gather which is a USERSET parameter that doesn't
  * affect existing plans or queries.
+ *
+ * Setting enable_warm requires AccessExclusiveLock on the table. This is
+ * essential to ensure that any concurrent scan does not end up ignoring WARM
+ * chains created after enable_warm is turned ON. So we must disallow any
+ * SELECTs while changing this option.
  */
 
 static relopt_bool boolRelOpts[] =
@@ -136,6 +141,15 @@ static relopt_bool boolRelOpts[] =
 			AccessExclusiveLock
 		},
 		false
+	},
+	{
+		{
+			"enable_warm",
+			"Table supports WARM updates",
+			RELOPT_KIND_HEAP,
+			AccessExclusiveLock
+		},
+		HEAP_DEFAULT_ENABLE_WARM
 	},
 	/* list terminator */
 	{{NULL}}
@@ -1351,7 +1365,9 @@ default_reloptions(Datum reloptions, bool validate, relopt_kind kind)
 		{"user_catalog_table", RELOPT_TYPE_BOOL,
 		offsetof(StdRdOptions, user_catalog_table)},
 		{"parallel_workers", RELOPT_TYPE_INT,
-		offsetof(StdRdOptions, parallel_workers)}
+		offsetof(StdRdOptions, parallel_workers)},
+		{"enable_warm", RELOPT_TYPE_BOOL,
+		offsetof(StdRdOptions, enable_warm)}
 	};
 
 	options = parseRelOptions(reloptions, validate, kind, &numoptions);

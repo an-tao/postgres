@@ -1151,6 +1151,29 @@ PageIndexTupleOverwrite(Page page, OffsetNumber offnum,
 	return true;
 }
 
+/*
+ * PageIndexClearWarmTuples
+ *
+ * Clear the given WARM pointers by resetting the flags stored in the TID
+ * field. We assume there is nothing else in the TID flags other than the WARM
+ * information and clearing all flag bits is safe. If that changes, we must
+ * change this routine as well.
+ */
+void
+PageIndexClearWarmTuples(Page page, OffsetNumber *clearitemnos,
+						 uint16 nclearitems)
+{
+	int			i;
+	ItemId		itemid;
+	IndexTuple	itup;
+
+	for (i = 0; i < nclearitems; i++)
+	{
+		itemid = PageGetItemId(page, clearitemnos[i]);
+		itup = (IndexTuple) PageGetItem(page, itemid);
+		ItemPointerClearFlags(&itup->t_tid);
+	}
+}
 
 /*
  * Set checksum for a page in shared buffers.

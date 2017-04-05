@@ -72,6 +72,20 @@ typedef struct HeapUpdateFailureData
 	CommandId	cmax;
 } HeapUpdateFailureData;
 
+typedef int HeapCheckWarmChainStatus;
+
+#define HCWC_CLEAR_TUPLE		0x0001
+#define	HCWC_WARM_TUPLE			0x0002
+#define HCWC_WARM_UPDATED_TUPLE	0x0004
+
+#define HCWC_IS_MIXED(status) \
+	(((status) & (HCWC_CLEAR_TUPLE | HCWC_WARM_TUPLE)) != 0)
+#define HCWC_IS_ALL_WARM(status) \
+	(((status) & HCWC_CLEAR_TUPLE) == 0)
+#define HCWC_IS_ALL_CLEAR(status) \
+	(((status) & HCWC_WARM_TUPLE) == 0)
+#define HCWC_IS_WARM_UPDATED(status) \
+	(((status) & HCWC_WARM_UPDATED_TUPLE) != 0)
 
 /* ----------------
  *		function prototypes for heap access method
@@ -137,9 +151,11 @@ extern bool heap_fetch(Relation relation, Snapshot snapshot,
 		   Relation stats_relation);
 extern bool heap_hot_search_buffer(ItemPointer tid, Relation relation,
 					   Buffer buffer, Snapshot snapshot, HeapTuple heapTuple,
-					   bool *all_dead, bool first_call);
+					   bool *all_dead, bool first_call,
+					   HeapCheckWarmChainStatus *status);
 extern bool heap_hot_search(ItemPointer tid, Relation relation,
-				Snapshot snapshot, bool *all_dead);
+				Snapshot snapshot, bool *all_dead,
+				bool *recheck, Buffer *buffer, HeapTuple heapTuple);
 
 extern void heap_get_latest_tid(Relation relation, Snapshot snapshot,
 					ItemPointer tid);
@@ -161,7 +177,8 @@ extern void heap_abort_speculative(Relation relation, HeapTuple tuple);
 extern HTSU_Result heap_update(Relation relation, ItemPointer otid,
 			HeapTuple newtup,
 			CommandId cid, Snapshot crosscheck, bool wait,
-			HeapUpdateFailureData *hufd, LockTupleMode *lockmode);
+			HeapUpdateFailureData *hufd, LockTupleMode *lockmode,
+			Bitmapset **modified_attrsp, bool *warm_update);
 extern HTSU_Result heap_lock_tuple(Relation relation, HeapTuple tuple,
 				CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 				bool follow_update,
@@ -176,10 +193,16 @@ extern bool heap_tuple_needs_eventual_freeze(HeapTupleHeader tuple);
 extern Oid	simple_heap_insert(Relation relation, HeapTuple tup);
 extern void simple_heap_delete(Relation relation, ItemPointer tid);
 extern void simple_heap_update(Relation relation, ItemPointer otid,
-				   HeapTuple tup);
+				   HeapTuple tup,
+				   Bitmapset **modified_attrs,
+				   bool *warm_update);
 
 extern void heap_sync(Relation relation);
 extern void heap_update_snapshot(HeapScanDesc scan, Snapshot snapshot);
+extern HeapCheckWarmChainStatus heap_check_warm_chain(Page dp,
+				   ItemPointer tid, bool stop_at_warm);
+extern int heap_clear_warm_chain(Page dp, ItemPointer tid,
+				   OffsetNumber *cleared_offnums);
 
 /* in heap/pruneheap.c */
 extern void heap_page_prune_opt(Relation relation, Buffer buffer);

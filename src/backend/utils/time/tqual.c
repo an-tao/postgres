@@ -186,7 +186,7 @@ HeapTupleSatisfiesSelf(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 			return false;
 
 		/* Used by pre-9.0 binary upgrades */
-		if (tuple->t_infomask & HEAP_MOVED_OFF)
+		if (HeapTupleHeaderIsMovedOff(tuple))
 		{
 			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
 
@@ -205,7 +205,7 @@ HeapTupleSatisfiesSelf(HeapTuple htup, Snapshot snapshot, Buffer buffer)
 			}
 		}
 		/* Used by pre-9.0 binary upgrades */
-		else if (tuple->t_infomask & HEAP_MOVED_IN)
+		else if (HeapTupleHeaderIsMovedIn(tuple))
 		{
 			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
 
@@ -377,7 +377,7 @@ HeapTupleSatisfiesToast(HeapTuple htup, Snapshot snapshot,
 			return false;
 
 		/* Used by pre-9.0 binary upgrades */
-		if (tuple->t_infomask & HEAP_MOVED_OFF)
+		if (HeapTupleHeaderIsMovedOff(tuple))
 		{
 			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
 
@@ -396,7 +396,7 @@ HeapTupleSatisfiesToast(HeapTuple htup, Snapshot snapshot,
 			}
 		}
 		/* Used by pre-9.0 binary upgrades */
-		else if (tuple->t_infomask & HEAP_MOVED_IN)
+		else if (HeapTupleHeaderIsMovedIn(tuple))
 		{
 			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
 
@@ -471,7 +471,7 @@ HeapTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 			return HeapTupleInvisible;
 
 		/* Used by pre-9.0 binary upgrades */
-		if (tuple->t_infomask & HEAP_MOVED_OFF)
+		if (HeapTupleHeaderIsMovedOff(tuple))
 		{
 			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
 
@@ -490,7 +490,7 @@ HeapTupleSatisfiesUpdate(HeapTuple htup, CommandId curcid,
 			}
 		}
 		/* Used by pre-9.0 binary upgrades */
-		else if (tuple->t_infomask & HEAP_MOVED_IN)
+		else if (HeapTupleHeaderIsMovedIn(tuple))
 		{
 			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
 
@@ -753,7 +753,7 @@ HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot,
 			return false;
 
 		/* Used by pre-9.0 binary upgrades */
-		if (tuple->t_infomask & HEAP_MOVED_OFF)
+		if (HeapTupleHeaderIsMovedOff(tuple))
 		{
 			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
 
@@ -772,7 +772,7 @@ HeapTupleSatisfiesDirty(HeapTuple htup, Snapshot snapshot,
 			}
 		}
 		/* Used by pre-9.0 binary upgrades */
-		else if (tuple->t_infomask & HEAP_MOVED_IN)
+		else if (HeapTupleHeaderIsMovedIn(tuple))
 		{
 			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
 
@@ -974,7 +974,7 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot,
 			return false;
 
 		/* Used by pre-9.0 binary upgrades */
-		if (tuple->t_infomask & HEAP_MOVED_OFF)
+		if (HeapTupleHeaderIsMovedOff(tuple))
 		{
 			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
 
@@ -993,7 +993,7 @@ HeapTupleSatisfiesMVCC(HeapTuple htup, Snapshot snapshot,
 			}
 		}
 		/* Used by pre-9.0 binary upgrades */
-		else if (tuple->t_infomask & HEAP_MOVED_IN)
+		else if (HeapTupleHeaderIsMovedIn(tuple))
 		{
 			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
 
@@ -1180,7 +1180,7 @@ HeapTupleSatisfiesVacuum(HeapTuple htup, TransactionId OldestXmin,
 		if (HeapTupleHeaderXminInvalid(tuple))
 			return HEAPTUPLE_DEAD;
 		/* Used by pre-9.0 binary upgrades */
-		else if (tuple->t_infomask & HEAP_MOVED_OFF)
+		else if (HeapTupleHeaderIsMovedOff(tuple))
 		{
 			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
 
@@ -1198,7 +1198,7 @@ HeapTupleSatisfiesVacuum(HeapTuple htup, TransactionId OldestXmin,
 						InvalidTransactionId);
 		}
 		/* Used by pre-9.0 binary upgrades */
-		else if (tuple->t_infomask & HEAP_MOVED_IN)
+		else if (HeapTupleHeaderIsMovedIn(tuple))
 		{
 			TransactionId xvac = HeapTupleHeaderGetXvac(tuple);
 

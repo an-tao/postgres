@@ -399,6 +399,8 @@ ExecSimpleRelationInsert(EState *estate, TupleTableSlot *slot)
 
 		if (resultRelInfo->ri_NumIndices > 0)
 			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
+												   &(tuple->t_self),
+												   NULL,
 												   estate, false, NULL,
 												   NIL);
 
@@ -445,6 +447,8 @@ ExecSimpleRelationUpdate(EState *estate, EPQState *epqstate,
 	if (!skip_tuple)
 	{
 		List	   *recheckIndexes = NIL;
+		bool		warm_update;
+		Bitmapset  *modified_attrs;
 
 		/* Check the constraints of the tuple */
 		if (rel->rd_att->constr)
@@ -455,13 +459,35 @@ ExecSimpleRelationUpdate(EState *estate, EPQState *epqstate,
 
 		/* OK, update the tuple and index entries for it */
 		simple_heap_update(rel, &searchslot->tts_tuple->t_self,
-						   slot->tts_tuple);
+						   slot->tts_tuple, &modified_attrs, &warm_update);
 
 		if (resultRelInfo->ri_NumIndices > 0 &&
-			!HeapTupleIsHeapOnly(slot->tts_tuple))
+			(!HeapTupleIsHeapOnly(slot->tts_tuple) || warm_update))
+		{
+			ItemPointerData root_tid;
+
+			/*
+			 * If we did a WARM update then we must index the tuple using its
+			 * root line pointer and not the tuple TID itself.
+			 */
+			if (warm_update)
+				ItemPointerSet(&root_tid,
+						ItemPointerGetBlockNumber(&(tuple->t_self)),
+						HeapTupleHeaderGetRootOffset(tuple->t_data));
+			else
+			{
+				ItemPointerCopy(&tuple->t_self,
+						&root_tid);
+				bms_free(modified_attrs);
+				modified_attrs = NULL;
+			}
+
 			recheckIndexes = ExecInsertIndexTuples(slot, &(tuple->t_self),
+												   &root_tid,
+												   modified_attrs,
 												   estate, false, NULL,
 												   NIL);
+		}
 
 		/* AFTER ROW UPDATE Triggers */
 		ExecARUpdateTriggers(estate, resultRelInfo,

@@ -66,10 +66,15 @@ CatalogCloseIndexes(CatalogIndexState indstate)
  *
  * This should be called for each inserted or updated catalog tuple.
  *
+ * If the tuple was WARM updated, the modified_attrs contains the list of
+ * columns updated by the update. We must not insert new index entries for
+ * indexes which do not refer to any of the modified columns.
+ *
  * This is effectively a cut-down version of ExecInsertIndexTuples.
  */
 static void
-CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple)
+CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple,
+		Bitmapset *modified_attrs, bool warm_update)
 {
 	int			i;
 	int			numIndexes;
@@ -79,10 +84,26 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple)
 	IndexInfo **indexInfoArray;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
+	ItemPointerData root_tid;
 
-	/* HOT update does not require index inserts */
-	if (HeapTupleIsHeapOnly(heapTuple))
+	/*
+	 * HOT update does not require index inserts, but WARM may need for some
+	 * indexes.
+	 */
+	if (HeapTupleIsHeapOnly(heapTuple) && !warm_update)
 		return;
+
+	/*
+	 * If we've done a WARM update, then we must index the TID of the root line
+	 * pointer and not the actual TID of the new tuple.
+	 */
+	if (warm_update)
+		ItemPointerSet(&root_tid,
+				ItemPointerGetBlockNumber(&(heapTuple->t_self)),
+				HeapTupleHeaderGetRootOffset(heapTuple->t_data));
+	else
+		ItemPointerCopy(&heapTuple->t_self, &root_tid);
+
 
 	/*
 	 * Get information from the state structure.  Fall out if nothing to do.
@@ -112,6 +133,17 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple)
 			continue;
 
 		/*
+		 * If we've done WARM update, then we must not insert a new index tuple
+		 * if none of the index keys have changed. This is not just an
+		 * optimization, but a requirement for WARM to work correctly.
+		 */
+		if (warm_update)
+		{
+			if (!bms_overlap(modified_attrs, indexInfo->ii_indxattrs))
+				continue;
+		}
+
+		/*
 		 * Expressional and partial indexes on system catalogs are not
 		 * supported, nor exclusion constraints, nor deferred uniqueness
 		 */
@@ -136,11 +168,12 @@ CatalogIndexInsert(CatalogIndexState indstate, HeapTuple heapTuple)
 		index_insert(relationDescs[i],	/* index relation */
 					 values,	/* array of index Datums */
 					 isnull,	/* is-null flags */
-					 &(heapTuple->t_self),		/* tid of heap tuple */
+					 &root_tid,
 					 heapRelation,
 					 relationDescs[i]->rd_index->indisunique ?
 					 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
-					 indexInfo);
+					 indexInfo,
+					 warm_update);
 	}
 
 	ExecDropSingleTupleTableSlot(slot);
@@ -168,7 +201,7 @@ CatalogTupleInsert(Relation heapRel, HeapTuple tup)
 
 	oid = simple_heap_insert(heapRel, tup);
 
-	CatalogIndexInsert(indstate, tup);
+	CatalogIndexInsert(indstate, tup, NULL, false);
 	CatalogCloseIndexes(indstate);
 
 	return oid;
@@ -190,7 +223,7 @@ CatalogTupleInsertWithInfo(Relation heapRel, HeapTuple tup,
 
 	oid = simple_heap_insert(heapRel, tup);
 
-	CatalogIndexInsert(indstate, tup);
+	CatalogIndexInsert(indstate, tup, NULL, false);
 
 	return oid;
 }
@@ -210,12 +243,14 @@ void
 CatalogTupleUpdate(Relation heapRel, ItemPointer otid, HeapTuple tup)
 {
 	CatalogIndexState indstate;
+	bool	warm_update;
+	Bitmapset	*modified_attrs;
 
 	indstate = CatalogOpenIndexes(heapRel);
 
-	simple_heap_update(heapRel, otid, tup);
+	simple_heap_update(heapRel, otid, tup, &modified_attrs, &warm_update);
 
-	CatalogIndexInsert(indstate, tup);
+	CatalogIndexInsert(indstate, tup, modified_attrs, warm_update);
 	CatalogCloseIndexes(indstate);
 }
 
@@ -231,9 +266,12 @@ void
 CatalogTupleUpdateWithInfo(Relation heapRel, ItemPointer otid, HeapTuple tup,
 						   CatalogIndexState indstate)
 {
-	simple_heap_update(heapRel, otid, tup);
+	Bitmapset  *modified_attrs;
+	bool		warm_update;
 
-	CatalogIndexInsert(indstate, tup);
+	simple_heap_update(heapRel, otid, tup, &modified_attrs, &warm_update);
+
+	CatalogIndexInsert(indstate, tup, modified_attrs, warm_update);
 }
 
 /*

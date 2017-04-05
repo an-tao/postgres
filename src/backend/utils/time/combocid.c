@@ -106,7 +106,7 @@ HeapTupleHeaderGetCmin(HeapTupleHeader tup)
 {
 	CommandId	cid = HeapTupleHeaderGetRawCommandId(tup);
 
-	Assert(!(tup->t_infomask & HEAP_MOVED));
+	Assert(!(HeapTupleHeaderIsMoved(tup)));
 	Assert(TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(tup)));
 
 	if (tup->t_infomask & HEAP_COMBOCID)
@@ -120,7 +120,7 @@ HeapTupleHeaderGetCmax(HeapTupleHeader tup)
 {
 	CommandId	cid = HeapTupleHeaderGetRawCommandId(tup);
 
-	Assert(!(tup->t_infomask & HEAP_MOVED));
+	Assert(!(HeapTupleHeaderIsMoved(tup)));
 
 	/*
 	 * Because GetUpdateXid() performs memory allocations if xmax is a

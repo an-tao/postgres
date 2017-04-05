@@ -39,6 +39,7 @@
 
 #include "access/relscan.h"
 #include "access/transam.h"
+#include "access/valid.h"
 #include "executor/execdebug.h"
 #include "executor/nodeBitmapHeapscan.h"
 #include "pgstat.h"
@@ -395,11 +396,21 @@ bitgetpage(HeapScanDesc scan, TBMIterateResult *tbmres)
 			OffsetNumber offnum = tbmres->offsets[curslot];
 			ItemPointerData tid;
 			HeapTupleData heapTuple;
+			HeapCheckWarmChainStatus status = 0;
 
 			ItemPointerSet(&tid, page, offnum);
 			if (heap_hot_search_buffer(&tid, scan->rs_rd, buffer, snapshot,
-									   &heapTuple, NULL, true))
+									   &heapTuple, NULL, true, &status))
+			{
 				scan->rs_vistuples[ntup++] = ItemPointerGetOffsetNumber(&tid);
+
+				/*
+				 * If the heap tuple needs a recheck because of a WARM update,
+				 * it's a lossy case.
+				 */
+				if (HCWC_IS_WARM_UPDATED(status))
+					tbmres->recheck = true;
+			}
 		}
 	}
 	else

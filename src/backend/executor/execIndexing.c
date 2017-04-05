@@ -270,6 +270,8 @@ ExecCloseIndices(ResultRelInfo *resultRelInfo)
 List *
 ExecInsertIndexTuples(TupleTableSlot *slot,
 					  ItemPointer tupleid,
+					  ItemPointer root_tid,
+					  Bitmapset *modified_attrs,
 					  EState *estate,
 					  bool noDupErr,
 					  bool *specConflict,
@@ -323,6 +325,17 @@ ExecInsertIndexTuples(TupleTableSlot *slot,
 		/* If the index is marked as read-only, ignore it */
 		if (!indexInfo->ii_ReadyForInserts)
 			continue;
+
+		/*
+		 * If modified_attrs is set, we only insert index entries for those
+		 * indexes whose column has changed. All other indexes can use their
+		 * existing index pointers to look up the new tuple
+		 */
+		if (modified_attrs)
+		{
+			if (!bms_overlap(modified_attrs, indexInfo->ii_indxattrs))
+				continue;
+		}
 
 		/* Check for partial index */
 		if (indexInfo->ii_Predicate != NIL)
@@ -387,10 +400,11 @@ ExecInsertIndexTuples(TupleTableSlot *slot,
 			index_insert(indexRelation, /* index relation */
 						 values,	/* array of index Datums */
 						 isnull,	/* null flags */
-						 tupleid,		/* tid of heap tuple */
+						 root_tid,		/* tid of heap or root tuple */
 						 heapRelation,	/* heap relation */
 						 checkUnique,	/* type of uniqueness check to do */
-						 indexInfo);	/* index AM may need this */
+						 indexInfo,	/* index AM may need this */
+						 (modified_attrs != NULL));	/* is it a WARM update? */
 
 		/*
 		 * If the index has an associated exclusion constraint, check that.
@@ -787,6 +801,9 @@ retry:
 		{
 			if (!HeapTupleHeaderIsHeapLatest(tup->t_data, &tup->t_self))
 				HeapTupleHeaderGetNextTid(tup->t_data, &ctid_wait);
+			else
+				ItemPointerCopy(&tup->t_self, &ctid_wait);
+
 			reason_wait = indexInfo->ii_ExclusionOps ?
 				XLTW_RecheckExclusionConstr : XLTW_InsertIndex;
 			index_endscan(index_scan);

@@ -155,7 +155,8 @@ vacuumLeafPage(spgBulkDeleteState *bds, Relation index, Buffer buffer,
 		{
 			Assert(ItemPointerIsValid(&lt->heapPtr));
 
-			if (bds->callback(&lt->heapPtr, bds->callback_state))
+			if (bds->callback(&lt->heapPtr, false, bds->callback_state) ==
+					IBDCR_DELETE)
 			{
 				bds->stats->tuples_removed += 1;
 				deletable[i] = true;
@@ -425,7 +426,8 @@ vacuumLeafRoot(spgBulkDeleteState *bds, Relation index, Buffer buffer)
 		{
 			Assert(ItemPointerIsValid(&lt->heapPtr));
 
-			if (bds->callback(&lt->heapPtr, bds->callback_state))
+			if (bds->callback(&lt->heapPtr, false, bds->callback_state) ==
+					IBDCR_DELETE)
 			{
 				bds->stats->tuples_removed += 1;
 				toDelete[xlrec.nDelete] = i;
@@ -902,10 +904,10 @@ spgbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 }
 
 /* Dummy callback to delete no tuples during spgvacuumcleanup */
-static bool
-dummy_callback(ItemPointer itemptr, void *state)
+static IndexBulkDeleteCallbackResult
+dummy_callback(ItemPointer itemptr, bool is_warm, void *state)
 {
-	return false;
+	return IBDCR_KEEP;
 }
 
 /*

@@ -506,6 +506,7 @@ extern int	ExecCleanTargetListLength(List *targetlist);
 extern void ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative);
 extern void ExecCloseIndices(ResultRelInfo *resultRelInfo);
 extern List *ExecInsertIndexTuples(TupleTableSlot *slot, ItemPointer tupleid,
+					  ItemPointer root_tid, Bitmapset *modified_attrs,
 					  EState *estate, bool noDupErr, bool *specConflict,
 					  List *arbiterIndexes);
 extern bool ExecCheckIndexConstraints(TupleTableSlot *slot, EState *estate,

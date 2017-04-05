@@ -2689,6 +2689,8 @@ CopyFrom(CopyState cstate)
 					if (resultRelInfo->ri_NumIndices > 0)
 						recheckIndexes = ExecInsertIndexTuples(slot,
 															&(tuple->t_self),
+															&(tuple->t_self),
+															NULL,
 															   estate,
 															   false,
 															   NULL,
@@ -2843,6 +2845,7 @@ CopyFromInsertBatch(CopyState cstate, EState *estate, CommandId mycid,
 			ExecStoreTuple(bufferedTuples[i], myslot, InvalidBuffer, false);
 			recheckIndexes =
 				ExecInsertIndexTuples(myslot, &(bufferedTuples[i]->t_self),
+									  &(bufferedTuples[i]->t_self), NULL,
 									  estate, false, NULL, NIL);
 			ExecARInsertTriggers(estate, resultRelInfo,
 								 bufferedTuples[i],

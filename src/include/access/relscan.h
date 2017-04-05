@@ -101,8 +101,14 @@ typedef struct IndexScanDescData
 	bool		xactStartedInRecovery;	/* prevents killing/seeing killed
 										 * tuples */
 
+	/* signaling to index AM about setting the index pointer WARM */
+	bool		warm_prior_tuple;
+
 	/* index access method's private state */
 	void	   *opaque;			/* access-method-specific info */
+
+	/* IndexInfo structure for this index */
+	struct IndexInfo  *indexInfo;
 
 	/*
 	 * In an index-only scan, a successful amgettuple call must fill either
@@ -119,7 +125,7 @@ typedef struct IndexScanDescData
 	HeapTupleData xs_ctup;		/* current heap tuple, if any */
 	Buffer		xs_cbuf;		/* current heap buffer in scan, if any */
 	/* NB: if xs_cbuf is not InvalidBuffer, we hold a pin on that buffer */
-	bool		xs_recheck;		/* T means scan keys must be rechecked */
+	bool		xs_recheck;		/* T means scan keys must be rechecked for each tuple */
 
 	/*
 	 * When fetching with an ordering operator, the values of the ORDER BY
@@ -134,6 +140,7 @@ typedef struct IndexScanDescData
 
 	/* state data for traversing HOT chains in index_getnext */
 	bool		xs_continue_hot;	/* T if must keep walking HOT chain */
+	HeapCheckWarmChainStatus	xs_hot_chain_status;
 
 	/* parallel index scan information, in shared memory */
 	ParallelIndexScanDesc parallel_scan;

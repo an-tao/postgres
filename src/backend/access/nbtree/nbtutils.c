@@ -20,11 +20,14 @@
 #include "access/nbtree.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
+#include "access/tuptoaster.h"
+#include "catalog/index.h"
 #include "miscadmin.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/datum.h"
 
 
 typedef struct BTSortArrayContext
@@ -1827,6 +1830,95 @@ _bt_killitems(IndexScanDesc scan)
 	LockBuffer(so->currPos.buf, BUFFER_LOCK_UNLOCK);
 }
 
+/*
+ * This is almost identical to _bt_killitems, but we deal with items which
+ * should be marked as WARM.
+ */
+void
+_bt_warmitems(IndexScanDesc scan)
+{
+	BTScanOpaque so = (BTScanOpaque) scan->opaque;
+	Page		page;
+	BTPageOpaque opaque;
+	OffsetNumber minoff;
+	OffsetNumber maxoff;
+	int			i;
+	int			numSet = so->numSet;
+	bool		setWarmsomething = false;
+
+	Assert(BTScanPosIsValid(so->currPos));
+
+	/*
+	 * Always reset the scan state, so we don't look for same items on other
+	 * pages.
+	 */
+	so->numSet = 0;
+
+	if (BTScanPosIsPinned(so->currPos))
+	{
+		/*
+		 * We have held the pin on this page since we read the index tuples,
+		 * so all we need to do is lock it.  The pin will have prevented
+		 * re-use of any TID on the page, so there is no need to check the
+		 * LSN.
+		 */
+		LockBuffer(so->currPos.buf, BT_READ);
+
+		page = BufferGetPage(so->currPos.buf);
+	}
+	else
+	{
+		Buffer		buf;
+
+		/* Attempt to re-read the buffer, getting pin and lock. */
+		buf = _bt_getbuf(scan->indexRelation, so->currPos.currPage, BT_READ);
+
+		/* It might not exist anymore; in which case we can't hint it. */
+		if (!BufferIsValid(buf))
+			return;
+
+		page = BufferGetPage(buf);
+		if (PageGetLSN(page) == so->currPos.lsn)
+			so->currPos.buf = buf;
+		else
+		{
+			/* Modified while not pinned means hinting is not safe. */
+			_bt_relbuf(scan->indexRelation, buf);
+			return;
+		}
+	}
+
+	for (i = 0; i < numSet; i++)
+	{
+		int			itemIndex = so->setWarmItems[i];
+		BTScanPosItem *kitem = &so->currPos.items[itemIndex];
+		OffsetNumber offnum = kitem->indexOffset;
+
+		Assert(itemIndex >= so->currPos.firstItem &&
+			   itemIndex <= so->currPos.lastItem);
+		if (offnum < minoff)
+			continue;			/* pure paranoia */
+		while (offnum <= maxoff)
+		{
+			ItemId		iid = PageGetItemId(page, offnum);
+			IndexTuple	ituple = (IndexTuple) PageGetItem(page, iid);
+
+			if (ItemPointerEquals(&ituple->t_tid, &kitem->heapTid))
+			{
+				/* found the item */
+				ItemPointerSetFlags(&ituple->t_tid, BTREE_INDEX_WARM_POINTER);
+				setWarmsomething = true;
+				break;			/* out of inner search loop */
+			}
+			offnum = OffsetNumberNext(offnum);
+		}
+	}
+
+	if (setWarmsomething)
+		MarkBufferDirtyHint(so->currPos.buf, true);
+
+	LockBuffer(so->currPos.buf, BUFFER_LOCK_UNLOCK);
+}
 
 /*
  * The following routines manage a shared-memory area in which we track
@@ -2068,4 +2160,108 @@ btproperty(Oid index_oid, int attno,
 		default:
 			return false;		/* punt to generic code */
 	}
+}
+
+/*
+ * Check if the index tuple's key matches the one computed from the given heap
+ * tuple's attribute
+ */
+bool
+btrecheck(Relation indexRel, IndexInfo *indexInfo, IndexTuple indexTuple1,
+		Relation heapRel, HeapTuple heapTuple)
+{
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+	bool		isavail[INDEX_MAX_KEYS];
+	int			i;
+	bool		equal;
+	int         natts = indexRel->rd_rel->relnatts;
+	Form_pg_attribute att;
+	IndexTuple	indexTuple2;
+
+	/*
+	 * Currently we don't allow enable_warm to be turned OFF after the table is
+	 * created. But if we ever do that, this assert must be removed since we
+	 * must exercise recheck for all existing WARM chains.
+	 */
+	Assert(RelationWarmUpdatesEnabled(heapRel));
+
+	/*
+	 * Get the index values, except for expression attributes. Since WARM is
+	 * not used when a column used by expressions in an index is modified, we
+	 * can safely assume that those index attributes are never changed by a
+	 * WARM update.
+	 *
+	 * We cannot use FormIndexDatum here because that requires access to
+	 * executor state and we don't have that here.
+	 */
+	FormIndexPlainDatum(indexInfo, heapRel, heapTuple, values, isnull, isavail);
+
+	/*
+	 * Form an index tuple using the heap values first. This allows to then
+	 * fetch index attributes from the current index tuple and the one that is
+	 * formed from the heap values and then do a binary comparison using
+	 * datumIsEqual().
+	 *
+	 * This takes care of doing the right comparison for compressed index
+	 * attributes (we just compare the compressed versions in both tuples) and
+	 * also ensure that we correctly detoast heap values, if need be.
+	 */
+	indexTuple2 = index_form_tuple(RelationGetDescr(indexRel), values, isnull);
+
+	equal = true;
+	for (i = 1; i <= natts; i++)
+	{
+		Datum 	indxvalue1;
+		bool	indxisnull1;
+		Datum	indxvalue2;
+		bool	indxisnull2;
+
+		/* No need to compare if the attribute value is not available */
+		if (!isavail[i - 1])
+			continue;
+
+		indxvalue1 = index_getattr(indexTuple1, i, indexRel->rd_att,
+								   &indxisnull1);
+		indxvalue2 = index_getattr(indexTuple2, i, indexRel->rd_att,
+								   &indxisnull2);
+
+		/*
+		 * If both are NULL, then they are equal
+		 */
+		if (indxisnull1 && indxisnull2)
+			continue;
+
+		/*
+		 * If just one is NULL, then they are not equal
+		 */
+		if (indxisnull1 || indxisnull2)
+		{
+			equal = false;
+			break;
+		}
+
+		/*
+		 * Now just do a raw memory comparison. If the index tuple was formed
+		 * using this heap tuple, the computed index values must match
+		 */
+		att = indexRel->rd_att->attrs[i - 1];
+		if (!datumIsEqual(indxvalue1, indxvalue2, att->attbyval,
+					att->attlen))
+		{
+			equal = false;
+			break;
+		}
+	}
+
+	pfree(indexTuple2);
+
+	return equal;
+}
+
+bool
+btiswarm(Relation indexRel, IndexTuple itup)
+{
+	int flags = ItemPointerGetFlags(&itup->t_tid);
+	return ((flags & BTREE_INDEX_WARM_POINTER) != 0);
 }

@@ -13,6 +13,7 @@
 #define AMAPI_H
 
 #include "access/genam.h"
+#include "access/itup.h"
 
 /*
  * We don't wish to include planner header files here, since most of an index
@@ -68,6 +69,14 @@ typedef void (*ambuildempty_function) (Relation indexRelation);
 
 /* insert this tuple */
 typedef bool (*aminsert_function) (Relation indexRelation,
+											   Datum *values,
+											   bool *isnull,
+											   ItemPointer heap_tid,
+											   Relation heapRelation,
+											   IndexUniqueCheck checkUnique,
+											   struct IndexInfo *indexInfo);
+/* insert this WARM tuple */
+typedef bool (*amwarminsert_function) (Relation indexRelation,
 											   Datum *values,
 											   bool *isnull,
 											   ItemPointer heap_tid,
@@ -152,6 +161,14 @@ typedef void (*aminitparallelscan_function) (void *target);
 /* (re)start parallel index scan */
 typedef void (*amparallelrescan_function) (IndexScanDesc scan);
 
+/* recheck index tuple and heap tuple match */
+typedef bool (*amrecheck_function) (Relation indexRel,
+		struct IndexInfo *indexInfo, IndexTuple indexTuple,
+		Relation heapRel, HeapTuple heapTuple);
+
+/* return true if the given index tuple is a WARM tuple */
+typedef bool (*amiswarm_function) (Relation indexRel, IndexTuple indexTuple);
+
 /*
  * API struct for an index AM.  Note this must be stored in a single palloc'd
  * chunk of memory.
@@ -198,6 +215,7 @@ typedef struct IndexAmRoutine
 	ambuild_function ambuild;
 	ambuildempty_function ambuildempty;
 	aminsert_function aminsert;
+	amwarminsert_function amwarminsert;
 	ambulkdelete_function ambulkdelete;
 	amvacuumcleanup_function amvacuumcleanup;
 	amcanreturn_function amcanreturn;	/* can be NULL */
@@ -217,6 +235,10 @@ typedef struct IndexAmRoutine
 	amestimateparallelscan_function amestimateparallelscan;		/* can be NULL */
 	aminitparallelscan_function aminitparallelscan;		/* can be NULL */
 	amparallelrescan_function amparallelrescan; /* can be NULL */
+
+	/* interface function to support WARM */
+	amrecheck_function amrecheck;		/* can be NULL */
+	amiswarm_function  amiswarm;
 } IndexAmRoutine;
 
 

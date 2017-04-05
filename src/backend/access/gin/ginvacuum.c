@@ -56,7 +56,8 @@ ginVacuumItemPointers(GinVacuumState *gvs, ItemPointerData *items,
 	 */
 	for (i = 0; i < nitem; i++)
 	{
-		if (gvs->callback(items + i, gvs->callback_state))
+		if (gvs->callback(items + i, false, gvs->callback_state) ==
+				IBDCR_DELETE)
 		{
 			gvs->result->tuples_removed += 1;
 			if (!tmpitems)

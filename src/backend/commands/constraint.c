@@ -40,6 +40,7 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	TriggerData *trigdata = castNode(TriggerData, fcinfo->context);
 	const char *funcname = "unique_key_recheck";
 	HeapTuple	new_row;
+	HeapTupleData heapTuple;
 	ItemPointerData tmptid;
 	Relation	indexRel;
 	IndexInfo  *indexInfo;
@@ -102,7 +103,8 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 	 * removed.
 	 */
 	tmptid = new_row->t_self;
-	if (!heap_hot_search(&tmptid, trigdata->tg_relation, SnapshotSelf, NULL))
+	if (!heap_hot_search(&tmptid, trigdata->tg_relation, SnapshotSelf, NULL,
+				NULL, NULL, &heapTuple))
 	{
 		/*
 		 * All rows in the HOT chain are dead, so skip the check.
@@ -166,7 +168,8 @@ unique_key_recheck(PG_FUNCTION_ARGS)
 		 */
 		index_insert(indexRel, values, isnull, &(new_row->t_self),
 					 trigdata->tg_relation, UNIQUE_CHECK_EXISTING,
-					 indexInfo);
+					 indexInfo,
+					 false);
 	}
 	else
 	{

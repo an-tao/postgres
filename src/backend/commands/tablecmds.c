@@ -10219,6 +10219,7 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 	Datum		datum;
 	bool		isnull;
 	Datum		newOptions;
+	Datum		std_options;
 	Datum		repl_val[Natts_pg_class];
 	bool		repl_null[Natts_pg_class];
 	bool		repl_repl[Natts_pg_class];
@@ -10263,7 +10264,7 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 		case RELKIND_TOASTVALUE:
 		case RELKIND_MATVIEW:
 		case RELKIND_PARTITIONED_TABLE:
-			(void) heap_reloptions(rel->rd_rel->relkind, newOptions, true);
+			std_options = heap_reloptions(rel->rd_rel->relkind, newOptions, true);
 			break;
 		case RELKIND_VIEW:
 			(void) view_reloptions(newOptions, true);
@@ -10277,6 +10278,17 @@ ATExecSetRelOptions(Relation rel, List *defList, AlterTableType operation,
 					 errmsg("\"%s\" is not a table, view, materialized view, index, or TOAST table",
 							RelationGetRelationName(rel))));
 			break;
+	}
+
+	if (rel->rd_rel->relkind == RELKIND_RELATION ||
+		rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		bool new_enable_warm = ((StdRdOptions *)(std_options))->enable_warm;
+		if (RelationWarmUpdatesEnabled(rel) && !new_enable_warm)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("WARM updates cannot be disabled on the table \"%s\"",
+						 RelationGetRelationName(rel))));
 	}
 
 	/* Special-case validation of view options */

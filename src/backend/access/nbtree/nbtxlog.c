@@ -390,8 +390,8 @@ btree_xlog_vacuum(XLogReaderState *record)
 	Buffer		buffer;
 	Page		page;
 	BTPageOpaque opaque;
-#ifdef UNUSED
 	xl_btree_vacuum *xlrec = (xl_btree_vacuum *) XLogRecGetData(record);
+#ifdef UNUSED
 
 	/*
 	 * This section of code is thought to be no longer needed, after analysis
@@ -482,19 +482,30 @@ btree_xlog_vacuum(XLogReaderState *record)
 
 		if (len > 0)
 		{
-			OffsetNumber *unused;
-			OffsetNumber *unend;
+			OffsetNumber *offnums = (OffsetNumber *) ptr;
 
-			unused = (OffsetNumber *) ptr;
-			unend = (OffsetNumber *) ((char *) ptr + len);
+			/*
+			 * Clear the WARM pointers.
+			 *
+			 * We must do this before dealing with the dead items because
+			 * PageIndexMultiDelete may move items around to compactify the
+			 * array and hence offnums recorded earlier won't make any sense
+			 * after PageIndexMultiDelete is called.
+			 */
+			if (xlrec->nclearitems > 0)
+				_bt_clear_items(page, offnums + xlrec->ndelitems,
+						xlrec->nclearitems);
 
-			if ((unend - unused) > 0)
-				PageIndexMultiDelete(page, unused, unend - unused);
+			/*
+			 * And handle the deleted items too
+			 */
+			if (xlrec->ndelitems > 0)
+				PageIndexMultiDelete(page, offnums, xlrec->ndelitems);
 		}
 
 		/*
 		 * Mark the page as not containing any LP_DEAD items --- see comments
-		 * in _bt_delitems_vacuum().
+		 * in _bt_handleitems_vacuum().
 		 */
 		opaque = (BTPageOpaque) PageGetSpecialPointer(page);
 		opaque->btpo_flags &= ~BTP_HAS_GARBAGE;

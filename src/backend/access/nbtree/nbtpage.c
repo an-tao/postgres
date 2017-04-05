@@ -766,29 +766,20 @@ _bt_page_recyclable(Page page)
 }
 
 /*
- * Delete item(s) from a btree page during VACUUM.
+ * Delete item(s) and clear WARM item(s) on a btree page during VACUUM.
  *
  * This must only be used for deleting leaf items.  Deleting an item on a
  * non-leaf page has to be done as part of an atomic action that includes
- * deleting the page it points to.
+ * deleting the page it points to. We don't ever clear pointers on a non-leaf
+ * page.
  *
  * This routine assumes that the caller has pinned and locked the buffer.
  * Also, the given itemnos *must* appear in increasing order in the array.
- *
- * We record VACUUMs and b-tree deletes differently in WAL. InHotStandby
- * we need to be able to pin all of the blocks in the btree in physical
- * order when replaying the effects of a VACUUM, just as we do for the
- * original VACUUM itself. lastBlockVacuumed allows us to tell whether an
- * intermediate range of blocks has had no changes at all by VACUUM,
- * and so must be scanned anyway during replay. We always write a WAL record
- * for the last block in the index, whether or not it contained any items
- * to be removed. This allows us to scan right up to end of index to
- * ensure correct locking.
  */
 void
-_bt_delitems_vacuum(Relation rel, Buffer buf,
-					OffsetNumber *itemnos, int nitems,
-					BlockNumber lastBlockVacuumed)
+_bt_handleitems_vacuum(Relation rel, Buffer buf,
+					OffsetNumber *delitemnos, int ndelitems,
+					OffsetNumber *clearitemnos, int nclearitems)
 {
 	Page		page = BufferGetPage(buf);
 	BTPageOpaque opaque;
@@ -796,9 +787,20 @@ _bt_delitems_vacuum(Relation rel, Buffer buf,
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
 
+	/*
+	 * Clear the WARM pointers.
+	 *
+	 * We must do this before dealing with the dead items because
+	 * PageIndexMultiDelete may move items around to compactify the array and
+	 * hence offnums recorded earlier won't make any sense after
+	 * PageIndexMultiDelete is called.
+	 */
+	if (nclearitems > 0)
+		_bt_clear_items(page, clearitemnos, nclearitems);
+
 	/* Fix the page */
-	if (nitems > 0)
-		PageIndexMultiDelete(page, itemnos, nitems);
+	if (ndelitems > 0)
+		PageIndexMultiDelete(page, delitemnos, ndelitems);
 
 	/*
 	 * We can clear the vacuum cycle ID since this page has certainly been
@@ -824,7 +826,8 @@ _bt_delitems_vacuum(Relation rel, Buffer buf,
 		XLogRecPtr	recptr;
 		xl_btree_vacuum xlrec_vacuum;
 
-		xlrec_vacuum.lastBlockVacuumed = lastBlockVacuumed;
+		xlrec_vacuum.ndelitems = ndelitems;
+		xlrec_vacuum.nclearitems = nclearitems;
 
 		XLogBeginInsert();
 		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
@@ -835,8 +838,11 @@ _bt_delitems_vacuum(Relation rel, Buffer buf,
 		 * is.  When XLogInsert stores the whole buffer, the offsets array
 		 * need not be stored too.
 		 */
-		if (nitems > 0)
-			XLogRegisterBufData(0, (char *) itemnos, nitems * sizeof(OffsetNumber));
+		if (ndelitems > 0)
+			XLogRegisterBufData(0, (char *) delitemnos, ndelitems * sizeof(OffsetNumber));
+
+		if (nclearitems > 0)
+			XLogRegisterBufData(0, (char *) clearitemnos, nclearitems * sizeof(OffsetNumber));
 
 		recptr = XLogInsert(RM_BTREE_ID, XLOG_BTREE_VACUUM);
 
@@ -1881,4 +1887,14 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, bool *rightsib_empty)
 		_bt_relbuf(rel, buf);
 
 	return true;
+}
+
+/*
+ * Currently just a wrapper arounf PageIndexClearWarmTuples, but in theory each
+ * index may have it's own way to handle WARM tuples.
+ */
+void
+_bt_clear_items(Page page, OffsetNumber *clearitemnos, uint16 nclearitems)
+{
+	PageIndexClearWarmTuples(page, clearitemnos, nclearitems);
 }

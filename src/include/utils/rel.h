@@ -142,9 +142,16 @@ typedef struct RelationData
 
 	/* data managed by RelationGetIndexAttrBitmap: */
 	Bitmapset  *rd_indexattr;	/* identifies columns used in indexes */
+	Bitmapset  *rd_exprindexattr; /* indentified columns used in expression or
+									 predicate indexes */
+	Bitmapset  *rd_indxnotreadyattr;	/* columns used by indexes not yet
+										   ready */
 	Bitmapset  *rd_keyattr;		/* cols that can be ref'd by foreign keys */
 	Bitmapset  *rd_pkattr;		/* cols included in primary key */
 	Bitmapset  *rd_idattr;		/* included in replica identity index */
+	List	   *rd_indexattrsList;	/* List of bitmaps, describing list of
+									   attributes for each index */
+	bool		rd_supportswarm;/* True if the table can be WARM updated */
 
 	PublicationActions  *rd_pubactions;	/* publication actions */
 
@@ -281,6 +288,7 @@ typedef struct StdRdOptions
 	bool		user_catalog_table;		/* use as an additional catalog
 										 * relation */
 	int			parallel_workers;		/* max number of parallel workers */
+	bool		enable_warm;	/* should WARM be allowed on this table */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10
@@ -318,6 +326,17 @@ typedef struct StdRdOptions
 	 ((relation)->rd_rel->relkind == RELKIND_RELATION || \
 	  (relation)->rd_rel->relkind == RELKIND_MATVIEW) ? \
 	 ((StdRdOptions *) (relation)->rd_options)->user_catalog_table : false)
+
+#define HEAP_DEFAULT_ENABLE_WARM	true
+/*
+ * RelationWarmUpdatesEnabled
+ * 		Returns whether the relation supports WARM update.
+ */
+#define RelationWarmUpdatesEnabled(relation) \
+	(((relation)->rd_options && \
+	 (relation)->rd_rel->relkind == RELKIND_RELATION) ? \
+	 ((StdRdOptions *) ((relation)->rd_options))->enable_warm : \
+		HEAP_DEFAULT_ENABLE_WARM)
 
 /*
  * RelationGetParallelWorkers

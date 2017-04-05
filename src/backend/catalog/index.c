@@ -54,6 +54,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
+#include "optimizer/var.h"
 #include "parser/parser.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
@@ -114,7 +115,7 @@ static void IndexCheckExclusion(Relation heapRelation,
 					IndexInfo *indexInfo);
 static inline int64 itemptr_encode(ItemPointer itemptr);
 static inline void itemptr_decode(ItemPointer itemptr, int64 encoded);
-static bool validate_index_callback(ItemPointer itemptr, void *opaque);
+static IndexBulkDeleteCallbackResult validate_index_callback(ItemPointer itemptr, bool is_warm, void *opaque);
 static void validate_index_heapscan(Relation heapRelation,
 						Relation indexRelation,
 						IndexInfo *indexInfo,
@@ -1692,6 +1693,20 @@ BuildIndexInfo(Relation index)
 	ii->ii_AmCache = NULL;
 	ii->ii_Context = CurrentMemoryContext;
 
+	/* build a bitmap of all table attributes referred by this index */
+	for (i = 0; i < ii->ii_NumIndexAttrs; i++)
+	{
+		AttrNumber attr = ii->ii_KeyAttrNumbers[i];
+		ii->ii_indxattrs = bms_add_member(ii->ii_indxattrs, attr -
+				FirstLowInvalidHeapAttributeNumber);
+	}
+
+	/* Collect all attributes used in expressions, too */
+	pull_varattnos((Node *) ii->ii_Expressions, 1, &ii->ii_indxattrs);
+
+	/* Collect all attributes in the index predicate, too */
+	pull_varattnos((Node *) ii->ii_Predicate, 1, &ii->ii_indxattrs);
+
 	return ii;
 }
 
@@ -1816,6 +1831,51 @@ FormIndexDatum(IndexInfo *indexInfo,
 		elog(ERROR, "wrong number of index expressions");
 }
 
+/*
+ * This is same as FormIndexDatum but we don't compute any expression
+ * attributes and hence can be used when executor interfaces are not available.
+ * If i'th attribute is available then isavail[i] is set to true, else set to
+ * false. The caller must always check if an attribute value is available
+ * before trying to do anything useful with that.
+ */
+void
+FormIndexPlainDatum(IndexInfo *indexInfo,
+			   Relation heapRel,
+			   HeapTuple heapTup,
+			   Datum *values,
+			   bool *isnull,
+			   bool *isavail)
+{
+	int			i;
+
+	for (i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
+	{
+		int			keycol = indexInfo->ii_KeyAttrNumbers[i];
+		Datum		iDatum;
+		bool		isNull;
+
+		if (keycol != 0)
+		{
+			/*
+			 * Plain index column; get the value we need directly from the
+			 * heap tuple.
+			 */
+			iDatum = heap_getattr(heapTup, keycol, RelationGetDescr(heapRel), &isNull);
+			values[i] = iDatum;
+			isnull[i] = isNull;
+			isavail[i] = true;
+		}
+		else
+		{
+			/*
+			 * This is an expression attribute which can't be computed by us.
+			 * So just inform the caller about it.
+			 */
+			isavail[i] = false;
+			isnull[i] = true;
+		}
+	}
+}
 
 /*
  * index_update_stats --- update pg_class entry after CREATE INDEX or REINDEX
@@ -2930,15 +2990,15 @@ itemptr_decode(ItemPointer itemptr, int64 encoded)
 /*
  * validate_index_callback - bulkdelete callback to collect the index TIDs
  */
-static bool
-validate_index_callback(ItemPointer itemptr, void *opaque)
+static IndexBulkDeleteCallbackResult
+validate_index_callback(ItemPointer itemptr, bool is_warm, void *opaque)
 {
 	v_i_state  *state = (v_i_state *) opaque;
 	int64		encoded = itemptr_encode(itemptr);
 
 	tuplesort_putdatum(state->tuplesort, Int64GetDatum(encoded), false);
 	state->itups += 1;
-	return false;				/* never actually delete anything */
+	return IBDCR_KEEP;				/* never actually delete anything */
 }
 
 /*
@@ -3157,7 +3217,8 @@ validate_index_heapscan(Relation heapRelation,
 						 heapRelation,
 						 indexInfo->ii_Unique ?
 						 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
-						 indexInfo);
+						 indexInfo,
+						 false);
 
 			state->tups_inserted += 1;
 		}

@@ -44,6 +44,12 @@ heap_desc(StringInfo buf, XLogReaderState *record)
 
 		appendStringInfo(buf, "off %u", xlrec->offnum);
 	}
+	else if (info == XLOG_HEAP_MULTI_INSERT)
+	{
+		xl_heap_multi_insert *xlrec = (xl_heap_multi_insert *) rec;
+
+		appendStringInfo(buf, "%d tuples", xlrec->ntuples);
+	}
 	else if (info == XLOG_HEAP_DELETE)
 	{
 		xl_heap_delete *xlrec = (xl_heap_delete *) rec;
@@ -102,7 +108,7 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 	char	   *rec = XLogRecGetData(record);
 	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
-	info &= XLOG_HEAP_OPMASK;
+	info &= XLOG_HEAP2_OPMASK;
 	if (info == XLOG_HEAP2_CLEAN)
 	{
 		xl_heap_clean *xlrec = (xl_heap_clean *) rec;
@@ -128,12 +134,6 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 
 		appendStringInfo(buf, "cutoff xid %u flags %d",
 						 xlrec->cutoff_xid, xlrec->flags);
-	}
-	else if (info == XLOG_HEAP2_MULTI_INSERT)
-	{
-		xl_heap_multi_insert *xlrec = (xl_heap_multi_insert *) rec;
-
-		appendStringInfo(buf, "%d tuples", xlrec->ntuples);
 	}
 	else if (info == XLOG_HEAP2_LOCK_UPDATED)
 	{
@@ -170,6 +170,12 @@ heap_identify(uint8 info)
 			break;
 		case XLOG_HEAP_INSERT | XLOG_HEAP_INIT_PAGE:
 			id = "INSERT+INIT";
+			break;
+		case XLOG_HEAP_MULTI_INSERT:
+			id = "MULTI_INSERT";
+			break;
+		case XLOG_HEAP_MULTI_INSERT | XLOG_HEAP_INIT_PAGE:
+			id = "MULTI_INSERT+INIT";
 			break;
 		case XLOG_HEAP_DELETE:
 			id = "DELETE";
@@ -218,12 +224,6 @@ heap2_identify(uint8 info)
 			break;
 		case XLOG_HEAP2_VISIBLE:
 			id = "VISIBLE";
-			break;
-		case XLOG_HEAP2_MULTI_INSERT:
-			id = "MULTI_INSERT";
-			break;
-		case XLOG_HEAP2_MULTI_INSERT | XLOG_HEAP_INIT_PAGE:
-			id = "MULTI_INSERT+INIT";
 			break;
 		case XLOG_HEAP2_LOCK_UPDATED:
 			id = "LOCK_UPDATED";

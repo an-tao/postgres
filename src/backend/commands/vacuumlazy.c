@@ -104,6 +104,39 @@
  */
 #define PREFETCH_SIZE			((BlockNumber) 32)
 
+/*
+ * Structure to track WARM chains that can be converted into HOT chains during
+ * this run.
+ *
+ * To reduce space requirement, we're using bitfields. But the way things are
+ * laid down, we're still wasting 1-byte per candidate chain.
+ */
+typedef struct LVWarmChain
+{
+	ItemPointerData	chain_tid;			/* root of the chain */
+
+	/*
+	 * 1 - if the chain contains only post-warm tuples
+	 * 0 - if the chain contains only pre-warm tuples
+	 */
+	uint8			is_postwarm_chain:2;
+
+	/* 1 - if this chain must remain a WARM chain */
+	uint8			keep_warm_chain:2;
+
+	/*
+	 * Number of CLEAR pointers to this root TID found so far - must never be
+	 * more than 2.
+	 */
+	uint8			num_clear_pointers:2;
+
+	/*
+	 * Number of WARM pointers to this root TID found so far - must never be
+	 * more than 1.
+	 */
+	uint8			num_warm_pointers:2;
+} LVWarmChain;
+
 typedef struct LVRelStats
 {
 	/* hasindex = true means two-pass strategy; false means one-pass */
@@ -122,6 +155,14 @@ typedef struct LVRelStats
 	BlockNumber pages_removed;
 	double		tuples_deleted;
 	BlockNumber nonempty_pages; /* actually, last nonempty page + 1 */
+
+	/* List of candidate WARM chains that can be converted into HOT chains */
+	/* NB: this list is ordered by TID of the root pointers */
+	int				num_warm_chains;	/* current # of entries */
+	int				max_warm_chains;	/* # slots allocated in array */
+	LVWarmChain 	*warm_chains;		/* array of LVWarmChain */
+	double			num_non_convertible_warm_chains;
+
 	/* List of TIDs of tuples we intend to delete */
 	/* NB: this list is ordered by TID address */
 	int			num_dead_tuples;	/* current # of entries */
@@ -150,6 +191,7 @@ static void lazy_scan_heap(Relation onerel, int options,
 static void lazy_vacuum_heap(Relation onerel, LVRelStats *vacrelstats);
 static bool lazy_check_needs_freeze(Buffer buf, bool *hastup);
 static void lazy_vacuum_index(Relation indrel,
+				  bool clear_warm,
 				  IndexBulkDeleteResult **stats,
 				  LVRelStats *vacrelstats);
 static void lazy_cleanup_index(Relation indrel,
@@ -157,6 +199,10 @@ static void lazy_cleanup_index(Relation indrel,
 				   LVRelStats *vacrelstats);
 static int lazy_vacuum_page(Relation onerel, BlockNumber blkno, Buffer buffer,
 				 int tupindex, LVRelStats *vacrelstats, Buffer *vmbuffer);
+static int lazy_warmclear_page(Relation onerel, BlockNumber blkno,
+				 Buffer buffer, int chainindex, LVRelStats *vacrelstats,
+				 Buffer *vmbuffer, bool check_all_visible);
+static void lazy_reset_warm_pointer_count(LVRelStats *vacrelstats);
 static bool should_attempt_truncation(LVRelStats *vacrelstats);
 static void lazy_truncate_heap(Relation onerel, LVRelStats *vacrelstats);
 static BlockNumber count_nondeletable_pages(Relation onerel,
@@ -164,8 +210,15 @@ static BlockNumber count_nondeletable_pages(Relation onerel,
 static void lazy_space_alloc(LVRelStats *vacrelstats, BlockNumber relblocks);
 static void lazy_record_dead_tuple(LVRelStats *vacrelstats,
 					   ItemPointer itemptr);
-static bool lazy_tid_reaped(ItemPointer itemptr, void *state);
+static void lazy_record_warm_chain(LVRelStats *vacrelstats,
+					   ItemPointer itemptr);
+static void lazy_record_clear_chain(LVRelStats *vacrelstats,
+					   ItemPointer itemptr);
+static IndexBulkDeleteCallbackResult lazy_tid_reaped(ItemPointer itemptr, bool is_warm, void *state);
+static IndexBulkDeleteCallbackResult lazy_indexvac_phase1(ItemPointer itemptr, bool is_warm, void *state);
+static IndexBulkDeleteCallbackResult lazy_indexvac_phase2(ItemPointer itemptr, bool is_warm, void *state);
 static int	vac_cmp_itemptr(const void *left, const void *right);
+static int vac_cmp_warm_chain(const void *left, const void *right);
 static bool heap_page_is_all_visible(Relation rel, Buffer buf,
 					 TransactionId *visibility_cutoff_xid, bool *all_frozen);
 
@@ -690,8 +743,10 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 		 * If we are close to overrunning the available space for dead-tuple
 		 * TIDs, pause and do a cycle of vacuuming before we tackle this page.
 		 */
-		if ((vacrelstats->max_dead_tuples - vacrelstats->num_dead_tuples) < MaxHeapTuplesPerPage &&
-			vacrelstats->num_dead_tuples > 0)
+		if (((vacrelstats->max_dead_tuples - vacrelstats->num_dead_tuples) < MaxHeapTuplesPerPage &&
+			vacrelstats->num_dead_tuples > 0) ||
+			((vacrelstats->max_warm_chains - vacrelstats->num_warm_chains) < MaxHeapTuplesPerPage &&
+			 vacrelstats->num_warm_chains > 0))
 		{
 			const int	hvp_index[] = {
 				PROGRESS_VACUUM_PHASE,
@@ -721,6 +776,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 			/* Remove index entries */
 			for (i = 0; i < nindexes; i++)
 				lazy_vacuum_index(Irel[i],
+								  (vacrelstats->num_warm_chains > 0),
 								  &indstats[i],
 								  vacrelstats);
 
@@ -743,6 +799,9 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 			 * valid.
 			 */
 			vacrelstats->num_dead_tuples = 0;
+			vacrelstats->num_warm_chains = 0;
+			memset(vacrelstats->warm_chains, 0,
+					vacrelstats->max_warm_chains * sizeof (LVWarmChain));
 			vacrelstats->num_index_scans++;
 
 			/* Report that we are once again scanning the heap */
@@ -947,14 +1006,32 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 				continue;
 			}
 
+			ItemPointerSet(&(tuple.t_self), blkno, offnum);
+
 			/* Redirect items mustn't be touched */
 			if (ItemIdIsRedirected(itemid))
 			{
+				HeapCheckWarmChainStatus status = 0;
+
+				if (RelationWarmUpdatesEnabled(onerel))
+					status = heap_check_warm_chain(page, &tuple.t_self, false);
+				if (HCWC_IS_WARM_UPDATED(status))
+				{
+					/*
+					 * A chain which is either complete WARM or CLEAR is a
+					 * candidate for chain conversion. Remember the chain and
+					 * whether the chain has all WARM tuples or not.
+					 */
+					if (HCWC_IS_ALL_WARM(status))
+						lazy_record_warm_chain(vacrelstats, &tuple.t_self);
+					else if (HCWC_IS_ALL_CLEAR(status))
+						lazy_record_clear_chain(vacrelstats, &tuple.t_self);
+					else
+						vacrelstats->num_non_convertible_warm_chains++;
+				}
 				hastup = true;	/* this page won't be truncatable */
 				continue;
 			}
-
-			ItemPointerSet(&(tuple.t_self), blkno, offnum);
 
 			/*
 			 * DEAD item pointers are to be vacuumed normally; but we don't
@@ -974,6 +1051,29 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 			tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
 			tuple.t_len = ItemIdGetLength(itemid);
 			tuple.t_tableOid = RelationGetRelid(onerel);
+
+			if (!HeapTupleIsHeapOnly(&tuple))
+			{
+				HeapCheckWarmChainStatus status = 0;
+
+				if (RelationWarmUpdatesEnabled(onerel))
+					status = heap_check_warm_chain(page, &tuple.t_self, false);
+
+				if (HCWC_IS_WARM_UPDATED(status))
+				{
+					/*
+					 * A chain which is either complete WARM or CLEAR is a
+					 * candidate for chain conversion. Remember the chain and
+					 * its color.
+					 */
+					if (HCWC_IS_ALL_WARM(status))
+						lazy_record_warm_chain(vacrelstats, &tuple.t_self);
+					else if (HCWC_IS_ALL_CLEAR(status))
+						lazy_record_clear_chain(vacrelstats, &tuple.t_self);
+					else
+						vacrelstats->num_non_convertible_warm_chains++;
+				}
+			}
 
 			tupgone = false;
 
@@ -1035,6 +1135,19 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 						 */
 						xmin = HeapTupleHeaderGetXmin(tuple.t_data);
 						if (!TransactionIdPrecedes(xmin, OldestXmin))
+						{
+							all_visible = false;
+							break;
+						}
+
+						/*
+						 * If this tuple was ever WARM updated or is a WARM
+						 * tuple, there could be multiple index entries
+						 * pointing to the root of this chain. We can't do
+						 * index-only scans for such tuples without verifying
+						 * index key check. So mark the page as !all_visible
+						 */
+						if (HeapTupleHeaderIsWarmUpdated(tuple.t_data))
 						{
 							all_visible = false;
 							break;
@@ -1282,7 +1395,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 
 	/* If any tuples need to be deleted, perform final vacuum cycle */
 	/* XXX put a threshold on min number of tuples here? */
-	if (vacrelstats->num_dead_tuples > 0)
+	if (vacrelstats->num_dead_tuples > 0 || vacrelstats->num_warm_chains > 0)
 	{
 		const int	hvp_index[] = {
 			PROGRESS_VACUUM_PHASE,
@@ -1300,6 +1413,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 		/* Remove index entries */
 		for (i = 0; i < nindexes; i++)
 			lazy_vacuum_index(Irel[i],
+							  (vacrelstats->num_warm_chains > 0),
 							  &indstats[i],
 							  vacrelstats);
 
@@ -1371,7 +1485,10 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
  *
  *		This routine marks dead tuples as unused and compacts out free
  *		space on their pages.  Pages not having dead tuples recorded from
- *		lazy_scan_heap are not visited at all.
+ *		lazy_scan_heap are not visited at all. This routine also converts
+ *		candidate WARM chains to HOT chains by clearing WARM related flags. The
+ *		candidate chains are determined by the preceeding index scans after
+ *		looking at the data collected by the first heap scan.
  *
  * Note: the reason for doing this as a second pass is we cannot remove
  * the tuples until we've removed their index entries, and we want to
@@ -1380,7 +1497,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 static void
 lazy_vacuum_heap(Relation onerel, LVRelStats *vacrelstats)
 {
-	int			tupindex;
+	int			tupindex, chainindex;
 	int			npages;
 	PGRUsage	ru0;
 	Buffer		vmbuffer = InvalidBuffer;
@@ -1389,33 +1506,69 @@ lazy_vacuum_heap(Relation onerel, LVRelStats *vacrelstats)
 	npages = 0;
 
 	tupindex = 0;
-	while (tupindex < vacrelstats->num_dead_tuples)
+	chainindex = 0;
+	while (tupindex < vacrelstats->num_dead_tuples ||
+		   chainindex < vacrelstats->num_warm_chains)
 	{
-		BlockNumber tblk;
+		BlockNumber tblk, chainblk, vacblk;
 		Buffer		buf;
 		Page		page;
 		Size		freespace;
 
 		vacuum_delay_point();
 
-		tblk = ItemPointerGetBlockNumber(&vacrelstats->dead_tuples[tupindex]);
-		buf = ReadBufferExtended(onerel, MAIN_FORKNUM, tblk, RBM_NORMAL,
+		tblk = chainblk = InvalidBlockNumber;
+		if (chainindex < vacrelstats->num_warm_chains)
+			chainblk =
+				ItemPointerGetBlockNumber(&(vacrelstats->warm_chains[chainindex].chain_tid));
+
+		if (tupindex < vacrelstats->num_dead_tuples)
+			tblk = ItemPointerGetBlockNumber(&vacrelstats->dead_tuples[tupindex]);
+
+		if (tblk == InvalidBlockNumber)
+			vacblk = chainblk;
+		else if (chainblk == InvalidBlockNumber)
+			vacblk = tblk;
+		else
+			vacblk = Min(chainblk, tblk);
+
+		Assert(vacblk != InvalidBlockNumber);
+
+		buf = ReadBufferExtended(onerel, MAIN_FORKNUM, vacblk, RBM_NORMAL,
 								 vac_strategy);
-		if (!ConditionalLockBufferForCleanup(buf))
+
+
+		if (vacblk == chainblk)
+			LockBufferForCleanup(buf);
+		else if (!ConditionalLockBufferForCleanup(buf))
 		{
 			ReleaseBuffer(buf);
 			++tupindex;
 			continue;
 		}
-		tupindex = lazy_vacuum_page(onerel, tblk, buf, tupindex, vacrelstats,
-									&vmbuffer);
+
+		/*
+		 * Convert WARM chains on this page. This should be done before
+		 * vacuuming the page to ensure that we can correctly set visibility
+		 * bits after clearing WARM chains.
+		 *
+		 * If we are going to vacuum this page then don't check for
+		 * all-visibility just yet.
+		*/
+		if (vacblk == chainblk)
+			chainindex = lazy_warmclear_page(onerel, chainblk, buf, chainindex,
+					vacrelstats, &vmbuffer, chainblk != tblk);
+
+		if (vacblk == tblk)
+			tupindex = lazy_vacuum_page(onerel, tblk, buf, tupindex, vacrelstats,
+					&vmbuffer);
 
 		/* Now that we've compacted the page, record its available space */
 		page = BufferGetPage(buf);
 		freespace = PageGetHeapFreeSpace(page);
 
 		UnlockReleaseBuffer(buf);
-		RecordPageWithFreeSpace(onerel, tblk, freespace);
+		RecordPageWithFreeSpace(onerel, vacblk, freespace);
 		npages++;
 	}
 
@@ -1431,6 +1584,107 @@ lazy_vacuum_heap(Relation onerel, LVRelStats *vacrelstats)
 					tupindex, npages),
 			 errdetail("%s.",
 					   pg_rusage_show(&ru0))));
+}
+
+/*
+ *	lazy_warmclear_page() -- clear various WARM bits on the tuples.
+ *
+ * Caller must hold pin and buffer cleanup lock on the buffer.
+ *
+ * chainindex is the index in vacrelstats->warm_chains of the first dead
+ * tuple for this page.  We assume the rest follow sequentially.
+ * The return value is the first tupindex after the tuples of this page.
+ *
+ * If check_all_visible is set then we also check if the page has now become
+ * all visible and update visibility map.
+ */
+static int
+lazy_warmclear_page(Relation onerel, BlockNumber blkno, Buffer buffer,
+				 int chainindex, LVRelStats *vacrelstats, Buffer *vmbuffer,
+				 bool check_all_visible)
+{
+	Page			page = BufferGetPage(buffer);
+	OffsetNumber	cleared_offnums[MaxHeapTuplesPerPage];
+	int				num_cleared = 0;
+	TransactionId	visibility_cutoff_xid;
+	bool			all_frozen;
+
+	pgstat_progress_update_param(PROGRESS_VACUUM_HEAP_BLKS_WARMCLEARED, blkno);
+
+	START_CRIT_SECTION();
+
+	for (; chainindex < vacrelstats->num_warm_chains ; chainindex++)
+	{
+		BlockNumber tblk;
+		LVWarmChain	*chain;
+
+		chain = &vacrelstats->warm_chains[chainindex];
+
+		tblk = ItemPointerGetBlockNumber(&chain->chain_tid);
+		if (tblk != blkno)
+			break;				/* past end of tuples for this block */
+
+		/*
+		 * Since a heap page can have no more than MaxHeapTuplesPerPage
+		 * offnums and we process each offnum only once, MaxHeapTuplesPerPage
+		 * size array should be enough to hold all cleared tuples in this page.
+		 */
+		if (!chain->keep_warm_chain)
+			num_cleared += heap_clear_warm_chain(page, &chain->chain_tid,
+					cleared_offnums + num_cleared);
+	}
+
+	/*
+	 * Mark buffer dirty before we write WAL.
+	 */
+	MarkBufferDirty(buffer);
+
+	/* XLOG stuff */
+	if (RelationNeedsWAL(onerel))
+	{
+		XLogRecPtr	recptr;
+
+		recptr = log_heap_warmclear(onerel, buffer,
+								cleared_offnums, num_cleared);
+		PageSetLSN(page, recptr);
+	}
+
+	END_CRIT_SECTION();
+
+	/* If not checking for all-visibility then we're done */
+	if (!check_all_visible)
+		return chainindex;
+
+	/*
+	 * The following code should match the corresponding code in
+	 * lazy_vacuum_page
+	 **/
+	if (heap_page_is_all_visible(onerel, buffer, &visibility_cutoff_xid,
+								 &all_frozen))
+		PageSetAllVisible(page);
+
+	/*
+	 * All the changes to the heap page have been done. If the all-visible
+	 * flag is now set, also set the VM all-visible bit (and, if possible, the
+	 * all-frozen bit) unless this has already been done previously.
+	 */
+	if (PageIsAllVisible(page))
+	{
+		uint8		vm_status = visibilitymap_get_status(onerel, blkno, vmbuffer);
+		uint8		flags = 0;
+
+		/* Set the VM all-frozen bit to flag, if needed */
+		if ((vm_status & VISIBILITYMAP_ALL_VISIBLE) == 0)
+			flags |= VISIBILITYMAP_ALL_VISIBLE;
+		if ((vm_status & VISIBILITYMAP_ALL_FROZEN) == 0 && all_frozen)
+			flags |= VISIBILITYMAP_ALL_FROZEN;
+
+		Assert(BufferIsValid(*vmbuffer));
+		if (flags != 0)
+			visibilitymap_set(onerel, blkno, buffer, InvalidXLogRecPtr,
+							  *vmbuffer, visibility_cutoff_xid, flags);
+	}
+	return chainindex;
 }
 
 /*
@@ -1586,6 +1840,24 @@ lazy_check_needs_freeze(Buffer buf, bool *hastup)
 	return false;
 }
 
+/*
+ * Reset counters tracking number of WARM and CLEAR pointers per candidate TID.
+ * These counters are maintained per index and cleared when the next index is
+ * picked up for cleanup.
+ *
+ * We don't touch the keep_warm_chain since once a chain is known to be
+ * non-convertible, we must remember that across all indexes.
+ */
+static void
+lazy_reset_warm_pointer_count(LVRelStats *vacrelstats)
+{
+	int i;
+	for (i = 0; i < vacrelstats->num_warm_chains; i++)
+	{
+		LVWarmChain *chain = &vacrelstats->warm_chains[i];
+		chain->num_clear_pointers = chain->num_warm_pointers = 0;
+	}
+}
 
 /*
  *	lazy_vacuum_index() -- vacuum one index relation.
@@ -1595,6 +1867,7 @@ lazy_check_needs_freeze(Buffer buf, bool *hastup)
  */
 static void
 lazy_vacuum_index(Relation indrel,
+				  bool clear_warm,
 				  IndexBulkDeleteResult **stats,
 				  LVRelStats *vacrelstats)
 {
@@ -1610,15 +1883,87 @@ lazy_vacuum_index(Relation indrel,
 	ivinfo.num_heap_tuples = vacrelstats->old_rel_tuples;
 	ivinfo.strategy = vac_strategy;
 
-	/* Do bulk deletion */
-	*stats = index_bulk_delete(&ivinfo, *stats,
-							   lazy_tid_reaped, (void *) vacrelstats);
+	/*
+	 * If told, convert WARM chains into HOT chains.
+	 *
+	 * We must have already collected candidate WARM chains i.e. chains that
+	 * have either all tuples with HEAP_WARM_TUPLE flag set or none.
+	 *
+	 * This works in two phases. In the first phase, we do a complete index
+	 * scan and collect information about index pointers to the candidate
+	 * chains, but we don't do conversion. To be precise, we count the number
+	 * of WARM and CLEAR index pointers to each candidate chain and use that
+	 * knowledge to arrive at a decision and do the actual conversion during
+	 * the second phase (we kill known dead pointers though in this phase).
+	 *
+	 * In the second phase, for each candidate chain we check if we have seen a
+	 * WARM index pointer. For such chains, we kill the CLEAR pointer and
+	 * convert the WARM pointer into a CLEAR pointer. The heap tuples are
+	 * cleared of WARM flags in the second heap scan. If we did not find any
+	 * WARM pointer to a WARM chain, that means that the chain is reachable
+	 * from the CLEAR pointer (because say WARM update did not add a new entry
+	 * for this index). In that case, we do nothing.  There is a third case
+	 * where we find two CLEAR pointers to a candidate chain. This can happen
+	 * because of aborted vacuums. We don't handle that case yet, but it should
+	 * be possible to apply the same recheck logic and find which of the clear
+	 * pointers is redundant and should be removed.
+	 *
+	 * For CLEAR chains, we just kill the WARM pointer, if it exists, and keep
+	 * the CLEAR pointer.
+	 */
+	if (clear_warm)
+	{
+		/*
+		 * Before starting the index scan, reset the counters of WARM and CLEAR
+		 * pointers, probably carried forward from the previous index.
+		 */
+		lazy_reset_warm_pointer_count(vacrelstats);
 
-	ereport(elevel,
-			(errmsg("scanned index \"%s\" to remove %d row versions",
-					RelationGetRelationName(indrel),
-					vacrelstats->num_dead_tuples),
-			 errdetail("%s.", pg_rusage_show(&ru0))));
+		*stats = index_bulk_delete(&ivinfo, *stats,
+				lazy_indexvac_phase1, (void *) vacrelstats);
+		ereport(elevel,
+				(errmsg("scanned index \"%s\" to remove %d row version, found "
+						"%0.f warm pointers, %0.f clear pointers, removed "
+						"%0.f warm pointers, removed %0.f clear pointers",
+						RelationGetRelationName(indrel),
+						vacrelstats->num_dead_tuples,
+						(*stats)->num_warm_pointers,
+						(*stats)->num_clear_pointers,
+						(*stats)->warm_pointers_removed,
+						(*stats)->clear_pointers_removed)));
+
+		(*stats)->num_warm_pointers = 0;
+		(*stats)->num_clear_pointers = 0;
+		(*stats)->warm_pointers_removed = 0;
+		(*stats)->clear_pointers_removed = 0;
+		(*stats)->pointers_cleared = 0;
+
+		*stats = index_bulk_delete(&ivinfo, *stats,
+				lazy_indexvac_phase2, (void *) vacrelstats);
+		ereport(elevel,
+				(errmsg("scanned index \"%s\" to convert WARM pointers, found "
+						"%0.f WARM pointers, %0.f CLEAR pointers, removed "
+						"%0.f WARM pointers, removed %0.f CLEAR pointers, "
+						"cleared %0.f WARM pointers",
+						RelationGetRelationName(indrel),
+						(*stats)->num_warm_pointers,
+						(*stats)->num_clear_pointers,
+						(*stats)->warm_pointers_removed,
+						(*stats)->clear_pointers_removed,
+						(*stats)->pointers_cleared)));
+	}
+	else
+	{
+		/* Do bulk deletion */
+		*stats = index_bulk_delete(&ivinfo, *stats,
+				lazy_tid_reaped, (void *) vacrelstats);
+		ereport(elevel,
+				(errmsg("scanned index \"%s\" to remove %d row versions",
+						RelationGetRelationName(indrel),
+						vacrelstats->num_dead_tuples),
+				 errdetail("%s.", pg_rusage_show(&ru0))));
+	}
+
 }
 
 /*
@@ -1992,9 +2337,11 @@ lazy_space_alloc(LVRelStats *vacrelstats, BlockNumber relblocks)
 
 	if (vacrelstats->hasindex)
 	{
-		maxtuples = (vac_work_mem * 1024L) / sizeof(ItemPointerData);
+		maxtuples = (vac_work_mem * 1024L) / (sizeof(ItemPointerData) +
+				sizeof(LVWarmChain));
 		maxtuples = Min(maxtuples, INT_MAX);
-		maxtuples = Min(maxtuples, MaxAllocSize / sizeof(ItemPointerData));
+		maxtuples = Min(maxtuples, MaxAllocSize / (sizeof(ItemPointerData) +
+					sizeof(LVWarmChain)));
 
 		/* curious coding here to ensure the multiplication can't overflow */
 		if ((BlockNumber) (maxtuples / LAZY_ALLOC_TUPLES) > relblocks)
@@ -2012,6 +2359,57 @@ lazy_space_alloc(LVRelStats *vacrelstats, BlockNumber relblocks)
 	vacrelstats->max_dead_tuples = (int) maxtuples;
 	vacrelstats->dead_tuples = (ItemPointer)
 		palloc(maxtuples * sizeof(ItemPointerData));
+
+	/*
+	 * XXX Cheat for now and allocate the same size array for tracking warm
+	 * chains. maxtuples must have been already adjusted above to ensure we
+	 * don't cross vac_work_mem.
+	 */
+	vacrelstats->num_warm_chains = 0;
+	vacrelstats->max_warm_chains = (int) maxtuples;
+	vacrelstats->warm_chains = (LVWarmChain *)
+		palloc0(maxtuples * sizeof(LVWarmChain));
+
+}
+
+/*
+ * lazy_record_clear_chain - remember one CLEAR chain
+ */
+static void
+lazy_record_clear_chain(LVRelStats *vacrelstats,
+					   ItemPointer itemptr)
+{
+	/*
+	 * The array shouldn't overflow under normal behavior, but perhaps it
+	 * could if we are given a really small maintenance_work_mem. In that
+	 * case, just forget the last few tuples (we'll get 'em next time).
+	 */
+	if (vacrelstats->num_warm_chains < vacrelstats->max_warm_chains)
+	{
+		vacrelstats->warm_chains[vacrelstats->num_warm_chains].chain_tid = *itemptr;
+		vacrelstats->warm_chains[vacrelstats->num_warm_chains].is_postwarm_chain = 0;
+		vacrelstats->num_warm_chains++;
+	}
+}
+
+/*
+ * lazy_record_warm_chain - remember one WARM chain
+ */
+static void
+lazy_record_warm_chain(LVRelStats *vacrelstats,
+					   ItemPointer itemptr)
+{
+	/*
+	 * The array shouldn't overflow under normal behavior, but perhaps it
+	 * could if we are given a really small maintenance_work_mem. In that
+	 * case, just forget the last few tuples (we'll get 'em next time).
+	 */
+	if (vacrelstats->num_warm_chains < vacrelstats->max_warm_chains)
+	{
+		vacrelstats->warm_chains[vacrelstats->num_warm_chains].chain_tid = *itemptr;
+		vacrelstats->warm_chains[vacrelstats->num_warm_chains].is_postwarm_chain = 1;
+		vacrelstats->num_warm_chains++;
+	}
 }
 
 /*
@@ -2042,8 +2440,8 @@ lazy_record_dead_tuple(LVRelStats *vacrelstats,
  *
  *		Assumes dead_tuples array is in sorted order.
  */
-static bool
-lazy_tid_reaped(ItemPointer itemptr, void *state)
+static IndexBulkDeleteCallbackResult
+lazy_tid_reaped(ItemPointer itemptr, bool is_warm, void *state)
 {
 	LVRelStats *vacrelstats = (LVRelStats *) state;
 	ItemPointer res;
@@ -2054,7 +2452,207 @@ lazy_tid_reaped(ItemPointer itemptr, void *state)
 								sizeof(ItemPointerData),
 								vac_cmp_itemptr);
 
-	return (res != NULL);
+	return (res != NULL) ? IBDCR_DELETE : IBDCR_KEEP;
+}
+
+/*
+ *	lazy_indexvac_phase1() -- run first pass of index vacuum
+ *
+ *		This has the right signature to be an IndexBulkDeleteCallback.
+ */
+static IndexBulkDeleteCallbackResult
+lazy_indexvac_phase1(ItemPointer itemptr, bool is_warm, void *state)
+{
+	LVRelStats		*vacrelstats = (LVRelStats *) state;
+	ItemPointer		res;
+	LVWarmChain	*chain;
+
+	res = (ItemPointer) bsearch((void *) itemptr,
+								(void *) vacrelstats->dead_tuples,
+								vacrelstats->num_dead_tuples,
+								sizeof(ItemPointerData),
+								vac_cmp_itemptr);
+
+	if (res != NULL)
+		return IBDCR_DELETE;
+
+	chain = (LVWarmChain *) bsearch((void *) itemptr,
+								(void *) vacrelstats->warm_chains,
+								vacrelstats->num_warm_chains,
+								sizeof(LVWarmChain),
+								vac_cmp_warm_chain);
+	if (chain != NULL)
+	{
+		if (is_warm)
+			chain->num_warm_pointers++;
+		else
+			chain->num_clear_pointers++;
+	}
+	return IBDCR_KEEP;
+}
+
+/*
+ *	lazy_indexvac_phase2() -- run second pass of index vacuum
+ *
+ *		This has the right signature to be an IndexBulkDeleteCallback.
+ */
+static IndexBulkDeleteCallbackResult
+lazy_indexvac_phase2(ItemPointer itemptr, bool is_warm, void *state)
+{
+	LVRelStats		*vacrelstats = (LVRelStats *) state;
+	LVWarmChain	*chain;
+
+	chain = (LVWarmChain *) bsearch((void *) itemptr,
+								(void *) vacrelstats->warm_chains,
+								vacrelstats->num_warm_chains,
+								sizeof(LVWarmChain),
+								vac_cmp_warm_chain);
+
+	if (chain != NULL && (chain->keep_warm_chain != 1))
+	{
+		/*
+		 * At no point, we can have more than 1 warm pointer to any chain and
+		 * no more than 2 clear pointers.
+		 */
+		Assert(chain->num_warm_pointers <= 1);
+		Assert(chain->num_clear_pointers <= 2);
+
+		if (chain->is_postwarm_chain == 1)
+		{
+			if (is_warm)
+			{
+				/*
+				 * A WARM pointer, pointing to a WARM chain.
+				 *
+				 * Clear the warm pointer (and delete the CLEAR pointer). We
+				 * may have already seen the CLEAR pointer in the scan and
+				 * deleted that or we may see it later in the scan. It doesn't
+				 * matter if we fail at any point because we won't clear up
+				 * WARM bits on the heap tuples until we have dealt with the
+				 * index pointers cleanly.
+				 */
+				return IBDCR_CLEAR_WARM;
+			}
+			else
+			{
+				/*
+				 * CLEAR pointer to a WARM chain.
+				 */
+				if (chain->num_warm_pointers > 0 &&
+					chain->num_clear_pointers > 0)
+				{
+					/*
+					 * If there exists a WARM pointer to the chain, we can
+					 * delete the CLEAR pointer and clear the WARM bits on the
+					 * heap tuples.
+					 *
+					 * It might look like paranoia that we're also checking for
+					 * num_clear_pointers to be more than 0. After all we are
+					 * currently looking at a CLEAR pointer. But the reason why
+					 * this is important is because online cleanup of
+					 * WARM/CLEAR pointers may set a CLEAR pointer to a WARM
+					 * pointer, but that information may be lost if the buffer
+					 * is discarded before it's written to the disk. So we
+					 * could count the same pointer was a WARM pointer during
+					 * the first index scan and again see that as a CLEAR
+					 * pointer during the second index scan. Checking for both
+					 * WARM and CLEAR pointers ensures that we don't remove a
+					 * CLEAR pointer when a WARM pointer does not exist.
+					 */
+					return IBDCR_DELETE;
+				}
+				else if (chain->num_clear_pointers == 1)
+				{
+					/*
+					 * If this is the only pointer to a WARM chain, we must
+					 * keep the CLEAR pointer.
+					 *
+					 * The presence of WARM chain indicates that the WARM update
+					 * must have been committed good. But during the update
+					 * this index was probably not updated and hence it
+					 * contains just one, original CLEAR pointer to the chain.
+					 * We should be able to clear the WARM bits on heap tuples
+					 * unless we later find another index which prevents the
+					 * cleanup.
+					 */
+					return IBDCR_KEEP;
+				}
+			}
+		}
+		else
+		{
+			/*
+			 * This is a CLEAR chain.
+			 */
+			if (is_warm)
+			{
+				/*
+				 * A WARM pointer to a CLEAR chain.
+				 *
+				 * This can happen when a WARM update is aborted. Later the HOT
+				 * chain is pruned leaving behind only CLEAR tuples in the
+				 * chain. But the WARM index pointer inserted in the index
+				 * remains and it must now be deleted before we clear WARM bits
+				 * from the heap tuple.
+				 */
+				return IBDCR_DELETE;
+			}
+
+			/*
+			 * CLEAR pointer to a CLEAR chain.
+			 *
+			 * If this is the only surviving CLEAR pointer, keep it and clear
+			 * the WARM bits from the heap tuples.
+			 */
+			if (chain->num_clear_pointers == 1)
+				return IBDCR_KEEP;
+
+			/*
+			 * If there are more than 1 CLEAR pointers to this chain, we can
+			 * apply the recheck logic and kill the redudant CLEAR pointer and
+			 * convert the chain. But that's not yet done.
+			 */
+		}
+
+		/*
+		 * For everything else, we must keep the WARM bits and also keep the
+		 * index pointers.
+		 */
+		chain->keep_warm_chain = 1;
+		return IBDCR_KEEP;
+	}
+	return IBDCR_KEEP;
+}
+
+/*
+ * Comparator routines for use with qsort() and bsearch(). Similar to
+ * vac_cmp_itemptr, but right hand argument is LVWarmChain struct pointer.
+ */
+static int
+vac_cmp_warm_chain(const void *left, const void *right)
+{
+	BlockNumber lblk,
+				rblk;
+	OffsetNumber loff,
+				roff;
+
+	lblk = ItemPointerGetBlockNumber((ItemPointer) left);
+	rblk = ItemPointerGetBlockNumber(&((LVWarmChain *) right)->chain_tid);
+
+	if (lblk < rblk)
+		return -1;
+	if (lblk > rblk)
+		return 1;
+
+	loff = ItemPointerGetOffsetNumber((ItemPointer) left);
+	roff = ItemPointerGetOffsetNumber(&((LVWarmChain *) right)->chain_tid);
+
+	if (loff < roff)
+		return -1;
+	if (loff > roff)
+		return 1;
+
+	return 0;
 }
 
 /*
@@ -2168,6 +2766,18 @@ heap_page_is_all_visible(Relation rel, Buffer buf,
 						all_visible = false;
 						*all_frozen = false;
 						break;
+					}
+
+					/*
+					 * If this or any other tuple in the chain ever WARM
+					 * updated, there could be multiple index entries pointing
+					 * to the root of this chain. We can't do index-only scans
+					 * for such tuples without verifying index key check. So
+					 * mark the page as !all_visible
+					 */
+					if (HeapTupleHeaderIsWarmUpdated(tuple.t_data))
+					{
+						all_visible = false;
 					}
 
 					/* Track newest xmin on page. */

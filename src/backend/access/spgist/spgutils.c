@@ -72,6 +72,7 @@ spghandler(PG_FUNCTION_ARGS)
 	amroutine->amestimateparallelscan = NULL;
 	amroutine->aminitparallelscan = NULL;
 	amroutine->amparallelrescan = NULL;
+	amroutine->amrecheck = NULL;
 
 	PG_RETURN_POINTER(amroutine);
 }
