@@ -60,7 +60,7 @@ static bool dependency_is_fully_matched(MVDependency *dependency,
 							Bitmapset *attnums);
 static bool dependency_implies_attribute(MVDependency *dependency,
 							 AttrNumber attnum);
-static bool dependency_compatible_clause(Node *clause, Index relid,
+static bool dependency_is_compatible_clause(Node *clause, Index relid,
 							 AttrNumber *attnum);
 static MVDependency *find_strongest_dependency(StatisticExtInfo *stats,
 						  MVDependencies *dependencies,
@@ -750,7 +750,7 @@ pg_dependencies_send(PG_FUNCTION_ARGS)
 }
 
 /*
- * dependency_compatible_clause
+ * dependency_is_compatible_clause
  *		Determines if the clause is compatible with functional dependencies
  *
  * Only OpExprs with two arguments using an equality operator are supported.
@@ -761,7 +761,7 @@ pg_dependencies_send(PG_FUNCTION_ARGS)
  * to expand on this later.
  */
 static bool
-dependency_compatible_clause(Node *clause, Index relid, AttrNumber *attnum)
+dependency_is_compatible_clause(Node *clause, Index relid, AttrNumber *attnum)
 {
 	RestrictInfo *rinfo = (RestrictInfo *) clause;
 
@@ -957,7 +957,7 @@ dependencies_clauselist_selectivity(PlannerInfo *root,
 		Node	   *clause = (Node *) lfirst(l);
 		AttrNumber	attnum;
 
-		if (dependency_compatible_clause(clause, rel->relid, &attnum))
+		if (dependency_is_compatible_clause(clause, rel->relid, &attnum))
 		{
 			list_attnums[listidx] = attnum;
 			clauses_attnums = bms_add_member(clauses_attnums, attnum);
