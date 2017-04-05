@@ -160,8 +160,7 @@ clauselist_selectivity(PlannerInfo *root,
 		 * Skip this clause if it's already been estimated by some other
 		 * statistics above.
 		 */
-		if (estimatedclauses != NULL &&
-			bms_is_member(listidx, estimatedclauses))
+		if (bms_is_member(listidx, estimatedclauses))
 			continue;
 
 		/* Always compute the selectivity using clause_selectivity */
