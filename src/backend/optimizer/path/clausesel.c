@@ -120,19 +120,15 @@ clauselist_selectivity(PlannerInfo *root,
 								  varRelid, jointype, sjinfo, rel);
 
 	/*
-	 * If we have a valid rel and we have the correct rte kind, then attempt
-	 * to perform selectivity estimation using extended statistics.
+	 * When a relation of RTE_RELATION is given as 'rel', we'll try to
+	 * perform selectivity estimation using extended statistics.
 	 */
 	if (rel && rel->rtekind == RTE_RELATION && rel->statlist != NIL)
 	{
 		/*
-		 * Try to estimate with multivariate functional dependency statistics.
-		 *
-		 * The function will supply an estimate for the clauses which it
-		 * estimated for. Any clauses which were unsuitible were ignored.
-		 * Clauses which were estimated will have their 0-based list index set
-		 * in estimatedclauses.  We must ignore these clauses when processing
-		 * the remaining clauses later.
+		 * Perform selectivity estimations on any clauses found applicable by
+		 * dependencies_clauselist_selectivity. The 0-based list position of
+		 * estimated clauses will be populated in 'estimatedclauses'.
 		 */
 		s1 *= dependencies_clauselist_selectivity(root, clauses, varRelid,
 								   jointype, sjinfo, rel, &estimatedclauses);
