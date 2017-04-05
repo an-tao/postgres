@@ -58,12 +58,6 @@ typedef struct DependencyGeneratorData
 
 typedef DependencyGeneratorData *DependencyGenerator;
 
-typedef struct
-{
-	Index		varno;			/* relid we're interested in */
-	Bitmapset  *varattnos;		/* attnums referenced by the clauses */
-}	dependency_compatible_context;
-
 static void generate_dependencies_recurse(DependencyGenerator state,
 						   int index, AttrNumber start, AttrNumber *current);
 static void generate_dependencies(DependencyGenerator state);
@@ -76,8 +70,6 @@ static bool dependency_is_fully_matched(MVDependency *dependency,
 							Bitmapset *attnums);
 static bool dependency_implies_attribute(MVDependency *dependency,
 							 AttrNumber attnum);
-static bool dependency_compatible_walker(Node *node,
-							 dependency_compatible_context *context);
 static bool dependency_compatible_clause(Node *clause, Index relid,
 							 AttrNumber *attnum);
 static MVDependency *find_strongest_dependency(StatisticExtInfo *stats,
@@ -776,104 +768,6 @@ pg_dependencies_send(PG_FUNCTION_ARGS)
 }
 
 /*
- * Recursive walker that checks compatibility of the clause with extended
- * statistics, and collects attnums from the Vars.
- */
-static bool
-dependency_compatible_walker(Node *node,
-							 dependency_compatible_context * context)
-{
-	if (node == NULL)
-		return false;
-
-	if (IsA(node, RestrictInfo))
-	{
-		RestrictInfo *rinfo = (RestrictInfo *) node;
-
-		/* Pseudoconstants are not really interesting here. */
-		if (rinfo->pseudoconstant)
-			return true;
-
-		/* clauses referencing multiple varnos are incompatible */
-		if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
-			return true;
-
-		/* check the clause inside the RestrictInfo */
-		return dependency_compatible_walker((Node *) rinfo->clause, context);
-	}
-
-	if (IsA(node, Var))
-	{
-		Var		   *var = (Var *) node;
-
-		/*
-		 * Also, the variable needs to reference the right relid (this might
-		 * be unnecessary given the other checks, but let's be sure).
-		 */
-		if (var->varno != context->varno)
-			return true;
-
-		/* we also better ensure the var is from the current level */
-		if (var->varlevelsup > 0)
-			return true;
-
-		/* Also skip system attributes (we don't allow stats on those). */
-		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
-			return true;
-
-		/* Seems fine, so let's remember the attnum. */
-		context->varattnos = bms_add_member(context->varattnos, var->varattno);
-
-		return false;
-	}
-
-	/*
-	 * And finally the operator expressions - we only allow simple expressions
-	 * with two arguments, where one is a Var and the other is a constant, and
-	 * it's a simple comparison (which we detect using estimator function).
-	 */
-	if (is_opclause(node))
-	{
-		OpExpr	   *expr = (OpExpr *) node;
-		Var		   *var;
-		bool		varonleft = true;
-		bool		ok;
-
-		/* Only expressions with two arguments are considered compatible. */
-		if (list_length(expr->args) != 2)
-			return true;
-
-		/* see if it actually has the right */
-		ok = (NumRelids((Node *) expr) == 1) &&
-			(is_pseudo_constant_clause(lsecond(expr->args)) ||
-			 (varonleft = false,
-			  is_pseudo_constant_clause(linitial(expr->args))));
-
-		/* unsupported structure (two variables or so) */
-		if (!ok)
-			return true;
-
-		/*
-		 * If it's not "=" operator, just ignore the clause, as it's not
-		 * compatible with functinal dependencies. Otherwise note the relid
-		 * and attnum for the variable.
-		 *
-		 * This uses the function for estimating selectivity, not the operator
-		 * directly (a bit awkward, but well ...).
-		 */
-		if (get_oprrest(expr->opno) != F_EQSEL)
-			return true;
-
-		var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
-
-		return dependency_compatible_walker((Node *) var, context);
-	}
-
-	/* Node not explicitly supported, so terminate */
-	return true;
-}
-
-/*
  * dependency_compatible_clause
  *		Determines if the clause is compatible with functional dependencies
  *
@@ -887,18 +781,73 @@ dependency_compatible_walker(Node *node,
 static bool
 dependency_compatible_clause(Node *clause, Index relid, AttrNumber *attnum)
 {
-	dependency_compatible_context context;
+	RestrictInfo *rinfo = (RestrictInfo *) clause;
 
-	context.varno = relid;
-	context.varattnos = NULL;	/* no attnums */
-
-	if (dependency_compatible_walker(clause, &context))
+	if (!IsA(rinfo, RestrictInfo))
 		return false;
 
-	/* remember the newly collected attnums */
-	*attnum = bms_singleton_member(context.varattnos);
+	/* Pseudoconstants are not really interesting here. */
+	if (rinfo->pseudoconstant)
+		return false;
 
-	return true;
+	/* clauses referencing multiple varnos are incompatible */
+	if (bms_membership(rinfo->clause_relids) != BMS_SINGLETON)
+		return false;
+
+	if (is_opclause(rinfo->clause))
+	{
+		OpExpr	   *expr = (OpExpr *) rinfo->clause;
+		Var		   *var;
+		bool		varonleft = true;
+		bool		ok;
+
+		/* Only expressions with two arguments are considered compatible. */
+		if (list_length(expr->args) != 2)
+			return false;
+
+		/* see if it actually has the right */
+		ok = (NumRelids((Node *) expr) == 1) &&
+			(is_pseudo_constant_clause(lsecond(expr->args)) ||
+			 (varonleft = false,
+			  is_pseudo_constant_clause(linitial(expr->args))));
+
+		/* unsupported structure (two variables or so) */
+		if (!ok)
+			return false;
+
+		/*
+		 * If it's not "=" operator, just ignore the clause, as it's not
+		 * compatible with functional dependencies.
+		 *
+		 * This uses the function for estimating selectivity, not the operator
+		 * directly (a bit awkward, but well ...).
+		 */
+		if (get_oprrest(expr->opno) != F_EQSEL)
+			return false;
+
+		var = (varonleft) ? linitial(expr->args) : lsecond(expr->args);
+
+		/* We only support plain Vars for now */
+		if (!IsA(var, Var))
+			return false;
+
+		/* Ensure var is from the correct relation */
+		if (var->varno != relid)
+			return false;
+
+		/* we also better ensure the Var is from the current level */
+		if (var->varlevelsup > 0)
+			return false;
+
+		/* Also skip system attributes (we don't allow stats on those). */
+		if (!AttrNumberIsForUserDefinedAttr(var->varattno))
+			return false;
+
+		*attnum = var->varattno;
+		return true;
+	}
+
+	return false;
 }
 
 /*
