@@ -150,49 +150,42 @@ Efficiently Finding the Root Line Pointer
 -----------------------------------------
 
 During a WARM update, we must be able to find the root line pointer of the
-tuple being updated. It must be noted that the t_ctid field in the heap
-tuple header is usually used to find the next tuple in the update chain.
-But the tuple that we are updating, must be the last tuple in the update
-chain. In such cases, the t_ctid field usually points the tuple itself.
-So in theory, we could use the t_ctid to store additional information in
-the last tuple of the update chain, if the information about the tuple
-being the last tuple is stored elsewhere.
+tuple being updated.  The t_ctid field is used for this purpose; for the
+latest tuple in the chain, the offset number in t_ctid points to the
+current WARM chain's root tuple.  To determine whether a tuple is the
+latest tuple, we use the HEAP_LATEST_TUPLE bit in t_infomask2.
 
-We now utilize another bit from t_infomask2 to explicitly identify that
-this is the last tuple in the update chain.
+(In previous versions, we used t_ctid being a pointer to the tuple itself
+to determine that a tuple was latest, but that trick is no longer
+available.)
 
-HEAP_LATEST_TUPLE - When this bit is set, the tuple is the last tuple in
-the update chain. The OffsetNumber part of t_ctid points to the root
-line pointer of the chain when HEAP_LATEST_TUPLE flag is set.
-
-If UPDATE operation is aborted, the last tuple in the update chain
-becomes dead. The root line pointer information stored in the tuple
-which remains the last valid tuple in the chain is also lost. In such
-rare cases, the root line pointer must be found in a hard way by
-scanning the entire heap page.
+If an UPDATE aborts, the last tuple in the update chain (the one
+containing the pointer to the root) becomes dead, and thus the root
+pointer is lost. In that cases, the root line pointer must be found the
+hard way by scanning the entire heap page.
 
 Tracking WARM Chains
 --------------------
 
-When a tuple is WARM updated, the old, the new and every subsequent tuple in
-the chain is marked with a special HEAP_WARM_UPDATED flag. We use the last
-remaining bit in t_infomask2 to store this information.
+When a tuple is WARM updated, the old, the new and every subsequent tuple
+in the chain is marked with the HEAP_WARM_UPDATED flag.
 
-When a tuple is returned from a WARM chain, the caller must do additional
-checks to ensure that the tuple matches the index key. Even if the tuple
-precedes the WARM update in the chain, it must still be rechecked for the index
-key match (case when old tuple is returned by the new index key). So we must
-follow the update chain everytime to the end to check if this is a WARM
-chain.
+When a scan returns a tuple that bit set, the caller must do additional
+checks to ensure that the tuple matches the index key.  Even if the tuple
+precedes the WARM update in the chain, it must still be rechecked for the
+index key match (this is necessary to cover the case when the pre-update
+tuple is returned by the new index key).  So we must follow the update
+chain everytime to the end to check if this is a WARM chain.
 
 Converting WARM chains back to HOT chains (VACUUM ?)
 ----------------------------------------------------
 
-The current implementation of WARM allows only one WARM update per
-chain. This simplifies the design and addresses certain issues around
-duplicate key scans. But this also implies that the benefit of WARM will be
-no more than 50%, which is still significant, but if we could return
-WARM chains back to normal status, we could do far more WARM updates.
+As discussed above, the current implementation of WARM allows only one
+WARM update per chain.  This simplifies the design and addresses certain
+issues around duplicate key scans. But this also implies that the benefit
+of WARM will be no more than 50%, which is still significant, but if we
+could return WARM chains back to normal status, we could do far more WARM
+updates.
 
 A distinct property of a WARM chain is that at least one index has more
 than one live index entries pointing to the root of the chain. In other
