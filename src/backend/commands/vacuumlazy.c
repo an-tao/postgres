@@ -2641,9 +2641,18 @@ lazy_indexvac_phase1(ItemPointer itemptr, bool is_warm, void *state)
 				vac_cmp_warm_chain);
 	if (chain != NULL)
 	{
-		if (is_warm)
+		/*
+		 * Don't let the count of WARM pointers go beyond 1 and the count of
+		 * CLEAR pointers go beyond 2. We can at max count upto 3 (since we
+		 * have 2 bits for each of these fields), but in practice we know there
+		 * can only be maxinum 1 WARM and maximum 2 CLEAR pointers. But we
+		 * don't Assert for that because an index scan may see the same set of
+		 * index tuples twice because of concurrent page-splits and we don't
+		 * want to over-count in such cases.
+		 */
+		if (is_warm && chain->num_warm_pointers < 1)
 			chain->num_warm_pointers++;
-		else
+		else if (chain->num_clear_pointers < 2)
 			chain->num_clear_pointers++;
 	}
 	return IBDCR_KEEP;
@@ -2696,26 +2705,12 @@ lazy_indexvac_phase2(ItemPointer itemptr, bool is_warm, void *state)
 				/*
 				 * CLEAR pointer to a WARM chain.
 				 */
-				if (chain->num_warm_pointers > 0 &&
-					chain->num_clear_pointers > 0)
+				if (chain->num_warm_pointers > 0)
 				{
 					/*
 					 * If there exists a WARM pointer to the chain, we can
 					 * delete the CLEAR pointer and clear the WARM bits on the
 					 * heap tuples.
-					 *
-					 * It might look like paranoia that we're also checking for
-					 * num_clear_pointers to be more than 0. After all we are
-					 * currently looking at a CLEAR pointer. But the reason why
-					 * this is important is because online cleanup of
-					 * WARM/CLEAR pointers may set a CLEAR pointer to a WARM
-					 * pointer, but that information may be lost if the buffer
-					 * is discarded before it's written to the disk. So we
-					 * could count the same pointer was a WARM pointer during
-					 * the first index scan and again see that as a CLEAR
-					 * pointer during the second index scan. Checking for both
-					 * WARM and CLEAR pointers ensures that we don't remove a
-					 * CLEAR pointer when a WARM pointer does not exist.
 					 */
 					return IBDCR_DELETE;
 				}
