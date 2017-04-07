@@ -394,7 +394,7 @@ typedef struct BTScanOpaqueData
 
 	/* info about items that are marked as WARM */
 	int		   *setWarmItems;
-	int			numSet;
+	int			numSetWarmItems;
 	/*
 	 * If we are doing an index-only scan, these are the tuple storage
 	 * workspaces for the currPos and markPos respectively.  Each is of size

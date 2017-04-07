@@ -1351,7 +1351,7 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
 	if (so->numKilled > 0)
 		_bt_killitems(scan);
 	/* Also deal with items which could be marked as WARM */
-	if (so->numSet > 0)
+	if (so->numSetWarmItems > 0)
 		_bt_warmitems(scan);
 
 	/*
@@ -1952,5 +1952,5 @@ _bt_initialize_more_data(BTScanOpaque so, ScanDirection dir)
 	so->numKilled = 0;			/* just paranoia */
 	so->markItemIndex = -1;		/* ditto */
 
-	so->numSet = 0;
+	so->numSetWarmItems = 0;
 }

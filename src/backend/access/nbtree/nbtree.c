@@ -426,15 +426,15 @@ btgettuple(IndexScanDesc scan, ScanDirection dir)
 			{
 				/*
 				 * Check if the previously fetched tuple should be marked with
-				 * a WARM flag. Similar to killedItems, we don't let to overrun
-				 * the array if the indexscan reverses the direction and we see
-				 * the same tuple twice.
+				 * a WARM flag. Similar to killedItems, don't allow the array
+				 * to be overrun if the indexscan reverses the direction and
+				 * we see the same tuples twice.
 				 */
 				if (so->setWarmItems == NULL)
 					so->setWarmItems = (int *)
 						palloc(MaxIndexTuplesPerPage * sizeof(int));
-				if (so->numSet < MaxIndexTuplesPerPage)
-					so->setWarmItems[so->numSet++] = so->currPos.itemIndex;
+				if (so->numSetWarmItems < MaxIndexTuplesPerPage)
+					so->setWarmItems[so->numSetWarmItems++] = so->currPos.itemIndex;
 			}
 
 			/*
@@ -542,8 +542,8 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	so->killedItems = NULL;		/* until needed */
 	so->numKilled = 0;
 
-	so->setWarmItems = NULL;
-	so->numSet = 0;
+	so->setWarmItems = NULL;	/* until needed */
+	so->numSetWarmItems = 0;
 
 	/*
 	 * We don't know yet whether the scan will be index-only, so we do not
@@ -575,7 +575,7 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 		if (so->numKilled > 0)
 			_bt_killitems(scan);
 		/* Also deal with items which could be marked WARM */
-		if (so->numSet > 0)
+		if (so->numSetWarmItems > 0)
 			_bt_warmitems(scan);
 		BTScanPosUnpinIfPinned(so->currPos);
 		BTScanPosInvalidate(so->currPos);
@@ -637,7 +637,7 @@ btendscan(IndexScanDesc scan)
 		if (so->numKilled > 0)
 			_bt_killitems(scan);
 		/* Also deal with items which could be marked WARM */
-		if (so->numSet > 0)
+		if (so->numSetWarmItems > 0)
 			_bt_warmitems(scan);
 		BTScanPosUnpinIfPinned(so->currPos);
 	}
@@ -730,7 +730,7 @@ btrestrpos(IndexScanDesc scan)
 			if (so->numKilled > 0)
 				_bt_killitems(scan);
 			/* Also deal with items which could be marked WARM */
-			if (so->numSet > 0)
+			if (so->numSetWarmItems > 0)
 				_bt_warmitems(scan);
 			BTScanPosUnpinIfPinned(so->currPos);
 		}

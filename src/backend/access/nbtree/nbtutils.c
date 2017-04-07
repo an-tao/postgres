@@ -1843,16 +1843,16 @@ _bt_warmitems(IndexScanDesc scan)
 	OffsetNumber minoff;
 	OffsetNumber maxoff;
 	int			i;
-	int			numSet = so->numSet;
+	int			numSet = so->numSetWarmItems;
 	bool		setWarmsomething = false;
 
 	Assert(BTScanPosIsValid(so->currPos));
 
 	/*
-	 * Always reset the scan state, so we don't look for same items on other
-	 * pages.
+	 * Always reset the scan state, so we don't look for the same items on
+	 * other pages.
 	 */
-	so->numSet = 0;
+	so->numSetWarmItems = 0;
 
 	if (BTScanPosIsPinned(so->currPos))
 	{
@@ -1887,6 +1887,10 @@ _bt_warmitems(IndexScanDesc scan)
 			return;
 		}
 	}
+
+	opaque = (BTPageOpaque) PageGetSpecialPointer(page);
+	minoff = P_FIRSTDATAKEY(opaque);
+	maxoff = PageGetMaxOffsetNumber(page);
 
 	for (i = 0; i < numSet; i++)
 	{
