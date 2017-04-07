@@ -75,29 +75,28 @@ typedef struct IndexBulkDeleteResult
 	bool		estimated_count;	/* num_index_tuples is an estimate */
 	double		num_index_tuples;		/* tuples remaining */
 	double		tuples_removed; /* # removed during vacuum operation */
-	double		num_warm_pointers;	/* # WARM pointers found */
-	double		num_clear_pointers;	/* # CLEAR pointers found */
-	double		pointers_cleared;	/* # WARM pointers cleared */
+	double		num_warm_pointers;		/* # WARM pointers found */
+	double		num_clear_pointers;		/* # CLEAR pointers found */
+	double		pointers_cleared;		/* # WARM pointers cleared */
 	double		warm_pointers_removed;	/* # WARM pointers removed */
-	double		clear_pointers_removed;	/* # CLEAR pointers removed */
+	double		clear_pointers_removed; /* # CLEAR pointers removed */
 	BlockNumber pages_deleted;	/* # unused pages in index */
 	BlockNumber pages_free;		/* # pages available for reuse */
 } IndexBulkDeleteResult;
 
 /*
- * IndexBulkDeleteCallback should return one of the following
+ * IndexBulkDeleteCallback functions return one of the following
  */
 typedef enum IndexBulkDeleteCallbackResult
 {
-	IBDCR_KEEP,			/* index tuple should be preserved */
-	IBDCR_DELETE,		/* index tuple should be deleted */
-	IBDCR_CLEAR_WARM	/* index tuple should be cleared of WARM bit */
-} IndexBulkDeleteCallbackResult;
+	IBDCR_KEEP,					/* index tuple should be preserved */
+	IBDCR_DELETE,				/* index tuple should be deleted */
+	IBDCR_CLEAR_WARM			/* index tuple should be cleared of WARM bit */
+}	IndexBulkDeleteCallbackResult;
 
 /* Typedef for callback function to determine if a tuple is bulk-deletable */
-typedef IndexBulkDeleteCallbackResult (*IndexBulkDeleteCallback) (
-										 ItemPointer itemptr,
-										 bool is_warm, void *state);
+typedef IndexBulkDeleteCallbackResult(*IndexBulkDeleteCallback) (ItemPointer itemptr,
+												  bool is_warm, void *state);
 
 /* struct definitions appear in relscan.h */
 typedef struct IndexScanDescData *IndexScanDesc;
