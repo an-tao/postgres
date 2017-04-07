@@ -203,17 +203,17 @@ struct HeapTupleHeaderData
 
 /*
  * A WARM chain usually consists of two parts. Each of these parts are HOT
- * chains in themselves i.e. all indexed columns has the same value, but a WARM
- * update separates these parts. We need a mechanism to identify which part a
- * tuple belongs to. We can't just look at if it's a
- * HeapTupleHeaderIsWarmUpdated() because during WARM update, both old and new
+ * chains in themselves i.e. all indexed columns have the same value, but a
+ * WARM update separates these parts. We need a mechanism to identify which
+ * part a tuple belongs to. We can't just look at if it's a
+ * HeapTupleHeaderIsWarmUpdated(), because during WARM update, both old and new
  * tuples are marked as WARM tuples.
  *
  * We need another infomask bit for this. But we use the same infomask bit that
  * was earlier used for by old-style VACUUM FULL. This is safe because
  * HEAP_WARM_TUPLE flag will always be set along with HEAP_WARM_UPDATED. So if
- * HEAP_WARM_TUPLE and HEAP_WARM_UPDATED is set then we know that it's
- * referring to red part of the WARM chain.
+ * HEAP_WARM_TUPLE and HEAP_WARM_UPDATED are set together then we know that
+ * it's referring to "the second part" of the WARM chain.
  */
 #define HEAP_WARM_TUPLE			0x4000
 #define HEAP_XACT_MASK			0xFFF0	/* visibility-related bits */
@@ -550,15 +550,15 @@ do { \
  * But starting PG v10, we use a special flag HEAP_LATEST_TUPLE to identify the
  * last tuple and store the root line pointer of the HOT chain in t_ctid field
  * instead.
- *
- * Note: beware of multiple evaluations of "tup" argument.
  */
-#define HeapTupleHeaderSetHeapLatest(tup, offnum) \
-do { \
-	AssertMacro(OffsetNumberIsValid(offnum)); \
-	(tup)->t_infomask2 |= HEAP_LATEST_TUPLE; \
-	ItemPointerSetOffsetNumber(&(tup)->t_ctid, (offnum)); \
-} while (0)
+static inline void
+HeapTupleHeaderSetHeapLatest(HeapTupleHeader tup, Offset offnum)
+{
+	Assert(OffsetNumberIsValid(offnum));
+
+	tup->t_infomask2 |= HEAP_LATEST_TUPLE;
+	ItemPointerSetOffsetNumber(&tup->t_ctid, offnum);
+}
 
 #define HeapTupleHeaderClearHeapLatest(tup) \
 ( \
@@ -568,18 +568,21 @@ do { \
 /*
  * Starting from PostgreSQL 10, the latest tuple in an update chain has
  * HEAP_LATEST_TUPLE set; but tuples upgraded from earlier versions do not.
- * For those, we determine whether a tuple is latest by testing that its t_ctid
- * points to itself.
- *
- * Note: beware of multiple evaluations of "tup" and "tid" arguments.
+ * For those, we determine whether a tuple is latest by testing that its
+ * t_ctid points to itself.
  */
-#define HeapTupleHeaderIsHeapLatest(tup, tid) \
-( \
-  (((tup)->t_infomask2 & HEAP_LATEST_TUPLE) != 0) || \
-  ((ItemPointerGetBlockNumber(&(tup)->t_ctid) == ItemPointerGetBlockNumber(tid)) && \
-   (ItemPointerGetOffsetNumber(&(tup)->t_ctid) == ItemPointerGetOffsetNumber(tid))) \
-)
+static inline bool
+HeapTupleHeaderIsHeapLatest(HeapTupleHeader tup, ItemPointer tid)
+{
+	if (tup->t_infomask2 & HEAP_LATEST_TUPLE)
+		return true;
 
+	if ((ItemPointerGetBlockNumber(&tup->t_ctid) == ItemPointerGetBlockNumber(tid)) &&
+		(ItemPointerGetOffsetNumber(&tup->t_ctid) == ItemPointerGetOffsetNumber(tid)))
+		return true;
+
+	return false;
+}
 
 #define HeapTupleHeaderSetHeapOnly(tup) \
 ( \
@@ -619,42 +622,42 @@ do { \
 
 
 /*
- * Set the t_ctid chain and also clear the HEAP_LATEST_TUPLE flag since we
- * now have a new tuple in the chain and this is no longer the last tuple of
- * the chain.
- *
- * Note: beware of multiple evaluations of "tup" argument.
+ * Set the next TID value for a tuple in an update chain.  We also clear the
+ * HEAP_LATEST_TUPLE flag, since we now have a new tuple in the chain and this
+ * is no longer the last tuple of the chain.
  */
-#define HeapTupleHeaderSetNextTid(tup, tid) \
-do { \
-		ItemPointerCopy((tid), &((tup)->t_ctid)); \
-		HeapTupleHeaderClearHeapLatest((tup)); \
-} while (0)
+static inline void
+HeapTupleHeaderSetNextTid(HeapTupleHeader tup, ItemPointer tid)
+{
+	ItemPointerCopy(tid, &(tup->t_ctid));
+
+	HeapTupleHeaderClearHeapLatest(tup);
+}
 
 /*
  * Get TID of next tuple in the update chain. Caller must have checked that
  * we are not already at the end of the chain because in that case t_ctid may
  * actually store the root line pointer of the HOT chain.
- *
- * Note: beware of multiple evaluations of "tup" argument.
  */
-#define HeapTupleHeaderGetNextTid(tup, next_ctid) \
-do { \
-	AssertMacro(!((tup)->t_infomask2 & HEAP_LATEST_TUPLE)); \
-	ItemPointerCopy(&(tup)->t_ctid, (next_ctid)); \
-} while (0)
+static inline void
+HeapTupleHeaderGetNextTid(HeapTupleHeader tup, ItemPointer next_ctid)
+{
+	Assert(!(tup->t_infomask2 & HEAP_LATEST_TUPLE));
+
+	ItemPointerCopy(&tup->t_ctid, next_ctid);
+}
 
 /*
  * Get the root line pointer of the HOT chain. The caller should have confirmed
  * that the root offset is cached before calling this macro.
- *
- * Note: beware of multiple evaluations of "tup" argument.
  */
-#define HeapTupleHeaderGetRootOffset(tup) \
-( \
-	AssertMacro(((tup)->t_infomask2 & HEAP_LATEST_TUPLE) != 0), \
-	ItemPointerGetOffsetNumber(&(tup)->t_ctid) \
-)
+static inline OffsetNumber
+HeapTupleHeaderGetRootOffset(HeapTupleHeader tup)
+{
+	Assert((tup->t_infomask2 & HEAP_LATEST_TUPLE) != 0);
+
+	return ItemPointerGetOffsetNumber(&tup->t_ctid);
+}
 
 /*
  * Return whether the tuple has a cached root offset.  We don't use
@@ -671,49 +674,49 @@ do { \
 /*
  * Macros to check if tuple is a moved-off/in tuple by VACUUM FULL in from
  * pre-9.0 era. Such tuple must not have HEAP_WARM_TUPLE flag set.
- *
- * Beware of multiple evaluations of the argument.
  */
-#define HeapTupleHeaderIsMovedOff(tuple) \
-( \
-	!HeapTupleHeaderIsWarmUpdated((tuple)) && \
-	((tuple)->t_infomask & HEAP_MOVED_OFF) \
-)
+static inline bool
+HeapTupleHeaderIsMovedOff(HeapTupleHeader tuple)
+{
+	return !HeapTupleHeaderIsWarmUpdated(tuple) &&
+		((tuple)->t_infomask & HEAP_MOVED_OFF);
+}
 
-#define HeapTupleHeaderIsMovedIn(tuple) \
-( \
-	!HeapTupleHeaderIsWarmUpdated((tuple)) && \
-	((tuple)->t_infomask & HEAP_MOVED_IN) \
-)
+static inline bool
+HeapTupleHeaderIsMovedIn(HeapTupleHeader tuple)
+{
+	return !HeapTupleHeaderIsWarmUpdated(tuple) &&
+		(tuple->t_infomask & HEAP_MOVED_IN);
+}
 
-#define HeapTupleHeaderIsMoved(tuple) \
-( \
-	!HeapTupleHeaderIsWarmUpdated((tuple)) && \
-	((tuple)->t_infomask & HEAP_MOVED) \
-)
+static inline bool
+HeapTupleHeaderIsMoved(HeapTupleHeader tuple)
+{
+	return !HeapTupleHeaderIsWarmUpdated(tuple) &&
+		(tuple->t_infomask & HEAP_MOVED);
+}
 
 /*
  * Check if tuple belongs to the second part of the WARM chain.
- *
- * Beware of multiple evaluations of the argument.
  */
-#define HeapTupleHeaderIsWarm(tuple) \
-( \
-	HeapTupleHeaderIsWarmUpdated(tuple) && \
-	(((tuple)->t_infomask & HEAP_WARM_TUPLE) != 0) \
-)
+static inline bool
+HeapTupleHeaderIsWarm(HeapTupleHeader tuple)
+{
+	return HeapTupleHeaderIsWarmUpdated(tuple) &&
+		((tuple->t_infomask & HEAP_WARM_TUPLE) != 0);
+}
 
 /*
  * Mark tuple as a member of the second part of the chain. Must only be done on
  * a tuple which is already marked a WARM-tuple.
- *
- * Beware of multiple evaluations of the argument.
  */
-#define HeapTupleHeaderSetWarm(tuple) \
-( \
-	AssertMacro(HeapTupleHeaderIsWarmUpdated(tuple)), \
-	(tuple)->t_infomask |= HEAP_WARM_TUPLE \
-)
+static inline void
+HeapTupleHeaderSetWarm(HeapTupleHeader tuple)
+{
+	Assert(HeapTupleHeaderIsWarmUpdated(tuple));
+
+	tuple->t_infomask |= HEAP_WARM_TUPLE;
+}
 
 #define HeapTupleHeaderClearWarm(tuple) \
 ( \

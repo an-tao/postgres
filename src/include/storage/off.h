@@ -33,6 +33,8 @@ typedef uint16 OffsetNumber;
  * Therefore, 13 bits in OffsetNumber are enough to represent all valid
  * on-disk line pointers.  Hence, we can reserve the high-order bits in
  * OffsetNumber for other purposes.
+ *
+ * See ItemPointerSetFlags for uses of the remaining bits.
  */
 #define OffsetNumberBits		13
 #define OffsetNumberMask		((((uint16) 1) << OffsetNumberBits) - 1)

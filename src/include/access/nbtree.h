@@ -431,10 +431,9 @@ typedef BTScanOpaqueData *BTScanOpaque;
 #define SK_BT_NULLS_FIRST	(INDOPTION_NULLS_FIRST << SK_BT_INDOPTION_SHIFT)
 
 /*
- * Flags overloaded on t_tid.ip_posid field. They are managed by
- * ItemPointerSetFlags and corresponing routines.
+ * B-Tree-specific flags for ItemPointerSetFlags.
  */
-#define BTREE_INDEX_WARM_POINTER	0x01
+#define BTREE_INDEX_WARM_POINTER	0x001
 
 /*
  * external entry points for btree, in nbtree.c

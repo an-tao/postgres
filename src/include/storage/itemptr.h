@@ -106,12 +106,16 @@ typedef ItemPointerData *ItemPointer;
 )
 
 /*
- * Set the flag bits. We first left-shift since flags are defined starting 0x01
+ * Set the AM-specific flag bits. We first left-shift since flags must be
+ * defined starting at 0x01.  Make sure nobody tries to set flags beyond the
+ * space we have available.
  */
-#define ItemPointerSetFlags(pointer, flags) \
-( \
-	((pointer)->ip_posid |= ((flags) << OffsetNumberBits)) \
-)
+static inline void
+ItemPointerSetFlags(ItemPointer pointer, int flags)
+{
+	Assert((flags & ~0x111) == 0);
+	pointer->ip_posid |= flags << OffsetNumberBits;
+}
 
 /*
  * Clear all flags.
