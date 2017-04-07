@@ -2235,7 +2235,6 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 
 	heapTuple->t_self = *tid;
 
-
 	/*
 	 * Check status of the chain if the caller has asked for it. We do it only
 	 * once for each chain.
