@@ -40,6 +40,17 @@ VACUUM [ FULL ] [ FREEZE ] [ VERBOSE ] ANALYZE [ <replaceable class="PARAMETER">
   </para>
 
   <para>
+   WARM updates create WARM chains in the table. WARM
+   updates can reduce index bloat, and hence they are useful for system
+   performance.  But we do not allow further WARM updates to a tuple from a
+   WARM chain. They also prevent us from setting a page all-visible and
+   hence it is important that WARM chains are cleaned up regularly.
+   <command>VACUUM</command> removes duplicate index pointers to the WARM
+   chains and reset their state in the table so that further WARM update
+   are possible and the page can be marked as all-visible.
+  </para>
+
+  <para>
    With no parameter, <command>VACUUM</command> processes every table in the
    current database that the current user has permission to vacuum.
    With a parameter, <command>VACUUM</command> processes only that table.
@@ -144,6 +155,19 @@ VACUUM [ FULL ] [ FREEZE ] [ VERBOSE ] ANALYZE [ <replaceable class="PARAMETER">
       be used only the contents of the visibility map are thought to
       be suspect, which should happen only if there is a hardware or software
       issue causing database corruption.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>DISABLE_WARM_CLEAN</literal></term>
+    <listitem>
+     <para>
+      Normally, <command>VACUUM</> will also clean WARM chains from the
+      table by first removing duplicate index pointers to such chains from all
+      the indexes. Since WARM cleanup needs additional resources and may
+      require additional index scans, you may explicitly disable WARM cleanup
+      by setting <literal>DISABLE_WARM_CLEAN</literal> to false.
      </para>
     </listitem>
    </varlistentry>

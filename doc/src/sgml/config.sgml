@@ -6110,6 +6110,44 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-autovacuum-warmcleanup-scale-factor" xreflabel="autovacuum_warmcleanup_scale_factor">
+      <term><varname>autovacuum_warmcleanup_scale_factor</varname> (<type>floating point</type>)
+      <indexterm>
+       <primary><varname>autovacuum_warmcleanup_scale_factor</> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies a fraction of the total number of tuples in the table when
+        deciding whether to do a WARM cleanup of the table.
+        The default is 0.1 (10% of total number of rows in the table).
+        This parameter can only be set in the <filename>postgresql.conf</>
+        file or on the server command line;
+        but the setting can be overridden for individual tables by
+        changing table storage parameters.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-warmcleanup-index-scale-factor" xreflabel="autovacuum_warmcleanup_index_scale_factor">
+      <term><varname>autovacuum_warmcleanup_index_scale_factor</varname> (<type>floating point</type>)
+      <indexterm>
+       <primary><varname>autovacuum_warmcleanup_index_scale_factor</> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies a fraction of the total number of WARM chains in the
+        table.  When an index has more WARM pointers than as computed by this
+        parameter, the index will be cleaned up of WARM pointers.  The default
+        is 0.2 (20% of total number of WARM chains in the table).  This
+        parameter can only be set in the <filename>postgresql.conf</> file or on
+        the server command line; but the setting can be overridden for
+        individual tables by changing table storage parameters.
+       </para>
+      </listitem>
+     </varlistentry>
+
     </variablelist>
    </sect1>
 

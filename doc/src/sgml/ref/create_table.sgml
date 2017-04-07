@@ -1285,6 +1285,39 @@ CREATE [ [ GLOBAL | LOCAL ] { TEMPORARY | TEMP } | UNLOGGED ] TABLE [ IF NOT EXI
    </varlistentry>
 
    <varlistentry>
+    <term><literal>enable_warm</> (<type>boolean</>)</term>
+    <listitem>
+     <para>
+      Decide whether to use WARM updates on this table or not. The default is
+      TRUE. We currently do not allow to set this to
+      FALSE if the table is either create with the parameter set to
+      TRUE or was later set to TRUE via <command>ALTER
+      TABLE</command> command.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>autovacuum_warmcleanup_scale_factor</> (<type>float4</>)</term>
+    <listitem>
+     <para>
+      Per-table value for <xref linkend="guc-autovacuum-warmcleanup-scale-factor">
+      parameter.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>autovacuum_warmcleanup_index_scale_factor</> (<type>float4</>)</term>
+    <listitem>
+     <para>
+      Per-table value for <xref linkend="guc-autovacuum-warmcleanup-index-scale-factor">
+      parameter.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
     <term><literal>user_catalog_table</literal> (<type>boolean</type>)</term>
     <listitem>
      <para>

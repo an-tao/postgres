@@ -2477,6 +2477,12 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
       update required)</entry>
     </row>
     <row>
+     <entry><structfield>n_tup_warm_upd</></entry>
+     <entry><type>bigint</></entry>
+     <entry>Number of rows WARM updated (i.e., with separate index
+      update required for some but not all indexes)</entry>
+    </row>
+    <row>
      <entry><structfield>n_live_tup</></entry>
      <entry><type>bigint</></entry>
      <entry>Estimated number of live rows</entry>
@@ -2485,6 +2491,12 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
      <entry><structfield>n_dead_tup</></entry>
      <entry><type>bigint</></entry>
      <entry>Estimated number of dead rows</entry>
+    </row>
+    <row>
+     <entry><structfield>n_warm_chains</></entry>
+     <entry><type>bigint</></entry>
+     <entry>Estimated number of WARM chains in the table which requires WARM
+cleanup</entry>
     </row>
     <row>
      <entry><structfield>n_mod_since_analyze</></entry>
