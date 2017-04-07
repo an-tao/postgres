@@ -393,7 +393,8 @@ static void process_query_params(ExprContext *econtext,
 static int postgresAcquireSampleRowsFunc(Relation relation, int elevel,
 							  HeapTuple *rows, int targrows,
 							  double *totalrows,
-							  double *totaldeadrows);
+							  double *totaldeadrows,
+							  double *totalwarmchains);
 static void analyze_row_processor(PGresult *res, int row,
 					  PgFdwAnalyzeState *astate);
 static HeapTuple make_tuple_from_result_row(PGresult *res,
@@ -3543,7 +3544,8 @@ postgresAnalyzeForeignTable(Relation relation,
  * which must have at least targrows entries.
  * The actual number of rows selected is returned as the function result.
  * We also count the total number of rows in the table and return it into
- * *totalrows.  Note that *totaldeadrows is always set to 0.
+ * *totalrows.  Note that *totaldeadrows and *totalwarmchains is always
+ * set to 0.
  *
  * Note that the returned list of rows is not always in order by physical
  * position in the table.  Therefore, correlation estimates derived later
@@ -3554,7 +3556,8 @@ static int
 postgresAcquireSampleRowsFunc(Relation relation, int elevel,
 							  HeapTuple *rows, int targrows,
 							  double *totalrows,
-							  double *totaldeadrows)
+							  double *totaldeadrows,
+							  double *totalwarmchains)
 {
 	PgFdwAnalyzeState astate;
 	ForeignTable *table;
@@ -3686,6 +3689,9 @@ postgresAcquireSampleRowsFunc(Relation relation, int elevel,
 
 	/* We assume that we have no dead tuple. */
 	*totaldeadrows = 0.0;
+
+	/* Same with WARM chains. */
+	*totalwarmchains = 0.0;
 
 	/* We've retrieved all living tuples from foreign server. */
 	*totalrows = astate.samplerows;

@@ -158,7 +158,8 @@ static void estimate_costs(PlannerInfo *root, RelOptInfo *baserel,
 			   Cost *startup_cost, Cost *total_cost);
 static int file_acquire_sample_rows(Relation onerel, int elevel,
 						 HeapTuple *rows, int targrows,
-						 double *totalrows, double *totaldeadrows);
+						 double *totalrows, double *totaldeadrows,
+						 double *totalwarmchains);
 
 
 /*
@@ -1059,11 +1060,11 @@ estimate_costs(PlannerInfo *root, RelOptInfo *baserel,
 /*
  * file_acquire_sample_rows -- acquire a random sample of rows from the table
  *
- * Selected rows are returned in the caller-allocated array rows[],
- * which must have at least targrows entries.
- * The actual number of rows selected is returned as the function result.
- * We also count the total number of rows in the file and return it into
- * *totalrows.  Note that *totaldeadrows is always set to 0.
+ * Selected rows are returned in the caller-allocated array rows[], which must
+ * have at least targrows entries.  The actual number of rows selected is
+ * returned as the function result.  We also count the total number of rows in
+ * the file and return it into *totalrows.  Note that *totaldeadrows and
+ * *totalwarmchains is always set to 0.
  *
  * Note that the returned list of rows is not always in order by physical
  * position in the file.  Therefore, correlation estimates derived later
@@ -1073,7 +1074,8 @@ estimate_costs(PlannerInfo *root, RelOptInfo *baserel,
 static int
 file_acquire_sample_rows(Relation onerel, int elevel,
 						 HeapTuple *rows, int targrows,
-						 double *totalrows, double *totaldeadrows)
+						 double *totalrows, double *totaldeadrows,
+						 double *totalwarmchains)
 {
 	int			numrows = 0;
 	double		rowstoskip = -1;	/* -1 means not set yet */
@@ -1125,6 +1127,7 @@ file_acquire_sample_rows(Relation onerel, int elevel,
 
 	*totalrows = 0;
 	*totaldeadrows = 0;
+	*totalwarmchains = 0;
 	for (;;)
 	{
 		/* Check for user-requested abort or sleep */
