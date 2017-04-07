@@ -3058,7 +3058,7 @@ heap_multi_insert(Relation relation, HeapTuple *tuples, int ntuples,
 		{
 			XLogRecPtr	recptr;
 			xl_heap_multi_insert *xlrec;
-			uint8		info = XLOG_HEAP_MULTI_INSERT;
+			uint8		info = XLOG_HEAP2_MULTI_INSERT;
 			char	   *tupledata;
 			int			totaldatalen;
 			char	   *scratchptr = scratch;
@@ -3155,7 +3155,7 @@ heap_multi_insert(Relation relation, HeapTuple *tuples, int ntuples,
 			/* filtering by origin on a row level is much more efficient */
 			XLogSetRecordFlags(XLOG_INCLUDE_ORIGIN);
 
-			recptr = XLogInsert(RM_HEAP_ID, info);
+			recptr = XLogInsert(RM_HEAP2_ID, info);
 
 			PageSetLSN(page, recptr);
 		}
@@ -7989,7 +7989,7 @@ log_heap_warmclear(Relation reln, Buffer buffer,
 		XLogRegisterBufData(0, (char *) cleared,
 							ncleared * sizeof(OffsetNumber));
 
-	recptr = XLogInsert(RM_HEAP2_ID, XLOG_HEAP2_WARMCLEAR);
+	recptr = XLogInsert(RM_HEAP_ID, XLOG_HEAP_WARMCLEAR);
 
 	return recptr;
 }
@@ -8655,7 +8655,7 @@ heap_xlog_clean(XLogReaderState *record)
 
 
 /*
- * Handles HEAP2_WARMCLEAR record type
+ * Handles HEAP_WARMCLEAR record type
  */
 static void
 heap_xlog_warmclear(XLogReaderState *record)
@@ -9770,9 +9770,6 @@ heap_redo(XLogReaderState *record)
 		case XLOG_HEAP_INSERT:
 			heap_xlog_insert(record);
 			break;
-		case XLOG_HEAP_MULTI_INSERT:
-			heap_xlog_multi_insert(record);
-			break;
 		case XLOG_HEAP_DELETE:
 			heap_xlog_delete(record);
 			break;
@@ -9791,6 +9788,9 @@ heap_redo(XLogReaderState *record)
 		case XLOG_HEAP_INPLACE:
 			heap_xlog_inplace(record);
 			break;
+		case XLOG_HEAP_WARMCLEAR:
+			heap_xlog_warmclear(record);
+			break;
 		default:
 			elog(PANIC, "heap_redo: unknown op code %u", info);
 	}
@@ -9801,7 +9801,7 @@ heap2_redo(XLogReaderState *record)
 {
 	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
-	switch (info & XLOG_HEAP2_OPMASK)
+	switch (info & XLOG_HEAP_OPMASK)
 	{
 		case XLOG_HEAP2_CLEAN:
 			heap_xlog_clean(record);
@@ -9815,6 +9815,9 @@ heap2_redo(XLogReaderState *record)
 		case XLOG_HEAP2_VISIBLE:
 			heap_xlog_visible(record);
 			break;
+		case XLOG_HEAP2_MULTI_INSERT:
+			heap_xlog_multi_insert(record);
+			break;
 		case XLOG_HEAP2_LOCK_UPDATED:
 			heap_xlog_lock_updated(record);
 			break;
@@ -9827,9 +9830,6 @@ heap2_redo(XLogReaderState *record)
 			break;
 		case XLOG_HEAP2_REWRITE:
 			heap_xlog_logical_rewrite(record);
-			break;
-		case XLOG_HEAP2_WARMCLEAR:
-			heap_xlog_warmclear(record);
 			break;
 		default:
 			elog(PANIC, "heap2_redo: unknown op code %u", info);

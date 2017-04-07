@@ -32,7 +32,7 @@
 #define XLOG_HEAP_INSERT		0x00
 #define XLOG_HEAP_DELETE		0x10
 #define XLOG_HEAP_UPDATE		0x20
-#define XLOG_HEAP_MULTI_INSERT	0x30
+#define XLOG_HEAP_WARMCLEAR		0x30
 #define XLOG_HEAP_HOT_UPDATE	0x40
 #define XLOG_HEAP_CONFIRM		0x50
 #define XLOG_HEAP_LOCK			0x60
@@ -47,22 +47,17 @@
 /*
  * We ran out of opcodes, so heapam.c now has a second RmgrId.  These opcodes
  * are associated with RM_HEAP2_ID, but are not logically different from
- * the ones above associated with RM_HEAP_ID.
- *
- * In PG 10, we moved XLOG_HEAP2_MULTI_INSERT to RM_HEAP_ID. That allows us to
- * use 0x80 bit in RM_HEAP2_ID, thus potentially creating another 8 possible
- * opcodes in RM_HEAP2_ID.
+ * the ones above associated with RM_HEAP_ID.  XLOG_HEAP_OPMASK applies to
+ * these, too.
  */
 #define XLOG_HEAP2_REWRITE		0x00
 #define XLOG_HEAP2_CLEAN		0x10
 #define XLOG_HEAP2_FREEZE_PAGE	0x20
 #define XLOG_HEAP2_CLEANUP_INFO 0x30
 #define XLOG_HEAP2_VISIBLE		0x40
-#define XLOG_HEAP2_WARMCLEAR	0x50
+#define XLOG_HEAP2_MULTI_INSERT 0x50
 #define XLOG_HEAP2_LOCK_UPDATED 0x60
 #define XLOG_HEAP2_NEW_CID		0x70
-
-#define XLOG_HEAP2_OPMASK		0x70
 
 /*
  * xl_heap_insert/xl_heap_multi_insert flag values, 8 bits are available.
