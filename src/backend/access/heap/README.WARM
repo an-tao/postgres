@@ -9,12 +9,12 @@ updated or deleted tuples (see src/backend/access/heap/README.HOT)
 
 One of the necessary conditions for satisfying HOT update is that the
 update must not change a column used in any of the indexes on the table.
-The condition is sometimes hard to meet, especially for complex
-workloads with several indexes on large yet frequently updated tables.
-Worse, sometimes only one or two index columns may be updated, but the
-regular non-HOT update will still insert a new index entry in every
-index on the table, irrespective of whether the key pertaining to the
-index is changed or not.
+The condition is sometimes hard to meet, especially for complex workloads
+with several indexes on large yet frequently updated tables.  Worse,
+sometimes only one or two index columns may be updated, but the regular
+non-HOT update will still insert a new index entry in every index on the
+table, irrespective of whether the key pertaining to the index is changed
+or not.
 
 WARM is a technique devised to address these problems.
 
@@ -22,86 +22,84 @@ WARM is a technique devised to address these problems.
 Update Chains With Multiple Index Entries Pointing to the Root
 --------------------------------------------------------------
 
-When a non-HOT update is caused by an index key change, a new index
-entry must be inserted for the changed index. But if the index key
-hasn't changed for other indexes, we don't really need to insert a new
-entry. Even though the existing index entry is pointing to the old
-tuple, the new tuple is reachable via the t_ctid chain. To keep things
-simple, a WARM update requires that the heap block must have enough
-space to store the new version of the tuple. This is same as HOT
-updates.
+When a non-HOT update is caused by an index key change, a new index entry
+must be inserted for the changed index. But if the index key hasn't
+changed for other indexes, we don't really need to insert a new entry.
+Even though the existing index entry is pointing to the old tuple, the new
+tuple is reachable via the t_ctid chain. To keep things simple, a WARM
+update requires that the heap block must have enough space to store the
+new version of the tuple, same as for HOT updates.
 
-In WARM, we ensure that every index entry always points to the root of
-the WARM chain. In fact, a WARM chain looks exactly like a HOT chain
-except for the fact that there could be multiple index entries pointing
-to the root of the chain. So when new entry is inserted in an index for
-updated tuple, and if we are doing a WARM update, the new entry is made
-point to the root of the WARM chain.
+In WARM, we ensure that every index entry always points to the root of the
+WARM chain.  In fact, a WARM chain looks exactly like a HOT chain except
+for the fact that there could be multiple index entries pointing to the
+root of the chain.  So when new entry is inserted in an index for updated
+tuple, and if we are doing a WARM update, the new entry is made point to
+the root of the WARM chain.
 
-For example, if we have a table with two columns and two indexes on each of the
-column. When a tuple is first inserted into the table, we have exactly one
-index entry pointing to the tuple from both indexes.
+For example, if we have a table with two columns and two indexes on each
+of the column. When a tuple is first inserted into the table, we have
+exactly one index entry pointing to the tuple from both indexes.
 
 	lp [1]
 	[1111, aaaa]
 
-	Index1's entry (1111) points to 1
-	Index2's entry (aaaa) also points to 1
+	Index1's entry (1111) points to heap item 1
+	Index2's entry (aaaa) also points to heap item 1
 
 Now if the tuple's second column is updated and if there is room on the
 page, we perform a WARM update. To do so, Index1 does not get any new
-entry and Index2's new entry will still point to the root tuple of the
-chain.
+entry (because it doesn't include the modified column) and Index2's new
+entry will also point to the root tuple of the chain.
 
 	lp [1]  [2]
 	[1111, aaaa]->[1111, bbbb]
 
-	Index1's entry (1111) points to 1
-	Index2's old entry (aaaa) points to 1
-	Index2's new entry (bbbb) also points to 1
+	Index1's entry (1111) points to heap item 1
+	Index2's old entry (aaaa) points to heap item 1
+	Index2's new entry (bbbb) also points to heap item 1
 
-"A update chain which has more than one index entries pointing to its
-root line pointer is called WARM chain and the action that creates a
-WARM chain is called WARM update."
+Definitions:
+An update chain which has more than one index entries pointing to its root
+line pointer is called a WARM chain and the action that creates a WARM
+chain is called WARM update.
 
 Since all indexes always point to the root of the WARM chain, even when
-there are more than one index entries, WARM chains can be pruned and
-dead tuples can be removed without a need to do corresponding index
-cleanup.
+there are more than one index entries, WARM chains can be pruned and dead
+tuples can be removed without needing to do a corresponding index cleanup.
 
 While this solves the problem of pruning dead tuples from a HOT/WARM
 chain, it also opens up a new technical challenge because now we have a
 situation where a heap tuple is reachable from multiple index entries,
 each having a different index key. While MVCC still ensures that only
-valid tuples are returned, a tuple with a wrong index key may be
-returned because of wrong index entries. In the above example, tuple
-[1111, bbbb] is reachable from both keys (aaaa) as well as (bbbb). For
-this reason, tuples returned from a WARM chain must always be rechecked
-for index key-match.
+valid tuples are returned, a tuple with a wrong index key may be returned
+because of wrong index entries. In the above example, tuple [1111, bbbb]
+is reachable from both keys (aaaa) as well as (bbbb). For this reason,
+tuples returned from a WARM chain must always be rechecked for index
+key-match.
 
-Recheck Index Key Againt Heap Tuple
------------------------------------
+Recheck Index Key Against Heap Tuple
+------------------------------------
 
 Since every Index AM has it's own notion of index tuples, each Index AM
-must implement its own method to recheck heap tuples. For example, a
-hash index stores the hash value of the column and hence recheck routine
-for hash AM must first compute the hash value of the heap attribute and
-then compare it against the value stored in the index tuple.
+must implement its own method to recheck heap tuples. For example, a hash
+index stores the hash value of the column and hence recheck routine for
+hash AM must first compute the hash value of the heap attribute and then
+compare it against the value stored in the index tuple.
 
-The patch currently implement recheck routines only for btree
-indexes. If the table has an index which doesn't support recheck
-routine, WARM updates are disabled on such tables.
+PostgreSQL currently implement recheck routines only for btree indexes.
+WARM updates are disabled on tables that have indexes which don't include
+a recheck routine.
 
 Problem With Duplicate (key, ctid) Index Entries
 ------------------------------------------------
 
-The index-key recheck logic works as long as there are no duplicate
-index keys, both pointing to the same WARM chain. In that case, the same
-valid tuple will be reachable via multiple index keys, yet satisfying
-the index key checks. In the above example, if the tuple [1111, bbbb] is
-again updated to [1111, aaaa] and if we insert a new index entry (aaaa)
-pointing to the root line pointer, we will end up with the following
-structure:
+The index-key recheck logic works as long as there are no duplicate index
+keys, both pointing to the same WARM chain. In that case, the same valid
+tuple will be reachable via multiple index keys, yet satisfying the index
+key checks. In the above example, if the tuple [1111, bbbb] is again
+updated to [1111, aaaa] and if we insert a new index entry (aaaa) pointing
+to the root line pointer, we will end up with the following structure:
 
 	lp [1]  [2]  [3]
 	[1111, aaaa]->[1111, bbbb]->[1111, aaaa]
@@ -111,22 +109,22 @@ structure:
 	Index2's old entry (bbbb) also points to 1
 	Index2's new entry (aaaa) also points to 1
 
-We must solve this problem to ensure that the same tuple is not
-reachable via multiple index pointers. There are couple of ways to
-address this issue:
+We must solve this problem to ensure that the same tuple is not reachable
+via multiple index pointers. There are couple of ways to address this
+issue:
 
-1. Do not allow WARM update to a tuple from a WARM chain. This
-guarantees that there can never be duplicate index entries to the same
-root line pointer because we must have checked for old and new index
-keys while doing the first WARM update.
+1. Do not allow WARM update to a tuple from a WARM chain. This guarantees
+that there can never be duplicate index entries to the same root line
+pointer because we must have checked for old and new index keys while
+doing the first WARM update.
 
 2. Do not allow duplicate (key, ctid) index pointers. In the above
-example, since (aaaa, 1) already exists in the index, we must not insert
-a duplicate index entry.
+example, since (aaaa, 1) already exists in the index, we must not insert a
+duplicate index entry.
 
-The patch currently implements 1 i.e. do not do WARM updates to a tuple
-from a WARM chain. HOT updates are fine because they do not add a new
-index entry.
+The patch currently implements the first strategy, i.e., disallow WARM
+updates to a tuple from a chain that's already WARM. HOT updates are not
+affected by this problem because they do not add a new index entry.
 
 Even with the restriction, this is a significant improvement because the
 number of regular UPDATEs are curtailed down to half.
@@ -151,11 +149,11 @@ changed).
 Efficiently Finding the Root Line Pointer
 -----------------------------------------
 
-During WARM update, we must be able to find the root line pointer of the
+During a WARM update, we must be able to find the root line pointer of the
 tuple being updated. It must be noted that the t_ctid field in the heap
 tuple header is usually used to find the next tuple in the update chain.
 But the tuple that we are updating, must be the last tuple in the update
-chain. In such cases, the c_tid field usually points the tuple itself.
+chain. In such cases, the t_ctid field usually points the tuple itself.
 So in theory, we could use the t_ctid to store additional information in
 the last tuple of the update chain, if the information about the tuple
 being the last tuple is stored elsewhere.
