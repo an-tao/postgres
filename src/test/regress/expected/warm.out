@@ -977,7 +977,7 @@ ALTER TABLE testrelopt SET (enable_warm = true);
 ALTER TABLE testrelopt RESET (enable_warm);
 -- should fail since we don't allow turning WARM off
 ALTER TABLE testrelopt SET (enable_warm = false);
-ERROR:  WARM updates cannot be disabled on the table "testrelopt"
+ERROR:  WARM updates cannot be disabled on table "testrelopt"
 DROP TABLE testrelopt;
 CREATE TABLE testrelopt (a int unique, b int, c int) WITH (enable_warm = false);
 -- should be ok since the default is ON and we support turning WARM ON
@@ -985,5 +985,5 @@ ALTER TABLE testrelopt RESET (enable_warm);
 ALTER TABLE testrelopt SET (enable_warm = true);
 -- should fail since we don't allow turning WARM off
 ALTER TABLE testrelopt SET (enable_warm = false);
-ERROR:  WARM updates cannot be disabled on the table "testrelopt"
+ERROR:  WARM updates cannot be disabled on table "testrelopt"
 DROP TABLE testrelopt;
