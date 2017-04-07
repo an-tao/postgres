@@ -3544,7 +3544,7 @@ postgresAnalyzeForeignTable(Relation relation,
  * which must have at least targrows entries.
  * The actual number of rows selected is returned as the function result.
  * We also count the total number of rows in the table and return it into
- * *totalrows.  Note that *totaldeadrows and *totalwarmchains is always
+ * *totalrows.  Note that *totaldeadrows and *totalwarmchains are always
  * set to 0.
  *
  * Note that the returned list of rows is not always in order by physical
