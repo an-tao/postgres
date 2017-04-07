@@ -422,20 +422,6 @@ btgettuple(IndexScanDesc scan, ScanDirection dir)
 				if (so->numKilled < MaxIndexTuplesPerPage)
 					so->killedItems[so->numKilled++] = so->currPos.itemIndex;
 			}
-			else if (scan->warm_prior_tuple)
-			{
-				/*
-				 * Check if the previously fetched tuple should be marked with
-				 * a WARM flag. Similar to killedItems, don't allow the array
-				 * to be overrun if the indexscan reverses the direction and
-				 * we see the same tuples twice.
-				 */
-				if (so->setWarmItems == NULL)
-					so->setWarmItems = (int *)
-						palloc(MaxIndexTuplesPerPage * sizeof(int));
-				if (so->numSetWarmItems < MaxIndexTuplesPerPage)
-					so->setWarmItems[so->numSetWarmItems++] = so->currPos.itemIndex;
-			}
 
 			/*
 			 * Now continue the scan.
@@ -542,9 +528,6 @@ btbeginscan(Relation rel, int nkeys, int norderbys)
 	so->killedItems = NULL;		/* until needed */
 	so->numKilled = 0;
 
-	so->setWarmItems = NULL;	/* until needed */
-	so->numSetWarmItems = 0;
-
 	/*
 	 * We don't know yet whether the scan will be index-only, so we do not
 	 * allocate the tuple workspace arrays until btrescan.  However, we set up
@@ -574,9 +557,6 @@ btrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 		/* Before leaving current page, deal with any killed items */
 		if (so->numKilled > 0)
 			_bt_killitems(scan);
-		/* Also deal with items which could be marked WARM */
-		if (so->numSetWarmItems > 0)
-			_bt_warmitems(scan);
 		BTScanPosUnpinIfPinned(so->currPos);
 		BTScanPosInvalidate(so->currPos);
 	}
@@ -636,9 +616,6 @@ btendscan(IndexScanDesc scan)
 		/* Before leaving current page, deal with any killed items */
 		if (so->numKilled > 0)
 			_bt_killitems(scan);
-		/* Also deal with items which could be marked WARM */
-		if (so->numSetWarmItems > 0)
-			_bt_warmitems(scan);
 		BTScanPosUnpinIfPinned(so->currPos);
 	}
 
@@ -655,8 +632,6 @@ btendscan(IndexScanDesc scan)
 		MemoryContextDelete(so->arrayContext);
 	if (so->killedItems != NULL)
 		pfree(so->killedItems);
-	if (so->setWarmItems != NULL)
-		pfree(so->setWarmItems);
 	if (so->currTuples != NULL)
 		pfree(so->currTuples);
 	/* so->markTuples should not be pfree'd, see btrescan */
@@ -729,9 +704,6 @@ btrestrpos(IndexScanDesc scan)
 			/* Before leaving current page, deal with any killed items */
 			if (so->numKilled > 0)
 				_bt_killitems(scan);
-			/* Also deal with items which could be marked WARM */
-			if (so->numSetWarmItems > 0)
-				_bt_warmitems(scan);
 			BTScanPosUnpinIfPinned(so->currPos);
 		}
 

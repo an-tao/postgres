@@ -392,9 +392,6 @@ typedef struct BTScanOpaqueData
 	int		   *killedItems;	/* currPos.items indexes of killed items */
 	int			numKilled;		/* number of currently stored items */
 
-	/* info about items that are marked as WARM */
-	int		   *setWarmItems;
-	int			numSetWarmItems;
 	/*
 	 * If we are doing an index-only scan, these are the tuple storage
 	 * workspaces for the currPos and markPos respectively.  Each is of size
@@ -542,7 +539,6 @@ extern IndexTuple _bt_checkkeys(IndexScanDesc scan,
 			  Page page, OffsetNumber offnum,
 			  ScanDirection dir, bool *continuescan);
 extern void _bt_killitems(IndexScanDesc scan);
-extern void _bt_warmitems(IndexScanDesc scan);
 extern BTCycleId _bt_vacuum_cycleid(Relation rel);
 extern BTCycleId _bt_start_vacuum(Relation rel);
 extern void _bt_end_vacuum(Relation rel);

@@ -1350,9 +1350,6 @@ _bt_steppage(IndexScanDesc scan, ScanDirection dir)
 	/* Before leaving current page, deal with any killed items */
 	if (so->numKilled > 0)
 		_bt_killitems(scan);
-	/* Also deal with items which could be marked as WARM */
-	if (so->numSetWarmItems > 0)
-		_bt_warmitems(scan);
 
 	/*
 	 * Before we modify currPos, make a copy of the page data if there was a
@@ -1951,6 +1948,4 @@ _bt_initialize_more_data(BTScanOpaque so, ScanDirection dir)
 	}
 	so->numKilled = 0;			/* just paranoia */
 	so->markItemIndex = -1;		/* ditto */
-
-	so->numSetWarmItems = 0;
 }

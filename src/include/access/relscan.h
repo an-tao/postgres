@@ -101,9 +101,6 @@ typedef struct IndexScanDescData
 	bool		xactStartedInRecovery;	/* prevents killing/seeing killed
 										 * tuples */
 
-	/* signaling to index AM about setting the index pointer WARM */
-	bool		warm_prior_tuple;
-
 	/* index access method's private state */
 	void	   *opaque;			/* access-method-specific info */
 

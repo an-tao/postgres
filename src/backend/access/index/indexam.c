@@ -353,7 +353,6 @@ index_rescan(IndexScanDesc scan,
 	scan->xs_continue_hot = false;
 
 	scan->kill_prior_tuple = false;		/* for safety */
-	scan->warm_prior_tuple = false;		/* for safety */
 
 	scan->indexRelation->rd_amroutine->amrescan(scan, keys, nkeys,
 												orderbys, norderbys);
@@ -433,7 +432,6 @@ index_restrpos(IndexScanDesc scan)
 	scan->xs_continue_hot = false;
 
 	scan->kill_prior_tuple = false;		/* for safety */
-	scan->warm_prior_tuple = false;		/* for safety */
 
 	scan->indexRelation->rd_amroutine->amrestrpos(scan);
 }
@@ -574,7 +572,6 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
 
 	/* Reset kill/warm flags immediately for safety */
 	scan->kill_prior_tuple = false;
-	scan->warm_prior_tuple = false;
 
 	/* If we're out of index entries, we're done */
 	if (!found)
@@ -607,7 +604,7 @@ index_getnext_tid(IndexScanDesc scan, ScanDirection direction)
  * dropped in a future index_getnext_tid, index_fetch_heap or index_endscan
  * call).
  *
- * Note: caller must check scan->xs_tuple_recheck, and perform rechecking of the
+ * Note: caller must check scan->xs_recheck, and perform rechecking of the
  * scan keys if required.  We do not do that here because we don't have
  * enough information to do it efficiently in the general case.
  * ----------------
@@ -747,17 +744,13 @@ index_fetch_heap(IndexScanDesc scan)
 			 * If it's a CLEAR pointer to a chain with only WARM tuples then it
 			 * could be the only index pointer pointing to this chain or it
 			 * could be a duplicate CLEAR pointer resulted from an aborted
-			 * vacuum. We consult the recheck result and either kill the
-			 * pointer or mark it WARM to match the state of the chain. This
-			 * avoid repeated evaluation of recheck when the index is
-			 * repeatedly used to query the table.
+			 * vacuum. We consult the recheck result and kill the pointer if we
+			 * know it's dead already.
 			 */
 			if (!is_warm && HCWC_IS_ALL_WARM(scan->xs_hot_chain_status))
 			{
 				if (!res)
 					scan->kill_prior_tuple = true;
-				else
-					scan->warm_prior_tuple = true;
 			}
 
 			/*
@@ -888,7 +881,6 @@ index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap)
 
 	/* just make sure this is false... */
 	scan->kill_prior_tuple = false;
-	scan->warm_prior_tuple = false;
 
 	/*
 	 * have the am's getbitmap proc do all the work.

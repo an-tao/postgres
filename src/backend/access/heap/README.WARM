@@ -348,18 +348,12 @@ WARM pointers then we do one of the following:
 1. If this is a WARM index pointer to a chain with WARM tuples, do nothing.
 2. If this is a CLEAR index pointer to a chain with WARM tuples
 	2a. If recheck returns false, kill the CLEAR pointer.
-	2b. If recheck returns true, convert the CLEAR pointer to a WARM pointer.
+	2b. If recheck returns true, do nothing.
 3. If this is a WARM index pointer to a chain with CLEAR tuples, kill the
    pointer.
 4. If this is a CLEAR index pointer to a chain with CLEAR tuples
 	4a. If recheck returns false, kill the CLEAR pointer
 	4b. If recheck returns true, do nothing.
-
-The choice of 2b is curious because by doing that we are actually making
-changes to the index which did not receive a WARM insert during WARM update.
-But this allows us to avoid repeated "recheck" of the tuple when the same tuple
-is accessed again and again. Since we only use hinting mechanism to mark the
-buffer dirty, this should not cause unnecessary IO.
 
 If we make any changes to the index pointer state, we never WAL log that
 operation.
