@@ -311,14 +311,14 @@ UPDATE test_vacuum_warm SET c = 300 WHERE a = 6;
 SET enable_seqscan = false;
 SET enable_bitmapscan = false;
 SET seq_page_cost = 10000;
-VACUUM test_vacuum_warm;
+VACUUM (disable_warm_clean) test_vacuum_warm;
 -- We expect non-zero heap-fetches here
 EXPLAIN (analyze, costs off, timing off, summary off) SELECT b FROM test_vacuum_warm WHERE b = 'u';
 
 -- Now set vacuum_warmcleanup_index_scale_factor such that only
 -- test_vacuum_warm_index2 can be cleaned up.
 SET vacuum_warmcleanup_index_scale_factor=0.5;
-VACUUM WARMCLEAN test_vacuum_warm;
+VACUUM test_vacuum_warm;
 -- We expect non-zero heap-fetches here
 EXPLAIN (analyze, costs off, timing off, summary off) SELECT b FROM test_vacuum_warm WHERE b = 'u';
 
@@ -326,7 +326,7 @@ EXPLAIN (analyze, costs off, timing off, summary off) SELECT b FROM test_vacuum_
 -- All WARM chains cleaned up, so index-only scan should be used now without
 -- any heap fetches
 SET vacuum_warmcleanup_index_scale_factor=0;
-VACUUM WARMCLEAN test_vacuum_warm;
+VACUUM test_vacuum_warm;
 -- We expect zero heap-fetches now
 EXPLAIN (analyze, costs off, timing off, summary off) SELECT b FROM test_vacuum_warm WHERE b = 'u';
 

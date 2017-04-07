@@ -549,6 +549,7 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 	Buffer		vmbuffer = InvalidBuffer;
 	BlockNumber next_unskippable_block;
 	bool		skipping_blocks;
+	bool		dowarmcleanup = !(options & VACOPT_NO_WARM_CLEANUP);
 	xl_heap_freeze_tuple *frozen;
 	StringInfoData buf;
 	const int	initprog_index[] = {
@@ -557,7 +558,6 @@ lazy_scan_heap(Relation onerel, int options, LVRelStats *vacrelstats,
 		PROGRESS_VACUUM_MAX_DEAD_TUPLES
 	};
 	int64		initprog_val[3];
-	bool		dowarmcleanup = ((options & VACOPT_WARM_CLEANUP) != 0);
 
 	pg_rusage_init(&ru0);
 
