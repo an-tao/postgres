@@ -333,7 +333,7 @@ EXPLAIN (analyze, costs off, timing off, summary off) SELECT b FROM test_vacuum_
 DROP TABLE test_vacuum_warm;
 
 -- Toasted heap attributes
-CREATE TABLE toasttest(descr text , cnt int DEFAULT 0, f1 text, f2 text);
+CREATE TABLE toasttest(descr text, cnt int DEFAULT 0, f1 text COLLATE "C", f2 text);
 CREATE INDEX testindx1 ON toasttest(descr);
 CREATE INDEX testindx2 ON toasttest(f1);
 
@@ -341,7 +341,7 @@ INSERT INTO toasttest(descr, f1, f2) VALUES('two-compressed', repeat('1234567890
 INSERT INTO toasttest(descr, f1, f2) VALUES('two-toasted', repeat('1234567890',20000), repeat('1234567890',50000));
 INSERT INTO toasttest(descr, f1, f2) VALUES('one-compressed,one-toasted', repeat('1234567890',1000), repeat('1234567890',50000));
 
-SELECT ctid, substring(toasttest::text, 1, 200) FROM toasttest;
+SELECT ctid, substring(f1::text, 1, 200) FROM toasttest;
 
 -- UPDATE f1 by doing string manipulation, but the updated value remains the
 -- same as the old value
