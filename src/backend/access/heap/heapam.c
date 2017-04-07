@@ -98,11 +98,11 @@ static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
 				HeapTuple old_key_tup,
 				bool all_visible_cleared, bool new_all_visible_cleared);
 static void HeapCheckColumns(Relation relation,
-							 Bitmapset *interesting_cols,
-							 HeapTuple oldtup, HeapTuple newtup,
-							 Bitmapset **toasted_attrs,
-							 Bitmapset **compressed_attrs,
-							 Bitmapset **modified_attrs);
+				 Bitmapset *interesting_cols,
+				 HeapTuple oldtup, HeapTuple newtup,
+				 Bitmapset **toasted_attrs,
+				 Bitmapset **compressed_attrs,
+				 Bitmapset **modified_attrs);
 static bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
 					 LockTupleMode mode, LockWaitPolicy wait_policy,
 					 bool *have_tuple_lock);
@@ -3936,8 +3936,8 @@ heap_update(Relation relation, ItemPointer otid, HeapTuple newtup,
 
 	/* Determine columns modified by the update. */
 	HeapCheckColumns(relation, interesting_attrs,
-								 &oldtup, newtup, &toasted_attrs,
-								 &compressed_attrs, &modified_attrs);
+					 &oldtup, newtup, &toasted_attrs,
+					 &compressed_attrs, &modified_attrs);
 
 	if (modified_attrsp)
 		*modified_attrsp = bms_copy(modified_attrs);
@@ -4852,26 +4852,29 @@ l2:
 }
 
 /*
- * Check if the specified attribute is toasted or compressed in either
- * the old or the new tuple. For compressed or toasted attributes, we only do a
- * very simplistic check for the equality by running datumIsEqual on the
- * compressed or toasted form. This helps us to perform HOT updates (if other
- * conditions are favourable) when these attributes are not updated. But we
- * might not be able to capture all possible scenarios such as when the
- * toasted/compressed attribute is updated, but the modified value is same as
- * the original value.
+ * heap_tuple_attr_check
+ *		Subroutine for HeapCheckColumns
+ *
+ * Given an update's old source and updated tuples, determine whether one
+ * individual attribute in it has been changed by the update, and also
+ * whether it is compressed or toasted in either the old or the new versions.
+ *
+ * For compressed or toasted attributes, we only do a very simplistic check for
+ * equality by running datumIsEqual on the compressed or toasted form. This
+ * helps us to perform HOT updates (if other conditions are favourable) when
+ * these attributes are not updated.  But we might not be able to capture all
+ * possible scenarios such as when the toasted/compressed attribute is updated,
+ * but the modified value is same as the original value.
  *
  * For WARM updates, we don't care what the equality check returns for
  * toasted/compressed attributes. If such attributes are used in any of the
- * indexes, we don't perform WARM updates irrespective of whether they are
+ * indexes, we avoid performing WARM updates irrespective of whether they are
  * modified or not.
- *
- * Subroutine for HeapCheckColumns.
  */
 static void
 heap_tuple_attr_check(TupleDesc tupdesc, int attrnum,
-					   HeapTuple tup1, HeapTuple tup2,
-					   bool *toasted, bool *compressed, bool *equal)
+					  HeapTuple tup1, HeapTuple tup2,
+					  bool *toasted, bool *compressed, bool *equal)
 {
 	Datum		value1,
 				value2;
@@ -4887,13 +4890,14 @@ heap_tuple_attr_check(TupleDesc tupdesc, int attrnum,
 	 * worth supporting this case, since it could only succeed after a no-op
 	 * update, which is hardly a case worth optimizing for.
 	 *
-	 * XXX Does thie need special attention in WARM given that we don't want to
+	 * XXX Does this need special attention in WARM given that we don't want to
 	 * return "not equal" for something that is equal? But how does whole-tuple
 	 * reference ends up in the interesting_attrs list? Regression tests do not
-	 * have covergae for this case as of now.
+	 * have coverage for this case as of now.
 	 */
 	if (attrnum == 0)
 	{
+		abort();
 		*equal = false;
 		return;
 	}
@@ -5012,10 +5016,10 @@ heap_tuple_attr_check(TupleDesc tupdesc, int attrnum,
  */
 void
 HeapCheckColumns(Relation relation, Bitmapset *interesting_cols,
-							 HeapTuple oldtup, HeapTuple newtup,
-							 Bitmapset **toasted_attrs,
-							 Bitmapset **compressed_attrs,
-							 Bitmapset **modified_attrs)
+				 HeapTuple oldtup, HeapTuple newtup,
+				 Bitmapset **toasted_attrs,
+				 Bitmapset **compressed_attrs,
+				 Bitmapset **modified_attrs)
 {
 	int		attnum;
 

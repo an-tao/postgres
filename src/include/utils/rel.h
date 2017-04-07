@@ -290,7 +290,7 @@ typedef struct StdRdOptions
 	bool		user_catalog_table;		/* use as an additional catalog
 										 * relation */
 	int			parallel_workers;		/* max number of parallel workers */
-	bool		enable_warm;	/* should WARM be allowed on this table */
+	bool		enable_warm;	/* is WARM allowed on this table */
 } StdRdOptions;
 
 #define HEAP_MIN_FILLFACTOR			10
