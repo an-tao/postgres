@@ -631,7 +631,7 @@ static inline void
 HeapTupleHeaderSetNextTid(HeapTupleHeader tup, ItemPointer tid)
 {
 	ItemPointerCopy(tid, &(tup->t_ctid));
-	ItemPointerIsValid(tid);
+	Assert(ItemPointerIsValid(tid));
 	HeapTupleHeaderClearHeapLatest(tup);
 }
 
