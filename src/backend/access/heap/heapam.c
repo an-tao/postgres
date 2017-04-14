@@ -9490,15 +9490,15 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		if (warm_update)
 			HeapTupleHeaderSetWarmUpdated(htup);
 
-		offnum = PageAddItem(page, (Item) htup, newlen, offnum, true, true);
-		if (offnum == InvalidOffsetNumber)
-			elog(PANIC, "failed to add tuple");
-
 		/*
 		 * Make sure the tuple is marked as the latest and root offset
 		 * information is restored.
 		 */
 		HeapTupleHeaderSetHeapLatest(htup, xlrec->root_offnum);
+
+		offnum = PageAddItem(page, (Item) htup, newlen, offnum, true, true);
+		if (offnum == InvalidOffsetNumber)
+			elog(PANIC, "failed to add tuple");
 
 		if (xlrec->flags & XLH_UPDATE_NEW_ALL_VISIBLE_CLEARED)
 			PageClearAllVisible(page);

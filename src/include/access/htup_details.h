@@ -557,6 +557,7 @@ HeapTupleHeaderSetHeapLatest(HeapTupleHeader tup, Offset offnum)
 	Assert(OffsetNumberIsValid(offnum));
 
 	tup->t_infomask2 |= HEAP_LATEST_TUPLE;
+	Assert(OffsetNumberIsValid(offnum));
 	ItemPointerSetOffsetNumber(&tup->t_ctid, offnum);
 }
 
@@ -630,7 +631,7 @@ static inline void
 HeapTupleHeaderSetNextTid(HeapTupleHeader tup, ItemPointer tid)
 {
 	ItemPointerCopy(tid, &(tup->t_ctid));
-
+	ItemPointerIsValid(tid);
 	HeapTupleHeaderClearHeapLatest(tup);
 }
 
