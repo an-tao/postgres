@@ -476,6 +476,13 @@ DATA(insert (	4070   701	 700  2  3384 ));
 DATA(insert (	4070   701	 700  3  3385 ));
 DATA(insert (	4070   701	 700  4  3386 ));
 
+/* minmax multi float */
+
+DATA(insert (	4005   701	 701  1  4001 ));
+DATA(insert (	4005   701	 701  2  4002 ));
+DATA(insert (	4005   701	 701  3  4003 ));
+DATA(insert (	4005   701	 701  4  4004 ));
+
 /* bloom float */
 DATA(insert (	5030   700	 700  1  5017 ));
 DATA(insert (	5030   700	 700  2  5018 ));
@@ -613,6 +620,46 @@ DATA(insert (	4059  1082	1184  1  3383 ));
 DATA(insert (	4059  1082	1184  2  3384 ));
 DATA(insert (	4059  1082	1184  3  3385 ));
 DATA(insert (	4059  1082	1184  4  3386 ));
+
+/* minmax multi (timestamp, timestamptz) */
+DATA(insert (	4006  1114	1114  1  4001 ));
+DATA(insert (	4006  1114	1114  2  4002 ));
+DATA(insert (	4006  1114	1114  3  4003 ));
+DATA(insert (	4006  1114	1114  4  4004 ));
+DATA(insert (	4006  1114	1184  1  4001 ));
+DATA(insert (	4006  1114	1184  2  4002 ));
+DATA(insert (	4006  1114	1184  3  4003 ));
+DATA(insert (	4006  1114	1184  4  4004 ));
+DATA(insert (	4006  1114	1082  1  4001 ));
+DATA(insert (	4006  1114	1082  2  4002 ));
+DATA(insert (	4006  1114	1082  3  4003 ));
+DATA(insert (	4006  1114	1082  4  4004 ));
+
+DATA(insert (	4006  1184	1184  1  4001 ));
+DATA(insert (	4006  1184	1184  2  4002 ));
+DATA(insert (	4006  1184	1184  3  4003 ));
+DATA(insert (	4006  1184	1184  4  4004 ));
+DATA(insert (	4006  1184	1114  1  4001 ));
+DATA(insert (	4006  1184	1114  2  4002 ));
+DATA(insert (	4006  1184	1114  3  4003 ));
+DATA(insert (	4006  1184	1114  4  4004 ));
+DATA(insert (	4006  1184	1082  1  4001 ));
+DATA(insert (	4006  1184	1082  2  4002 ));
+DATA(insert (	4006  1184	1082  3  4003 ));
+DATA(insert (	4006  1184	1082  4  4004 ));
+
+DATA(insert (	4006  1082	1082  1  4001 ));
+DATA(insert (	4006  1082	1082  2  4002 ));
+DATA(insert (	4006  1082	1082  3  4003 ));
+DATA(insert (	4006  1082	1082  4  4004 ));
+DATA(insert (	4006  1082	1114  1  4001 ));
+DATA(insert (	4006  1082	1114  2  4002 ));
+DATA(insert (	4006  1082	1114  3  4003 ));
+DATA(insert (	4006  1082	1114  4  4004 ));
+DATA(insert (	4006  1082	1184  1  4001 ));
+DATA(insert (	4006  1082	1184  2  4002 ));
+DATA(insert (	4006  1082	1184  3  4003 ));
+DATA(insert (	4006  1082	1184  4  4004 ));
 
 /* bloom datetime (date, timestamp, timestamptz) */
 DATA(insert (	5038  1114	1114  1  5017 ));
