@@ -403,3 +403,22 @@ EXPLAIN (COSTS OFF)
  SELECT * FROM mcv_lists WHERE a IS NULL AND b IS NULL AND c IS NULL;
 
 RESET random_page_cost;
+
+-- mcv with arrays
+CREATE TABLE mcv_lists_arrays (
+    a TEXT[],
+    b NUMERIC[],
+    c INT[]
+);
+
+INSERT INTO mcv_lists_arrays (a, b, c)
+     SELECT
+         ARRAY[md5((i/100)::text), md5((i/100-1)::text), md5((i/100+1)::text)],
+         ARRAY[(i/100-1)::numeric/1000, (i/100)::numeric/1000, (i/100+1)::numeric/1000],
+         ARRAY[(i/100-1), i/100, (i/100+1)]
+     FROM generate_series(1,5000) s(i);
+
+CREATE STATISTICS mcv_lists_arrays_stats (mcv) ON a, b, c
+  FROM mcv_lists_arrays;
+
+ANALYZE mcv_lists_arrays;
