@@ -1285,7 +1285,7 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 	 * (not distinct values) in each partition. That might work better when
 	 * there are a few very frequent values, and many rare ones.
 	 */
-	delta = fabs(data->numrows);
+	delta = data->numrows;
 	split_value = values[0].value;
 
 	for (i = 1; i < data->numrows; i++)
