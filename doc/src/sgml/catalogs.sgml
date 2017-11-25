@@ -6509,6 +6509,15 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       </entry>
      </row>
 
+     <row>
+      <entry><structfield>stxhistogram</structfield></entry>
+      <entry><type>pg_histogram</type></entry>
+      <entry></entry>
+      <entry>
+       Histogram, serialized as <structname>pg_histogram</> type.
+      </entry>
+     </row>
+
     </tbody>
    </tgroup>
   </table>

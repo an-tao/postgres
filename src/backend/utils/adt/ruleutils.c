@@ -1463,6 +1463,7 @@ pg_get_statisticsobj_worker(Oid statextid, bool missing_ok)
 	bool		ndistinct_enabled;
 	bool		dependencies_enabled;
 	bool		mcv_enabled;
+	bool		histogram_enabled;
 	int			i;
 
 	statexttup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statextid));
@@ -1499,6 +1500,7 @@ pg_get_statisticsobj_worker(Oid statextid, bool missing_ok)
 	ndistinct_enabled = false;
 	dependencies_enabled = false;
 	mcv_enabled = false;
+	histogram_enabled = false;
 
 	for (i = 0; i < ARR_DIMS(arr)[0]; i++)
 	{
@@ -1508,6 +1510,8 @@ pg_get_statisticsobj_worker(Oid statextid, bool missing_ok)
 			dependencies_enabled = true;
 		if (enabled[i] == STATS_EXT_MCV)
 			mcv_enabled = true;
+		if (enabled[i] == STATS_EXT_HISTOGRAM)
+			histogram_enabled = true;
 	}
 
 	/*
@@ -1536,7 +1540,13 @@ pg_get_statisticsobj_worker(Oid statextid, bool missing_ok)
 		}
 
 		if (mcv_enabled)
+		{
 			appendStringInfo(&buf, "%smcv", gotone ? ", " : "");
+			gotone = true;
+		}
+
+		if (histogram_enabled)
+			appendStringInfo(&buf, "%shistogram", gotone ? ", " : "");
 
 		appendStringInfoChar(&buf, ')');
 	}
