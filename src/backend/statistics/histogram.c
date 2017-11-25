@@ -252,8 +252,10 @@ build_ndistinct(int numrows, HeapTuple *rows, Bitmapset *attrs,
 			   *distvalues;
 	int		   *attnums;
 
+	TypeCacheEntry *type;
 	SortSupportData ssup;
-	StdAnalyzeData *mystats = (StdAnalyzeData *) stats[i]->extra_data;
+
+	type = lookup_type_cache(stats[i]->attrtypid, TYPECACHE_LT_OPR);
 
 	/* initialize sort support, etc. */
 	memset(&ssup, 0, sizeof(ssup));
@@ -263,7 +265,7 @@ build_ndistinct(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	ssup.ssup_collation = DEFAULT_COLLATION_OID;
 	ssup.ssup_nulls_first = false;
 
-	PrepareSortSupportFromOrderingOp(mystats->ltopr, &ssup);
+	PrepareSortSupportFromOrderingOp(type->lt_opr, &ssup);
 
 	nvalues = 0;
 	values = (Datum *) palloc0(sizeof(Datum) * numrows);
@@ -414,7 +416,9 @@ statext_histogram_serialize(MVHistogram *histogram, VacAttrStats **stats)
 	{
 		int			b;
 		int			count;
-		StdAnalyzeData *tmp = (StdAnalyzeData *) stats[dim]->extra_data;
+		TypeCacheEntry *type;
+
+		type = lookup_type_cache(stats[dim]->attrtypid, TYPECACHE_LT_OPR);
 
 		/* keep important info about the data type */
 		info[dim].typlen = stats[dim]->attrtype->typlen;
@@ -449,7 +453,7 @@ statext_histogram_serialize(MVHistogram *histogram, VacAttrStats **stats)
 		ssup[dim].ssup_collation = DEFAULT_COLLATION_OID;
 		ssup[dim].ssup_nulls_first = false;
 
-		PrepareSortSupportFromOrderingOp(tmp->ltopr, &ssup[dim]);
+		PrepareSortSupportFromOrderingOp(type->lt_opr, &ssup[dim]);
 
 		qsort_arg(values[dim], counts[dim], sizeof(Datum),
 				  compare_scalars_simple, &ssup[dim]);
@@ -1154,7 +1158,7 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 	bool		isNull;
 	int			nvalues = 0;
 	HistogramBuild *data = (HistogramBuild *) bucket->build_data;
-	StdAnalyzeData *mystats = NULL;
+	TypeCacheEntry *type;
 	ScalarItem *values = (ScalarItem *) palloc0(data->numrows * sizeof(ScalarItem));
 	SortSupportData ssup;
 	int		   *attnums;
@@ -1184,7 +1188,7 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 		Datum	   *a,
 				   *b;
 
-		mystats = (StdAnalyzeData *) stats[i]->extra_data;
+		type = lookup_type_cache(stats[i]->attrtypid, TYPECACHE_LT_OPR);
 
 		/* initialize sort support, etc. */
 		memset(&ssup, 0, sizeof(ssup));
@@ -1194,7 +1198,7 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 		ssup.ssup_collation = DEFAULT_COLLATION_OID;
 		ssup.ssup_nulls_first = false;
 
-		PrepareSortSupportFromOrderingOp(mystats->ltopr, &ssup);
+		PrepareSortSupportFromOrderingOp(type->lt_opr, &ssup);
 
 		/* can't split NULL-only dimension */
 		if (bucket->nullsonly[i])
@@ -1231,7 +1235,7 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 	 * Walk through the selected dimension, collect and sort the values and
 	 * then choose the value to use as the new boundary.
 	 */
-	mystats = (StdAnalyzeData *) stats[dimension]->extra_data;
+	type = lookup_type_cache(stats[dimension]->attrtypid, TYPECACHE_LT_OPR);
 
 	/* initialize sort support, etc. */
 	memset(&ssup, 0, sizeof(ssup));
@@ -1241,7 +1245,7 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 	ssup.ssup_collation = DEFAULT_COLLATION_OID;
 	ssup.ssup_nulls_first = false;
 
-	PrepareSortSupportFromOrderingOp(mystats->ltopr, &ssup);
+	PrepareSortSupportFromOrderingOp(type->lt_opr, &ssup);
 
 	attnums = build_attnums(attrs);
 
@@ -1478,10 +1482,10 @@ update_dimension_ndistinct(MVBucket *bucket, int dimension, Bitmapset *attrs,
 	HistogramBuild *data = (HistogramBuild *) bucket->build_data;
 	Datum	   *values = (Datum *) palloc0(data->numrows * sizeof(Datum));
 	SortSupportData ssup;
-
-	StdAnalyzeData *mystats = (StdAnalyzeData *) stats[dimension]->extra_data;
-
+	TypeCacheEntry *type;
 	int		   *attnums;
+
+	type = lookup_type_cache(stats[dimension]->attrtypid, TYPECACHE_LT_OPR);
 
 	/* we may already know this is a NULL-only dimension */
 	if (bucket->nullsonly[dimension])
@@ -1494,7 +1498,7 @@ update_dimension_ndistinct(MVBucket *bucket, int dimension, Bitmapset *attrs,
 	ssup.ssup_collation = DEFAULT_COLLATION_OID;
 	ssup.ssup_nulls_first = false;
 
-	PrepareSortSupportFromOrderingOp(mystats->ltopr, &ssup);
+	PrepareSortSupportFromOrderingOp(type->lt_opr, &ssup);
 
 	attnums = build_attnums(attrs);
 
