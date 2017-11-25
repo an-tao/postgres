@@ -531,4 +531,23 @@ ANALYZE histograms;
 EXPLAIN (COSTS OFF)
  SELECT * FROM histograms WHERE a IS NULL AND b IS NULL;
 
+-- histograms with arrays
+CREATE TABLE histograms_arrays (
+    a TEXT[],
+    b NUMERIC[],
+    c INT[]
+);
+
+INSERT INTO histograms_arrays (a, b, c)
+     SELECT
+         ARRAY[md5(i::text), md5((i-1)::text), md5((i+1)::text)],
+         ARRAY[(i-1)::numeric/1000, i::numeric/1000, (i+1)::numeric/1000],
+         ARRAY[(i-1), i, (i+1)]
+     FROM generate_series(1,5000) s(i);
+
+CREATE STATISTICS histogram_array_stats (histogram) ON a, b, c
+  FROM histograms_arrays;
+
+ANALYZE histograms_arrays;
+
 RESET random_page_cost;
