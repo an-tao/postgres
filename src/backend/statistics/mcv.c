@@ -427,7 +427,13 @@ statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats)
 	for (dim = 0; dim < ndims; dim++)
 	{
 		int			ndistinct;
-		StdAnalyzeData *tmp = (StdAnalyzeData *) stats[dim]->extra_data;
+		TypeCacheEntry *typentry;
+
+		/*
+		 * Lookup the LT operator (can't get it from stats extra_data, as
+		 * we don't know how to interpret that - scalar vs. array etc.).
+		 */
+		typentry = lookup_type_cache(stats[dim]->attrtypid, TYPECACHE_LT_OPR);
 
 		/* copy important info about the data type (length, by-value) */
 		info[dim].typlen = stats[dim]->attrtype->typlen;
@@ -455,7 +461,7 @@ statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats)
 		ssup[dim].ssup_collation = DEFAULT_COLLATION_OID;
 		ssup[dim].ssup_nulls_first = false;
 
-		PrepareSortSupportFromOrderingOp(tmp->ltopr, &ssup[dim]);
+		PrepareSortSupportFromOrderingOp(typentry->lt_opr, &ssup[dim]);
 
 		qsort_arg(values[dim], counts[dim], sizeof(Datum),
 				  compare_scalars_simple, &ssup[dim]);
