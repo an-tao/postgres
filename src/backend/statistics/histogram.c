@@ -92,6 +92,9 @@ static Datum *build_ndistinct(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 /*
  * Minimal number of rows per bucket (can't split smaller buckets).
+ *
+ * XXX The single-column statistics (std_typanalyze) pretty much says we
+ * need 300 rows per bucket. Should we use the same value here?
  */
 #define MIN_BUCKET_ROWS			10
 
