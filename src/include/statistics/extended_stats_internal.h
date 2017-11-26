@@ -76,9 +76,7 @@ extern MCVList *statext_mcv_deserialize(bytea *data);
 extern MVHistogram *statext_histogram_build(int numrows, HeapTuple *rows,
 					Bitmapset *attrs, VacAttrStats **stats,
 					int numrows_total);
-extern bytea *statext_histogram_serialize(MVHistogram *histogram,
-					VacAttrStats **stats);
-extern MVSerializedHistogram *statext_histogram_deserialize(bytea *data);
+extern MVHistogram *statext_histogram_deserialize(bytea *data);
 
 extern MultiSortSupport multi_sort_init(int ndims);
 extern void multi_sort_add_dimension(MultiSortSupport mss, int sortdim,

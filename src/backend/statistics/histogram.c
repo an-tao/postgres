@@ -30,29 +30,76 @@
 #include "utils/typcache.h"
 
 
-static MVBucket *create_initial_ext_bucket(int numrows, HeapTuple *rows,
+/*
+ * Multivariate histograms
+ */
+typedef struct MVBucketBuild
+{
+	/* Frequencies of this bucket. */
+	float		frequency;
+
+	/*
+	 * Information about dimensions being NULL-only. Not yet used.
+	 */
+	bool	   *nullsonly;
+
+	/* lower boundaries - values and information about the inequalities */
+	Datum	   *min;
+	bool	   *min_inclusive;
+
+	/* upper boundaries - values and information about the inequalities */
+	Datum	   *max;
+	bool       *max_inclusive;
+
+	/* number of distinct values in each dimension */
+	uint32	   *ndistincts;
+
+	/* number of distinct combination of values */
+	uint32		ndistinct;
+
+	/* aray of sample rows (for this bucket) */
+	HeapTuple  *rows;
+	uint32		numrows;
+
+} MVBucketBuild;
+
+typedef struct MVHistogramBuild
+{
+	int32		vl_len_;		/* unused: ensure same alignment as
+								 * MVHistogram for serialization */
+	uint32		magic;			/* magic constant marker */
+	uint32		type;			/* type of histogram (BASIC) */
+	uint32		nbuckets;		/* number of buckets (buckets array) */
+	uint32		ndimensions;	/* number of dimensions */
+	MVBucketBuild  **buckets;	/* array of buckets */
+} MVHistogramBuild;
+
+static MVBucketBuild *create_initial_ext_bucket(int numrows, HeapTuple *rows,
 						 Bitmapset *attrs, VacAttrStats **stats);
 
-static MVBucket *select_bucket_to_partition(int nbuckets, MVBucket **buckets);
+static MVBucketBuild *select_bucket_to_partition(int nbuckets, MVBucketBuild **buckets);
 
-static MVBucket *partition_bucket(MVBucket *bucket, Bitmapset *attrs,
+static MVBucketBuild *partition_bucket(MVBucketBuild *bucket, Bitmapset *attrs,
 				 VacAttrStats **stats,
 				 int *ndistvalues, Datum **distvalues);
 
-static MVBucket *copy_ext_bucket(MVBucket *bucket, uint32 ndimensions);
+static MVBucketBuild *copy_ext_bucket(MVBucketBuild *bucket, uint32 ndimensions);
 
-static void update_bucket_ndistinct(MVBucket *bucket, Bitmapset *attrs,
+static void update_bucket_ndistinct(MVBucketBuild *bucket, Bitmapset *attrs,
 						VacAttrStats **stats);
 
-static void update_dimension_ndistinct(MVBucket *bucket, int dimension,
+static void update_dimension_ndistinct(MVBucketBuild *bucket, int dimension,
 						   Bitmapset *attrs, VacAttrStats **stats,
 						   bool update_boundaries);
 
-static void create_null_buckets(MVHistogram *histogram, int bucket_idx,
+static void create_null_buckets(MVHistogramBuild *histogram, int bucket_idx,
 					Bitmapset *attrs, VacAttrStats **stats);
 
 static Datum *build_ndistinct(int numrows, HeapTuple *rows, Bitmapset *attrs,
 				VacAttrStats **stats, int i, int *nvals);
+
+static MVHistogram *serialize_histogram(MVHistogramBuild *histogram,
+										VacAttrStats **stats);
 
 /*
  * Computes size of a serialized histogram bucket, depending on the number
@@ -136,7 +183,7 @@ statext_histogram_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	int		   *ndistvalues;
 	Datum	  **distvalues;
 
-	MVHistogram *histogram;
+	MVHistogramBuild *histogram;
 	HeapTuple   *rows_copy;
 
 	/* not supposed to build of too few or too many columns */
@@ -148,7 +195,7 @@ statext_histogram_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 
 	/* build the histogram header */
 
-	histogram = (MVHistogram *) palloc0(sizeof(MVHistogram));
+	histogram = (MVHistogramBuild *) palloc0(sizeof(MVHistogramBuild));
 
 	histogram->magic = STATS_HIST_MAGIC;
 	histogram->type = STATS_HIST_TYPE_BASIC;
@@ -160,7 +207,7 @@ statext_histogram_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	 * doing repalloc for short-lived objects).
 	 */
 	histogram->buckets
-		= (MVBucket **) palloc0(STATS_HIST_MAX_BUCKETS * sizeof(MVBucket));
+		= (MVBucketBuild **) palloc0(STATS_HIST_MAX_BUCKETS * sizeof(MVBucketBuild));
 
 	/* Create the initial bucket, covering all sampled rows */
 	histogram->buckets[0]
@@ -192,7 +239,7 @@ statext_histogram_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	 */
 	while (histogram->nbuckets < STATS_HIST_MAX_BUCKETS)
 	{
-		MVBucket   *bucket = select_bucket_to_partition(histogram->nbuckets,
+		MVBucketBuild   *bucket = select_bucket_to_partition(histogram->nbuckets,
 														histogram->buckets);
 
 		/* no bucket eligible for partitioning */
@@ -215,7 +262,12 @@ statext_histogram_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 			= (histogram->buckets[i]->numrows * 1.0) / numrows_total;
 	}
 
-	return histogram;
+	/*
+	 * FIXME this does not set the internal pointers, so it's only useful
+	 * for storing the histogram (not for using it without running it
+	 * through deserialize first).
+	 */
+	return serialize_histogram(histogram, stats);
 }
 
 /*
@@ -315,7 +367,7 @@ build_ndistinct(int numrows, HeapTuple *rows, Bitmapset *attrs,
  * statext_histogram_load
  *		Load the histogram list for the indicated pg_statistic_ext tuple
 */
-MVSerializedHistogram *
+MVHistogram *
 statext_histogram_load(Oid mvoid)
 {
 	bool		isnull = false;
@@ -363,14 +415,14 @@ statext_histogram_load(Oid mvoid)
  * TODO Consider packing boolean flags (NULL) for each item into 'char' or
  * a longer type (instead of using an array of bool items).
  */
-bytea *
-statext_histogram_serialize(MVHistogram *histogram, VacAttrStats **stats)
+static MVHistogram *
+serialize_histogram(MVHistogramBuild *histogram, VacAttrStats **stats)
 {
 	int			dim,
 				i;
 	Size		total_length = 0;
 
-	bytea	   *output = NULL;
+	bytea	   *output = NULL;	/* serialized histogram as bytea */
 	char	   *data = NULL;
 
 	DimensionInfo *info;
@@ -496,8 +548,8 @@ statext_histogram_serialize(MVHistogram *histogram, VacAttrStats **stats)
 	 * So the 'header' size is 20B + ndim * sizeof(DimensionInfo) and then
 	 * we'll place the data (and buckets).
 	 */
-	total_length = (sizeof(int32) + offsetof(MVHistogram, buckets)
-					+ndims * sizeof(DimensionInfo)
+	total_length = (offsetof(MVHistogram, buckets)
+					+ ndims * sizeof(DimensionInfo)
 					+ nbuckets * bucketsize);
 
 	/* account for the deduplicated data */
@@ -520,13 +572,16 @@ statext_histogram_serialize(MVHistogram *histogram, VacAttrStats **stats)
 
 	/* allocate space for the serialized histogram list, set header */
 	output = (bytea *) palloc0(total_length);
-	SET_VARSIZE(output, total_length);
 
-	/* we'll use 'data' to keep track of the place to write data */
-	data = VARDATA(output);
+	/*
+	 * we'll use 'data' to keep track of the place to write data
+	 *
+	 * XXX No VARDATA() here, as MVHistogramBuild includes the length.
+	 */
+	data = (char *)output;
 
-	memcpy(data, histogram, offsetof(MVHistogram, buckets));
-	data += offsetof(MVHistogram, buckets);
+	memcpy(data, histogram, offsetof(MVHistogramBuild, buckets));
+	data += offsetof(MVHistogramBuild, buckets);
 
 	memcpy(data, info, sizeof(DimensionInfo) * ndims);
 	data += sizeof(DimensionInfo) * ndims;
@@ -647,17 +702,20 @@ statext_histogram_serialize(MVHistogram *histogram, VacAttrStats **stats)
 
 	pfree(values);
 
-	return output;
+	/* make sure the length is correct */
+	SET_VARSIZE(output, total_length);
+
+	return (MVHistogram *)output;
 }
 
 /*
-* Reads serialized histogram into MVSerializedHistogram structure.
+* Reads serialized histogram into MVHistogram structure.
  
  * Returns histogram in a partially-serialized form (keeps the boundary values
  * deduplicated, so that it's possible to optimize the estimation part by
  * caching function call results across buckets etc.).
  */
-MVSerializedHistogram *
+MVHistogram *
 statext_histogram_deserialize(bytea *data)
 {
 	int			dim,
@@ -666,7 +724,7 @@ statext_histogram_deserialize(bytea *data)
 	Size		expected_size;
 	char	   *tmp = NULL;
 
-	MVSerializedHistogram *histogram;
+	MVHistogram *histogram;
 	DimensionInfo *info;
 
 	int			nbuckets;
@@ -685,20 +743,20 @@ statext_histogram_deserialize(bytea *data)
 	 * We can't possibly deserialize a histogram if there's not even a
 	 * complete header.
 	 */
-	if (VARSIZE_ANY_EXHDR(data) < offsetof(MVSerializedHistogram, buckets))
+	if (VARSIZE_ANY_EXHDR(data) < offsetof(MVHistogram, buckets))
 		elog(ERROR, "invalid histogram size %ld (expected at least %ld)",
-			 VARSIZE_ANY_EXHDR(data), offsetof(MVSerializedHistogram, buckets));
+			 VARSIZE_ANY_EXHDR(data), offsetof(MVHistogram, buckets));
 
 	/* read the histogram header */
 	histogram
-		= (MVSerializedHistogram *) palloc(sizeof(MVSerializedHistogram));
+		= (MVHistogram *) palloc(sizeof(MVHistogram));
 
-	/* initialize pointer to the data part (skip the varlena header) */
-	tmp = VARDATA_ANY(data);
+	/* initialize pointer to data (varlena header is included) */
+	tmp = (char *)data;
 
 	/* get the header and perform basic sanity checks */
-	memcpy(histogram, tmp, offsetof(MVSerializedHistogram, buckets));
-	tmp += offsetof(MVSerializedHistogram, buckets);
+	memcpy(histogram, tmp, offsetof(MVHistogram, buckets));
+	tmp += offsetof(MVHistogram, buckets);
 
 	if (histogram->magic != STATS_HIST_MAGIC)
 		elog(ERROR, "invalid histogram magic %d (expected %dd)",
@@ -736,12 +794,12 @@ statext_histogram_deserialize(bytea *data)
 	 * What size do we expect with those parameters (it's incomplete, as we
 	 * yet have to count the array sizes (from DimensionInfo records).
 	 */
-	expected_size = offsetof(MVSerializedHistogram, buckets) +
+	expected_size = offsetof(MVHistogram, buckets) +
 		ndims * sizeof(DimensionInfo) +
 		(nbuckets * bucketsize);
 
 	/* check that we have at least the DimensionInfo records */
-	if (VARSIZE_ANY_EXHDR(data) < expected_size)
+	if (VARSIZE_ANY(data) < expected_size)
 		elog(ERROR, "invalid histogram size %ld (expected %ld)",
 			 VARSIZE_ANY_EXHDR(data), expected_size);
 
@@ -753,7 +811,7 @@ statext_histogram_deserialize(bytea *data)
 	for (dim = 0; dim < ndims; dim++)
 		expected_size += info[dim].nbytes;
 
-	if (VARSIZE_ANY_EXHDR(data) != expected_size)
+	if (VARSIZE_ANY(data) != expected_size)
 		elog(ERROR, "invalid histogram size %ld (expected %ld)",
 			 VARSIZE_ANY_EXHDR(data), expected_size);
 
@@ -768,8 +826,8 @@ statext_histogram_deserialize(bytea *data)
 			bufflen += (sizeof(Datum) * info[dim].nvalues);
 
 	/* also, include space for the result, tracking the buckets */
-	bufflen += nbuckets * (sizeof(MVSerializedBucket *) +	/* bucket pointer */
-						   sizeof(MVSerializedBucket));		/* bucket data */
+	bufflen += nbuckets * (sizeof(MVBucket *) +	/* bucket pointer */
+						   sizeof(MVBucket));		/* bucket data */
 
 	buff = palloc0(bufflen);
 	ptr = buff;
@@ -786,7 +844,7 @@ statext_histogram_deserialize(bytea *data)
 	 * like this:
 	 *
 	 *	bytea * data = ... fetch the data from catalog ...
-	 *	MVHistogram histogram = deserialize_histogram(data);
+	 *	MVHistogramBuild histogram = deserialize_histogram(data);
 	 *	pfree(data);
 	 *
 	 * then 'histogram' references the freed memory. Should copy the pieces.
@@ -879,14 +937,14 @@ statext_histogram_deserialize(bytea *data)
 	}
 
 	/* now deserialize the buckets and point them into the varlena values */
-	histogram->buckets = (MVSerializedBucket **) ptr;
-	ptr += (sizeof(MVSerializedBucket *) * nbuckets);
+	histogram->buckets = (MVBucket **) ptr;
+	ptr += (sizeof(MVBucket *) * nbuckets);
 
 	for (i = 0; i < nbuckets; i++)
 	{
-		MVSerializedBucket *bucket = (MVSerializedBucket *) ptr;
+		MVBucket *bucket = (MVBucket *) ptr;
 
-		ptr += sizeof(MVSerializedBucket);
+		ptr += sizeof(MVBucket);
 
 		bucket->frequency = BUCKET_FREQUENCY(tmp);
 		bucket->nullsonly = BUCKET_NULLS_ONLY(tmp, ndims);
@@ -904,7 +962,7 @@ statext_histogram_deserialize(bytea *data)
 	}
 
 	/* at this point we expect to match the total_length exactly */
-	Assert((tmp - VARDATA(data)) == expected_size);
+	Assert((tmp - (char *)data) == expected_size);
 
 	/* we should exhaust the output buffer exactly */
 	Assert((ptr - buff) == bufflen);
@@ -916,7 +974,7 @@ statext_histogram_deserialize(bytea *data)
  * create_initial_ext_bucket
  *		Create an initial bucket, covering all the sampled rows.
  */
-static MVBucket *
+static MVBucketBuild *
 create_initial_ext_bucket(int numrows, HeapTuple *rows, Bitmapset *attrs,
 						  VacAttrStats **stats)
 {
@@ -924,7 +982,7 @@ create_initial_ext_bucket(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	int			numattrs = bms_num_members(attrs);
 
 	/* TODO allocate bucket as a single piece, including all the fields. */
-	MVBucket   *bucket = (MVBucket *) palloc0(sizeof(MVBucket));
+	MVBucketBuild   *bucket = (MVBucketBuild *) palloc0(sizeof(MVBucketBuild));
 
 	Assert(numrows > 0);
 	Assert(rows != NULL);
@@ -1059,12 +1117,12 @@ create_initial_ext_bucket(int numrows, HeapTuple *rows, Bitmapset *attrs,
  * TODO Consider using similar lower boundary for row count as for simple
  * histograms, i.e. 300 tuples per bucket.
  */
-static MVBucket *
-select_bucket_to_partition(int nbuckets, MVBucket **buckets)
+static MVBucketBuild *
+select_bucket_to_partition(int nbuckets, MVBucketBuild **buckets)
 {
 	int			i;
 	int			numrows = 0;
-	MVBucket   *bucket = NULL;
+	MVBucketBuild   *bucket = NULL;
 
 	for (i = 0; i < nbuckets; i++)
 	{
@@ -1115,8 +1173,8 @@ select_bucket_to_partition(int nbuckets, MVBucket **buckets)
  * TODO Should probably consider statistics target for the columns (e.g.
  * to split dimensions with higher statistics target more frequently).
  */
-static MVBucket *
-partition_bucket(MVBucket *bucket, Bitmapset *attrs,
+static MVBucketBuild *
+partition_bucket(MVBucketBuild *bucket, Bitmapset *attrs,
 				 VacAttrStats **stats,
 				 int *ndistvalues, Datum **distvalues)
 {
@@ -1125,7 +1183,7 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 	int			numattrs = bms_num_members(attrs);
 
 	Datum		split_value;
-	MVBucket   *new_bucket;
+	MVBucketBuild   *new_bucket;
 
 	/* needed for sort, when looking for the split value */
 	bool		isNull;
@@ -1348,11 +1406,11 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
  * Copy a histogram bucket. The copy does not include the build-time data, i.e.
  * sampled rows etc.
  */
-static MVBucket *
-copy_ext_bucket(MVBucket *bucket, uint32 ndimensions)
+static MVBucketBuild *
+copy_ext_bucket(MVBucketBuild *bucket, uint32 ndimensions)
 {
 	/* TODO allocate as a single piece (including all the fields) */
-	MVBucket   *new_bucket = (MVBucket *) palloc0(sizeof(MVBucket));
+	MVBucketBuild   *new_bucket = (MVBucketBuild *) palloc0(sizeof(MVBucketBuild));
 
 	/*
 	 * Copy only the attributes that will stay the same after the split, and
@@ -1392,7 +1450,7 @@ copy_ext_bucket(MVBucket *bucket, uint32 ndimensions)
  * they don't use collations etc.)
  */
 static void
-update_bucket_ndistinct(MVBucket *bucket, Bitmapset *attrs, VacAttrStats **stats)
+update_bucket_ndistinct(MVBucketBuild *bucket, Bitmapset *attrs, VacAttrStats **stats)
 {
 	int			i;
 	int			numattrs = bms_num_members(attrs);
@@ -1440,7 +1498,7 @@ update_bucket_ndistinct(MVBucket *bucket, Bitmapset *attrs, VacAttrStats **stats
  * Count distinct values per bucket dimension.
  */
 static void
-update_dimension_ndistinct(MVBucket *bucket, int dimension, Bitmapset *attrs,
+update_dimension_ndistinct(MVBucketBuild *bucket, int dimension, Bitmapset *attrs,
 						   VacAttrStats **stats, bool update_boundaries)
 {
 	int			j;
@@ -1566,7 +1624,7 @@ update_dimension_ndistinct(MVBucket *bucket, int dimension, Bitmapset *attrs,
  * the histogram.
  */
 static void
-create_null_buckets(MVHistogram *histogram, int bucket_idx,
+create_null_buckets(MVHistogramBuild *histogram, int bucket_idx,
 					Bitmapset *attrs, VacAttrStats **stats)
 {
 	int			i,
@@ -1574,7 +1632,7 @@ create_null_buckets(MVHistogram *histogram, int bucket_idx,
 	int			null_dim = -1;
 	int			null_count = 0;
 	bool		null_found = false;
-	MVBucket   *bucket,
+	MVBucketBuild   *bucket,
 			   *null_bucket;
 	int			null_idx,
 				curr_idx;
@@ -1784,7 +1842,7 @@ pg_histogram_buckets(PG_FUNCTION_ARGS)
 	if (SRF_IS_FIRSTCALL())
 	{
 		MemoryContext oldcontext;
-		MVSerializedHistogram *histogram;
+		MVHistogram *histogram;
 
 		/* create a function context for cross-call persistence */
 		funcctx = SRF_FIRSTCALL_INIT();
@@ -1841,10 +1899,10 @@ pg_histogram_buckets(PG_FUNCTION_ARGS)
 		Oid		   *outfuncs;
 		FmgrInfo   *fmgrinfo;
 
-		MVSerializedHistogram *histogram;
-		MVSerializedBucket *bucket;
+		MVHistogram *histogram;
+		MVBucket *bucket;
 
-		histogram = (MVSerializedHistogram *) funcctx->user_fctx;
+		histogram = (MVHistogram *) funcctx->user_fctx;
 
 		Assert(call_cntr < histogram->nbuckets);
 
@@ -2282,7 +2340,7 @@ bucket_is_smaller_than_value(FmgrInfo opproc, Datum constvalue,
 static int
 histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 							  Bitmapset *stakeys,
-							  MVSerializedHistogram *histogram,
+							  MVHistogram *histogram,
 							  int nmatches, char *matches,
 							  bool is_or)
 {
@@ -2368,7 +2426,7 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 				{
 					char		res = STATS_MATCH_NONE;
 
-					MVSerializedBucket *bucket = histogram->buckets[i];
+					MVBucket *bucket = histogram->buckets[i];
 
 					/* histogram boundaries */
 					Datum		minval,
@@ -2479,7 +2537,7 @@ histogram_update_match_bitmap(PlannerInfo *root, List *clauses,
 			 */
 			for (i = 0; i < histogram->nbuckets; i++)
 			{
-				MVSerializedBucket *bucket = histogram->buckets[i];
+				MVBucket *bucket = histogram->buckets[i];
 
 				/*
 				 * Skip buckets that were already eliminated - this is
@@ -2613,7 +2671,7 @@ histogram_clauselist_selectivity(PlannerInfo *root, StatisticExtInfo *stat,
 								 RelOptInfo *rel)
 {
 	int			i;
-	MVSerializedHistogram	   *histogram;
+	MVHistogram	   *histogram;
 	Selectivity s = 0.0;
 
 	/* match/mismatch bitmap for each MCV item */

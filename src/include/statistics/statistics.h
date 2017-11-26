@@ -126,53 +126,10 @@ typedef struct MCVList
 #define STATS_HIST_MAX_BUCKETS 16384
 
 /*
- * Multivariate histograms
- */
-typedef struct MVBucket
-{
-	/* Frequencies of this bucket. */
-	float		frequency;
-
-	/*
-	 * Information about dimensions being NULL-only. Not yet used.
-	 */
-	bool	   *nullsonly;
-
-	/* lower boundaries - values and information about the inequalities */
-	Datum	   *min;
-	bool	   *min_inclusive;
-
-	/* upper boundaries - values and information about the inequalities */
-	Datum	   *max;
-	bool       *max_inclusive;
-
-	/* number of distinct values in each dimension */
-	uint32	   *ndistincts;
-
-	/* number of distinct combination of values */
-	uint32		ndistinct;
-
-	/* aray of sample rows (for this bucket) */
-	HeapTuple  *rows;
-	uint32		numrows;
-
-} MVBucket;
-
-typedef struct MVHistogram
-{
-	uint32		magic;          /* magic constant marker */
-	uint32		type;           /* type of histogram (BASIC) */
-	uint32		nbuckets;       /* number of buckets (buckets array) */
-	uint32		ndimensions;    /* number of dimensions */
-
-	MVBucket  **buckets;        /* array of buckets */
-} MVHistogram;
-
-/*
  * Histogram in a partially serialized form, with deduplicated boundary
  * values etc.
  */
-typedef struct MVSerializedBucket
+typedef struct MVBucket
 {
 	/* Frequencies of this bucket. */
 	float		frequency;
@@ -192,20 +149,22 @@ typedef struct MVSerializedBucket
 	 */
 	uint16	   *max;
 	bool	   *max_inclusive;
-} MVSerializedBucket;
+} MVBucket;
 
-typedef struct MVSerializedHistogram
+typedef struct MVHistogram
 {
-	uint32		magic;          /* magic constant marker */
-	uint32		type;           /* type of histogram (BASIC) */
-	uint32		nbuckets;       /* number of buckets (buckets array) */
-	uint32		ndimensions;    /* number of dimensions */
+	/* varlena header (do not touch directly!) */
+	int32		vl_len_;
+	uint32		magic;			/* magic constant marker */
+	uint32		type;			/* type of histogram (BASIC) */
+	uint32		nbuckets;		/* number of buckets (buckets array) */
+	uint32		ndimensions;	/* number of dimensions */
 
 	/*
 	 * keep this the same with MVHistogram, because of deserialization
 	 * (same offset)
 	 */
-	MVSerializedBucket **buckets;    /* array of buckets */
+	MVBucket  **buckets;    /* array of buckets */
 
 	/*
 	 * serialized boundary values, one array per dimension, deduplicated (the
@@ -213,12 +172,12 @@ typedef struct MVSerializedHistogram
 	 */
 	int		   *nvalues;
 	Datum	  **values;
-} MVSerializedHistogram;
+} MVHistogram;
 
 extern MVNDistinct *statext_ndistinct_load(Oid mvoid);
 extern MVDependencies *statext_dependencies_load(Oid mvoid);
 extern MCVList *statext_mcv_load(Oid mvoid);
-extern MVSerializedHistogram *statext_histogram_load(Oid mvoid);
+extern MVHistogram *statext_histogram_load(Oid mvoid);
 
 extern void BuildRelationExtStatistics(Relation onerel, double totalrows,
 						   int numrows, HeapTuple *rows,

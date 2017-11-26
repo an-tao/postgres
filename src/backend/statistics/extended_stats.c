@@ -430,10 +430,9 @@ statext_store(Relation pg_stext, Oid statOid,
 
 	if (histogram != NULL)
 	{
-		bytea	   *data = statext_histogram_serialize(histogram, stats);
-
-		nulls[Anum_pg_statistic_ext_stxhistogram - 1] = (data == NULL);
-		values[Anum_pg_statistic_ext_stxhistogram - 1] = PointerGetDatum(data);
+		/* histogram already is a bytea value, not need to serialize */
+		nulls[Anum_pg_statistic_ext_stxhistogram - 1] = (histogram == NULL);
+		values[Anum_pg_statistic_ext_stxhistogram - 1] = PointerGetDatum(histogram);
 	}
 
 	/* always replace the value (either by bytea or NULL) */

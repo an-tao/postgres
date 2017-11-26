@@ -720,6 +720,7 @@ EXPLAIN (COSTS OFF)
    ->  Bitmap Index Scan on mcv_lists_ab_idx
          Index Cond: ((a IS NULL) AND (b IS NULL))
 (5 rows)
+
 -- mcv with arrays
 CREATE TABLE mcv_lists_arrays (
     a TEXT[],
