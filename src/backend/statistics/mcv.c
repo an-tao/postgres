@@ -100,7 +100,7 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	int			i;
 	int			numattrs = bms_num_members(attrs);
 	int			ndistinct = 0;
-	int			mcv_threshold = 0;
+	int			mincount = 0;
 	int			nitems = 0;
 
 	int		   *attnums = build_attnums(attrs);
@@ -118,33 +118,41 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	SortItem   *groups = build_distinct_groups(numrows, items, mss, &ndistinct);
 
 	/*
-	 * Determine the minimum size of a group to be eligible for MCV list, and
-	 * check how many groups actually pass that threshold. We use 1.25x the
-	 * avarage group size, just like for regular per-column statistics.
+	 * Determine the minimum size of a group in the MCV list.
 	 *
-	 * XXX We also use a minimum number of 4 rows for mcv_threshold, not sure
-	 * if that's what per-column statistics do too?
+	 * Similarly to how we build MCV for single-column case (about
+	 * half-way through compute_scalar_stats, we do set the threshold to
+	 * be 25% more than average, with at least 2 instances in the sample.
 	 *
-	 * But if we can fit all the distinct values in the MCV list (i.e. if
-	 * there are less distinct groups than STATS_MCVLIST_MAX_ITEMS), we'll
-	 * require only 2 rows per group.
+	 * We however do not enforce the threshold to be at least 1/K (where
+	 * K is number of histogram bins), because at this point we don't
+	 * know if there will be a histogram at all, or how many bins will
+	 * it have.
 	 *
-	 * XXX Maybe this part (requiring 2 rows per group) is not very reliable?
-	 * Perhaps we should instead estimate the number of groups the way we
-	 * estimate ndistinct (after all, that's what MCV items are), and base our
-	 * decision on that?
+	 * We're also explicitly decreasing the threshold to 2 when all the
+	 * distinct values fit into STATS_MCVLIST_MAX_ITEMS.
+	 *
+	 * XXX compute_scalar_stats uses nonnull_cnt/ndistinct, but that is
+	 * not quite possible here - we don't have multi-column null_frac and
+	 * we do store (combinations of) NULL values in the MCV list. So we
+	 * use the raw numrows instead.
 	 */
-	mcv_threshold = 1.25 * numrows / ndistinct;
-	mcv_threshold = (mcv_threshold < 4) ? 4 : mcv_threshold;
+	mincount = 1.25 * numrows / ndistinct;
+	if (mincount < 2)
+		mincount = 2;
 
 	if (ndistinct <= STATS_MCVLIST_MAX_ITEMS)
-		mcv_threshold = 2;
+		mincount = 2;
 
-	/* Walk through the groups and stop once we fall below the threshold. */
+	/*
+	 * Walk through the groups and stop once we get below the threshold.
+	 * The groups are sorted by size in descending order (thanks to
+	 * build_distinct_groups).
+	 */
 	nitems = 0;
 	for (i = 0; i < ndistinct; i++)
 	{
-		if (groups[i].count < mcv_threshold)
+		if (groups[i].count < mincount)
 			break;
 
 		nitems++;
@@ -172,8 +180,9 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 		 * pass the result outside and thus it needs to be easy to pfree().
 		 *
 		 * XXX On second thought, we're the only ones dealing with MCV lists,
-		 * so we might allocate everything as a single chunk without any risk.
-		 * Not sure it's worth it, though.
+		 * so we might allocate everything as a single chunk to reduce palloc
+		 * overhead (chunk headers, etc.) without significant risk. Not sure
+		 * it's worth it, though, as we're not re-building stats very often.
 		 */
 		mcvlist->items = (MCVItem **) palloc0(sizeof(MCVItem *) * nitems);
 
@@ -195,7 +204,7 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 			memcpy(item->isnull, groups[i].isnull, sizeof(bool) * numattrs);
 
 			/* make sure basic assumptions on group size are correct */
-			Assert(groups[i].count >= mcv_threshold);
+			Assert(groups[i].count >= mincount);
 			Assert(groups[i].count <= numrows);
 
 			/* groups should be sorted by frequency in descending order */
@@ -262,8 +271,13 @@ count_distinct_groups(int numrows, SortItem *items, MultiSortSupport mss)
 
 	ndistinct = 1;
 	for (i = 1; i < numrows; i++)
+	{
+		/* make sure the array really is sorted */
+		Assert(multi_sort_compare(&items[i], &items[i - 1], mss) >= 0);
+
 		if (multi_sort_compare(&items[i], &items[i - 1], mss) != 0)
 			ndistinct += 1;
+	}
 
 	return ndistinct;
 }
@@ -599,13 +613,16 @@ statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats)
 				memcpy(data, DatumGetPointer(v), strlen(DatumGetPointer(v)) + 1);
 				data += strlen(DatumGetPointer(v)) + 1; /* terminator */
 			}
+
+			/* no underflows or overflows */
+			Assert((data > tmp) && ((data - tmp) <= info[dim].nbytes));
 		}
 
 		/* check we got exactly the amount of data we expected for this dimension */
 		Assert((data - tmp) == info[dim].nbytes);
 	}
 
-	/* finally serialize the items, with uint16 indexes instead of the values */
+	/* Serialize the items, with uint16 indexes instead of the values. */
 	for (i = 0; i < mcvlist->nitems; i++)
 	{
 		MCVItem	   *mcvitem = mcvlist->items[i];
@@ -1418,6 +1435,7 @@ mcv_update_match_bitmap(PlannerInfo *root, List *clauses,
 	Assert(list_length(clauses) >= 1);
 	Assert(mcvlist != NULL);
 	Assert(mcvlist->nitems > 0);
+	Assert(mcvlist->nitems <= STATS_MCVLIST_MAX_ITEMS);
 
 	/*
 	 * Handle cases where either all MCV items are marked as mismatch (AND),
