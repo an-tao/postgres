@@ -146,8 +146,16 @@ typedef struct MVBucket
 	Datum	   *max;
 	bool       *max_inclusive;
 
-	/* used when building the histogram (not serialized/deserialized) */
-	void	   *build_data;
+	/* number of distinct values in each dimension */
+	uint32	   *ndistincts;
+
+	/* number of distinct combination of values */
+	uint32		ndistinct;
+
+	/* aray of sample rows (for this bucket) */
+	HeapTuple  *rows;
+	uint32		numrows;
+
 } MVBucket;
 
 typedef struct MVHistogram

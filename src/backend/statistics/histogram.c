@@ -99,24 +99,6 @@ static Datum *build_ndistinct(int numrows, HeapTuple *rows, Bitmapset *attrs,
 #define MIN_BUCKET_ROWS			10
 
 /*
- * Data used while building the histogram (rows for a particular bucket).
- */
-typedef struct HistogramBuild
-{
-	uint32		ndistinct;	/* number of distinct combination of values */
-
-	HeapTuple  *rows;		/* aray of sample rows (for this bucket) */
-	uint32		numrows;	/* number of sample rows (array size) */
-
-	/*
-	 * Number of distinct values in each dimension. This is used when building
-	 * the histogram (and is not serialized/deserialized).
-	 */
-	uint32	   *ndistincts;
-
-} HistogramBuild;
-
-/*
  * Builds a multivariate histogram from the set of sampled rows.
  *
  * The build algorithm is iterative - initially a single bucket containing all
@@ -225,15 +207,12 @@ statext_histogram_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	/* Finalize the histogram build - compute bucket frequencies etc. */
 	for (i = 0; i < histogram->nbuckets; i++)
 	{
-		HistogramBuild *build_data
-		= ((HistogramBuild *) histogram->buckets[i]->build_data);
-
 		/*
 		 * The frequency has to be computed from the whole sample, in case
 		 * some of the rows were filtered out in the MCV build.
 		 */
 		histogram->buckets[i]->frequency
-			= (build_data->numrows * 1.0) / numrows_total;
+			= (histogram->buckets[i]->numrows * 1.0) / numrows_total;
 	}
 
 	return histogram;
@@ -943,7 +922,6 @@ create_initial_ext_bucket(int numrows, HeapTuple *rows, Bitmapset *attrs,
 {
 	int			i;
 	int			numattrs = bms_num_members(attrs);
-	HistogramBuild *data = NULL;
 
 	/* TODO allocate bucket as a single piece, including all the fields. */
 	MVBucket   *bucket = (MVBucket *) palloc0(sizeof(MVBucket));
@@ -965,17 +943,12 @@ create_initial_ext_bucket(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	bucket->min = (Datum *) palloc0(numattrs * sizeof(Datum));
 	bucket->max = (Datum *) palloc0(numattrs * sizeof(Datum));
 
-	/* build-data */
-	data = (HistogramBuild *) palloc0(sizeof(HistogramBuild));
-
 	/* number of distinct values (per dimension) */
-	data->ndistincts = (uint32 *) palloc0(numattrs * sizeof(uint32));
+	bucket->ndistincts = (uint32 *) palloc0(numattrs * sizeof(uint32));
 
 	/* all the sample rows fall into the initial bucket */
-	data->numrows = numrows;
-	data->rows = rows;
-
-	bucket->build_data = data;
+	bucket->numrows = numrows;
+	bucket->rows = rows;
 
 	/*
 	 * Update the number of ndistinct combinations in the bucket (which we use
@@ -1095,15 +1068,13 @@ select_bucket_to_partition(int nbuckets, MVBucket **buckets)
 
 	for (i = 0; i < nbuckets; i++)
 	{
-		HistogramBuild *data = (HistogramBuild *) buckets[i]->build_data;
-
 		/* if the number of rows is higher, use this bucket */
-		if ((data->ndistinct > 2) &&
-			(data->numrows > numrows) &&
-			(data->numrows >= MIN_BUCKET_ROWS))
+		if ((buckets[i]->ndistinct > 2) &&
+			(buckets[i]->numrows > numrows) &&
+			(buckets[i]->numrows >= MIN_BUCKET_ROWS))
 		{
 			bucket = buckets[i];
-			numrows = data->numrows;
+			numrows = buckets[i]->numrows;
 		}
 	}
 
@@ -1155,14 +1126,12 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 
 	Datum		split_value;
 	MVBucket   *new_bucket;
-	HistogramBuild *new_data;
 
 	/* needed for sort, when looking for the split value */
 	bool		isNull;
 	int			nvalues = 0;
-	HistogramBuild *data = (HistogramBuild *) bucket->build_data;
 	TypeCacheEntry *type;
-	ScalarItem *values = (ScalarItem *) palloc0(data->numrows * sizeof(ScalarItem));
+	ScalarItem *values;
 	SortSupportData ssup;
 	int		   *attnums;
 
@@ -1170,16 +1139,18 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 	double		delta;
 
 	/* needed when splitting the values */
-	HeapTuple  *oldrows = data->rows;
-	int			oldnrows = data->numrows;
+	HeapTuple  *oldrows = bucket->rows;
+	int			oldnrows = bucket->numrows;
+
+	values = (ScalarItem *) palloc0(bucket->numrows * sizeof(ScalarItem));
 
 	/*
 	 * We can't split buckets with a single distinct value (this also
 	 * disqualifies NULL-only dimensions). Also, there has to be multiple
 	 * sample rows (otherwise, how could there be more distinct values).
 	 */
-	Assert(data->ndistinct > 1);
-	Assert(data->numrows > 1);
+	Assert(bucket->ndistinct > 1);
+	Assert(bucket->numrows > 1);
 	Assert((numattrs >= 2) && (numattrs <= STATS_MAX_DIMENSIONS));
 
 	/* Look for the next dimension to split. */
@@ -1208,7 +1179,7 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 			continue;
 
 		/* can't split dimension with a single ndistinct value */
-		if (data->ndistincts[i] <= 1)
+		if (bucket->ndistincts[i] <= 1)
 			continue;
 
 		/* search for min boundary in the distinct list */
@@ -1252,13 +1223,13 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 
 	attnums = build_attnums(attrs);
 
-	for (i = 0; i < data->numrows; i++)
+	for (i = 0; i < bucket->numrows; i++)
 	{
 		/*
 		 * remember the index of the sample row, to make the partitioning
 		 * simpler
 		 */
-		values[nvalues].value = heap_getattr(data->rows[i], attnums[dimension],
+		values[nvalues].value = heap_getattr(bucket->rows[i], attnums[dimension],
 										 stats[dimension]->tupDesc, &isNull);
 		values[nvalues].tupno = i;
 
@@ -1288,33 +1259,32 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 	 * (not distinct values) in each partition. That might work better when
 	 * there are a few very frequent values, and many rare ones.
 	 */
-	delta = data->numrows;
+	delta = bucket->numrows;
 	split_value = values[0].value;
 
-	for (i = 1; i < data->numrows; i++)
+	for (i = 1; i < bucket->numrows; i++)
 	{
 		if (values[i].value != values[i - 1].value)
 		{
 			/* are we closer to splitting the bucket in half? */
-			if (fabs(i - data->numrows / 2.0) < delta)
+			if (fabs(i - bucket->numrows / 2.0) < delta)
 			{
 				/* let's assume we'll use this value for the split */
 				split_value = values[i].value;
-				delta = fabs(i - data->numrows / 2.0);
+				delta = fabs(i - bucket->numrows / 2.0);
 				nrows = i;
 			}
 		}
 	}
 
 	Assert(nrows > 0);
-	Assert(nrows < data->numrows);
+	Assert(nrows < bucket->numrows);
 
 	/*
 	 * create the new bucket as a (incomplete) copy of the one being
 	 * partitioned.
 	 */
 	new_bucket = copy_ext_bucket(bucket, numattrs);
-	new_data = (HistogramBuild *) new_bucket->build_data;
 
 	/*
 	 * Do the actual split of the chosen dimension, using the split value as
@@ -1337,12 +1307,11 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 	 * know 'nrows' rows should remain in the original bucket and the rest
 	 * goes to the new one.
 	 */
+	bucket->numrows = nrows;
+	new_bucket->numrows = (oldnrows - nrows);
 
-	data->rows = (HeapTuple *) palloc0(nrows * sizeof(HeapTuple));
-	new_data->rows = (HeapTuple *) palloc0((oldnrows - nrows) * sizeof(HeapTuple));
-
-	data->numrows = nrows;
-	new_data->numrows = (oldnrows - nrows);
+	bucket->rows = (HeapTuple *) palloc0(bucket->numrows * sizeof(HeapTuple));
+	new_bucket->rows = (HeapTuple *) palloc0(new_bucket->numrows * sizeof(HeapTuple));
 
 	/*
 	 * The first nrows should go to the first bucket, the rest should go to
@@ -1350,10 +1319,10 @@ partition_bucket(MVBucket *bucket, Bitmapset *attrs,
 	 * the original array of sample rows.
 	 */
 	for (i = 0; i < nrows; i++)
-		memcpy(&data->rows[i], &oldrows[values[i].tupno], sizeof(HeapTuple));
+		memcpy(&bucket->rows[i], &oldrows[values[i].tupno], sizeof(HeapTuple));
 
 	for (i = nrows; i < oldnrows; i++)
-		memcpy(&new_data->rows[i - nrows], &oldrows[values[i].tupno], sizeof(HeapTuple));
+		memcpy(&new_bucket->rows[i - nrows], &oldrows[values[i].tupno], sizeof(HeapTuple));
 
 	/* update ndistinct values for the buckets (total and per dimension) */
 	update_bucket_ndistinct(bucket, attrs, stats);
@@ -1384,7 +1353,6 @@ copy_ext_bucket(MVBucket *bucket, uint32 ndimensions)
 {
 	/* TODO allocate as a single piece (including all the fields) */
 	MVBucket   *new_bucket = (MVBucket *) palloc0(sizeof(MVBucket));
-	HistogramBuild *data = (HistogramBuild *) palloc0(sizeof(HistogramBuild));
 
 	/*
 	 * Copy only the attributes that will stay the same after the split, and
@@ -1412,9 +1380,7 @@ copy_ext_bucket(MVBucket *bucket, uint32 ndimensions)
 	memcpy(new_bucket->max, bucket->max, ndimensions * sizeof(Datum));
 
 	/* allocate and copy the interesting part of the build data */
-	data->ndistincts = (uint32 *) palloc0(ndimensions * sizeof(uint32));
-
-	new_bucket->build_data = data;
+	new_bucket->ndistincts = (uint32 *) palloc0(ndimensions * sizeof(uint32));
 
 	return new_bucket;
 }
@@ -1430,9 +1396,7 @@ update_bucket_ndistinct(MVBucket *bucket, Bitmapset *attrs, VacAttrStats **stats
 {
 	int			i;
 	int			numattrs = bms_num_members(attrs);
-
-	HistogramBuild *data = (HistogramBuild *) bucket->build_data;
-	int			numrows = data->numrows;
+	int			numrows = bucket->numrows;
 
 	MultiSortSupport mss = multi_sort_init(numattrs);
 	int		   *attnums;
@@ -1460,14 +1424,14 @@ update_bucket_ndistinct(MVBucket *bucket, Bitmapset *attrs, VacAttrStats **stats
 	 * XXX This relies on all stats entries pointing to the same tuple
 	 * descriptor. Not sure if that might not be the case.
 	 */
-	items = build_sorted_items(numrows, data->rows, stats[0]->tupDesc, mss,
-							   numattrs, attnums);
+	items = build_sorted_items(numrows, bucket->rows, stats[0]->tupDesc,
+							   mss, numattrs, attnums);
 
-	data->ndistinct = 1;
+	bucket->ndistinct = 1;
 
 	for (i = 1; i < numrows; i++)
 		if (multi_sort_compare(&items[i], &items[i - 1], mss) != 0)
-			data->ndistinct += 1;
+			bucket->ndistinct += 1;
 
 	pfree(items);
 }
@@ -1482,17 +1446,17 @@ update_dimension_ndistinct(MVBucket *bucket, int dimension, Bitmapset *attrs,
 	int			j;
 	int			nvalues = 0;
 	bool		isNull;
-	HistogramBuild *data = (HistogramBuild *) bucket->build_data;
-	Datum	   *values = (Datum *) palloc0(data->numrows * sizeof(Datum));
+	Datum	   *values;
 	SortSupportData ssup;
 	TypeCacheEntry *type;
 	int		   *attnums;
 
+	values = (Datum *) palloc0(bucket->numrows * sizeof(Datum));
 	type = lookup_type_cache(stats[dimension]->attrtypid, TYPECACHE_LT_OPR);
 
 	/* we may already know this is a NULL-only dimension */
 	if (bucket->nullsonly[dimension])
-		data->ndistincts[dimension] = 1;
+		bucket->ndistincts[dimension] = 1;
 
 	memset(&ssup, 0, sizeof(ssup));
 	ssup.ssup_cxt = CurrentMemoryContext;
@@ -1505,9 +1469,9 @@ update_dimension_ndistinct(MVBucket *bucket, int dimension, Bitmapset *attrs,
 
 	attnums = build_attnums(attrs);
 
-	for (j = 0; j < data->numrows; j++)
+	for (j = 0; j < bucket->numrows; j++)
 	{
-		values[nvalues] = heap_getattr(data->rows[j], attnums[dimension],
+		values[nvalues] = heap_getattr(bucket->rows[j], attnums[dimension],
 									   stats[dimension]->tupDesc, &isNull);
 
 		/* ignore NULL values */
@@ -1516,7 +1480,7 @@ update_dimension_ndistinct(MVBucket *bucket, int dimension, Bitmapset *attrs,
 	}
 
 	/* there's always at least 1 distinct value (may be NULL) */
-	data->ndistincts[dimension] = 1;
+	bucket->ndistincts[dimension] = 1;
 
 	/*
 	 * if there are only NULL values in the column, mark it so and continue
@@ -1558,7 +1522,7 @@ update_dimension_ndistinct(MVBucket *bucket, int dimension, Bitmapset *attrs,
 	for (j = 1; j < nvalues; j++)
 	{
 		if (values[j] != values[j - 1])
-			data->ndistincts[dimension] += 1;
+			bucket->ndistincts[dimension] += 1;
 	}
 
 	pfree(values);
@@ -1614,8 +1578,6 @@ create_null_buckets(MVHistogram *histogram, int bucket_idx,
 			   *null_bucket;
 	int			null_idx,
 				curr_idx;
-	HistogramBuild *data,
-			   *null_data;
 	int		   *attnums;
 
 	/* remember original values from the bucket */
@@ -1626,10 +1588,9 @@ create_null_buckets(MVHistogram *histogram, int bucket_idx,
 	Assert(histogram->ndimensions == bms_num_members(attrs));
 
 	bucket = histogram->buckets[bucket_idx];
-	data = (HistogramBuild *) bucket->build_data;
 
-	numrows = data->numrows;
-	oldrows = data->rows;
+	numrows = bucket->numrows;
+	oldrows = bucket->rows;
 
 	attnums = build_attnums(attrs);
 
@@ -1637,7 +1598,7 @@ create_null_buckets(MVHistogram *histogram, int bucket_idx,
 	 * Walk through all rows / dimensions, and stop once we find NULL in a
 	 * dimension not yet marked as NULL-only.
 	 */
-	for (i = 0; i < data->numrows; i++)
+	for (i = 0; i < bucket->numrows; i++)
 	{
 		/*
 		 * FIXME We don't need to start from the first attribute here - we can
@@ -1650,7 +1611,7 @@ create_null_buckets(MVHistogram *histogram, int bucket_idx,
 				continue;
 
 			/* found a NULL in that dimension? */
-			if (heap_attisnull(data->rows[i], attnums[j]))
+			if (heap_attisnull(bucket->rows[i], attnums[j]))
 			{
 				null_found = true;
 				null_dim = j;
@@ -1668,20 +1629,20 @@ create_null_buckets(MVHistogram *histogram, int bucket_idx,
 		return;
 
 	/* walk through the rows again, count NULL values in 'null_dim' */
-	for (i = 0; i < data->numrows; i++)
+	for (i = 0; i < bucket->numrows; i++)
 	{
-		if (heap_attisnull(data->rows[i], attnums[null_dim]))
+		if (heap_attisnull(bucket->rows[i], attnums[null_dim]))
 			null_count += 1;
 	}
 
-	Assert(null_count <= data->numrows);
+	Assert(null_count <= bucket->numrows);
 
 	/*
 	 * If (null_count == numrows) the dimension already is NULL-only, but is
 	 * not yet marked like that. It's enough to mark it and repeat the process
 	 * recursively (until we run out of dimensions).
 	 */
-	if (null_count == data->numrows)
+	if (null_count == bucket->numrows)
 	{
 		bucket->nullsonly[null_dim] = true;
 		create_null_buckets(histogram, bucket_idx, attrs, stats);
@@ -1696,21 +1657,20 @@ create_null_buckets(MVHistogram *histogram, int bucket_idx,
 
 	/* create bucket with NULL-only dimension 'dim' */
 	null_bucket = copy_ext_bucket(bucket, histogram->ndimensions);
-	null_data = (HistogramBuild *) null_bucket->build_data;
 
 	/* remember the current array info */
-	oldrows = data->rows;
-	numrows = data->numrows;
+	oldrows = bucket->rows;
+	numrows = bucket->numrows;
 
 	/* we'll keep non-NULL values in the current bucket */
-	data->numrows = (numrows - null_count);
-	data->rows
-		= (HeapTuple *) palloc0(data->numrows * sizeof(HeapTuple));
+	bucket->numrows = (numrows - null_count);
+	bucket->rows
+		= (HeapTuple *) palloc0(bucket->numrows * sizeof(HeapTuple));
 
 	/* and the NULL values will go to the new one */
-	null_data->numrows = null_count;
-	null_data->rows
-		= (HeapTuple *) palloc0(null_data->numrows * sizeof(HeapTuple));
+	null_bucket->numrows = null_count;
+	null_bucket->rows
+		= (HeapTuple *) palloc0(null_bucket->numrows * sizeof(HeapTuple));
 
 	/* mark the dimension as NULL-only (in the new bucket) */
 	null_bucket->nullsonly[null_dim] = true;
@@ -1722,10 +1682,10 @@ create_null_buckets(MVHistogram *histogram, int bucket_idx,
 	{
 		if (heap_attisnull(oldrows[i], attnums[null_dim]))
 			/* NULL => copy to the new bucket */
-			memcpy(&null_data->rows[null_idx++], &oldrows[i],
+			memcpy(&null_bucket->rows[null_idx++], &oldrows[i],
 				   sizeof(HeapTuple));
 		else
-			memcpy(&data->rows[curr_idx++], &oldrows[i],
+			memcpy(&bucket->rows[curr_idx++], &oldrows[i],
 				   sizeof(HeapTuple));
 	}
 
