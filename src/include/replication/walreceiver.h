@@ -155,6 +155,7 @@ typedef struct
 		{
 			uint32		proto_version;	/* Logical protocol version */
 			List	   *publication_names;	/* String list of publications */
+			bool		streaming;	/* Streaming of large transactions */
 		}			logical;
 	}			proto;
 } WalRcvStreamOptions;

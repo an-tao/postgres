@@ -43,7 +43,22 @@ static void pgoutput_change(LogicalDecodingContext *ctx,
 static bool pgoutput_origin_filter(LogicalDecodingContext *ctx,
 					   RepOriginId origin_id);
 
+static void pgoutput_stream_abort(struct LogicalDecodingContext *ctx,
+					  ReorderBufferTXN *txn,
+					  XLogRecPtr abort_lsn);
+
+static void pgoutput_stream_commit(struct LogicalDecodingContext *ctx,
+					   ReorderBufferTXN *txn,
+					   XLogRecPtr commit_lsn);
+
+static void pgoutput_stream_start(struct LogicalDecodingContext *ctx,
+					  ReorderBufferTXN *txn);
+
+static void pgoutput_stream_stop(struct LogicalDecodingContext *ctx,
+					 ReorderBufferTXN *txn);
+
 static bool publications_valid;
+static bool in_streaming;
 
 static List *LoadPublications(List *pubnames);
 static void publication_invalidation_cb(Datum arg, int cacheid,
@@ -53,6 +68,7 @@ static void publication_invalidation_cb(Datum arg, int cacheid,
 typedef struct RelationSyncEntry
 {
 	Oid			relid;			/* relation oid */
+	TransactionId	xid;		/* transaction that created the record */
 	bool		schema_sent;	/* did we send the schema? */
 	bool		replicate_valid;
 	PublicationActions pubactions;
@@ -62,6 +78,7 @@ typedef struct RelationSyncEntry
 static HTAB *RelationSyncCache = NULL;
 
 static void init_rel_sync_cache(MemoryContext decoding_context);
+static void reset_rel_sync_cache(TransactionId xid);
 static RelationSyncEntry *get_rel_sync_entry(PGOutputData *data, Oid relid);
 static void rel_sync_cache_relation_cb(Datum arg, Oid relid);
 static void rel_sync_cache_publication_cb(Datum arg, int cacheid,
@@ -81,15 +98,24 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 	cb->commit_cb = pgoutput_commit_txn;
 	cb->filter_by_origin_cb = pgoutput_origin_filter;
 	cb->shutdown_cb = pgoutput_shutdown;
+
+	/* transaction streaming */
+	cb->stream_change_cb = pgoutput_change;
+	cb->stream_abort_cb = pgoutput_stream_abort;
+	cb->stream_commit_cb = pgoutput_stream_commit;
+	cb->stream_start_cb = pgoutput_stream_start;
+	cb->stream_stop_cb = pgoutput_stream_stop;
 }
 
 static void
 parse_output_parameters(List *options, uint32 *protocol_version,
-						List **publication_names)
+						List **publication_names,
+						bool *enable_streaming)
 {
 	ListCell   *lc;
 	bool		protocol_version_given = false;
 	bool		publication_names_given = false;
+	bool		streaming_given = false;
 
 	foreach(lc, options)
 	{
@@ -135,6 +161,23 @@ parse_output_parameters(List *options, uint32 *protocol_version,
 						(errcode(ERRCODE_INVALID_NAME),
 						 errmsg("invalid publication_names syntax")));
 		}
+		else if (strcmp(defel->defname, "streaming") == 0)
+		{
+			if (streaming_given)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("conflicting or redundant options")));
+			streaming_given = true;
+
+			/* the value must be on/off */
+			if (strcmp(strVal(defel->arg), "on") && strcmp(strVal(defel->arg), "off"))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("invalid streaming value")));
+
+			/* enable streaming if it's 'on' */
+			*enable_streaming = (strcmp(strVal(defel->arg), "on") == 0);
+		}
 		else
 			elog(ERROR, "unrecognized pgoutput option: %s", defel->defname);
 	}
@@ -147,6 +190,7 @@ static void
 pgoutput_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 				 bool is_init)
 {
+	bool		enable_streaming = false;
 	PGOutputData *data = palloc0(sizeof(PGOutputData));
 
 	/* Create our memory context for private allocations. */
@@ -169,7 +213,8 @@ pgoutput_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 		/* Parse the params and ERROR if we see any we don't recognize */
 		parse_output_parameters(ctx->output_plugin_options,
 								&data->protocol_version,
-								&data->publication_names);
+								&data->publication_names,
+								&enable_streaming);
 
 		/* Check if we support requested protocol */
 		if (data->protocol_version > LOGICALREP_PROTO_VERSION_NUM)
@@ -188,6 +233,27 @@ pgoutput_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("publication_names parameter missing")));
+
+		/*
+		 * Decide whether to enable streaming. It is disabled by default, in
+		 * which case we just update the flag in decoding context. Otherwise
+		 * we only allow it with sufficient version of the protocol, and when
+		 * the output plugin supports it.
+		 */
+		if (!enable_streaming)
+			ctx->streaming = false;
+		else if (data->protocol_version < LOGICALREP_PROTO_STREAM_VERSION_NUM)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("requested proto_version=%d does not support streaming, need %d or higher",
+							data->protocol_version, LOGICALREP_PROTO_STREAM_VERSION_NUM)));
+		else if (!ctx->streaming)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("streaming requested, but not supported by output plugin")));
+
+		/* Also remember we're currently not streaming any transaction. */
+		in_streaming = false;
 
 		/* Init publication state. */
 		data->publications = NIL;
@@ -253,6 +319,8 @@ pgoutput_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 /*
  * Sends the decoded DML over wire.
+ *
+ * XXX May be called both in streaming and non-streaming modes.
  */
 static void
 pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
@@ -261,6 +329,18 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	PGOutputData *data = (PGOutputData *) ctx->output_plugin_private;
 	MemoryContext old;
 	RelationSyncEntry *relentry;
+	TransactionId xid = InvalidTransactionId;
+
+	/*
+	 * Remember XID of the (sub)transaction for the change. We don't care if
+	 * it's top-level transaction or not (we have already sent that XID in
+	 * start the current streaming block).
+	 *
+	 * If we're not in a streaming block, just use InvalidTransactionId and
+	 * the write methods will not include it.
+	 */
+	if (in_streaming)
+		xid = change->txn->xid;
 
 	relentry = get_rel_sync_entry(data, RelationGetRelid(relation));
 
@@ -311,14 +391,15 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 				continue;
 
 			OutputPluginPrepareWrite(ctx, false);
-			logicalrep_write_typ(ctx->out, att->atttypid);
+			logicalrep_write_typ(ctx->out, xid, att->atttypid);
 			OutputPluginWrite(ctx, false);
 		}
 
 		OutputPluginPrepareWrite(ctx, false);
-		logicalrep_write_rel(ctx->out, relation);
+		logicalrep_write_rel(ctx->out, xid, relation);
 		OutputPluginWrite(ctx, false);
 		relentry->schema_sent = true;
+		relentry->xid = change->txn->xid;
 	}
 
 	/* Send the data */
@@ -326,7 +407,7 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	{
 		case REORDER_BUFFER_CHANGE_INSERT:
 			OutputPluginPrepareWrite(ctx, true);
-			logicalrep_write_insert(ctx->out, relation,
+			logicalrep_write_insert(ctx->out, xid, relation,
 									&change->data.tp.newtuple->tuple);
 			OutputPluginWrite(ctx, true);
 			break;
@@ -336,7 +417,7 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 				&change->data.tp.oldtuple->tuple : NULL;
 
 				OutputPluginPrepareWrite(ctx, true);
-				logicalrep_write_update(ctx->out, relation, oldtuple,
+				logicalrep_write_update(ctx->out, xid, relation, oldtuple,
 										&change->data.tp.newtuple->tuple);
 				OutputPluginWrite(ctx, true);
 				break;
@@ -345,7 +426,7 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 			if (change->data.tp.oldtuple)
 			{
 				OutputPluginPrepareWrite(ctx, true);
-				logicalrep_write_delete(ctx->out, relation,
+				logicalrep_write_delete(ctx->out, xid, relation,
 										&change->data.tp.oldtuple->tuple);
 				OutputPluginWrite(ctx, true);
 			}
@@ -420,6 +501,91 @@ publication_invalidation_cb(Datum arg, int cacheid, uint32 hashvalue)
 	 * is checked it will be updated with the new publication settings.
 	 */
 	rel_sync_cache_publication_cb(arg, cacheid, hashvalue);
+}
+
+/*
+ * Notify downstream to apply the streamed transaction (along with all
+ * it's subtransactions).
+ */
+static void
+pgoutput_stream_abort(struct LogicalDecodingContext *ctx,
+					  ReorderBufferTXN *txn,
+					  XLogRecPtr abort_lsn)
+{
+	ReorderBufferTXN *toptxn;
+
+	/*
+	 * The abort should happen outside streaming block, even for streamed
+	 * transactions. The transaction has to be marked as streamed, though.
+	 */
+	Assert(!in_streaming);
+
+	/* determine the toplevel transaction */
+	toptxn = (txn->toptxn) ? txn->toptxn : txn;
+
+	Assert(toptxn->streamed);
+
+	OutputPluginPrepareWrite(ctx, true);
+	logicalrep_write_stream_abort(ctx->out, toptxn->xid, txn->xid);
+	OutputPluginWrite(ctx, true);
+
+	/*
+	 * Reset the relation schema cache, so that we resend the 'R' message
+	 * before the next change.
+	 */
+	reset_rel_sync_cache(txn->xid);
+}
+
+/*
+ * Notify downstream to discard the streamed transaction (along with all
+ * it's subtransactions, if it's a toplevel transaction).
+ */
+static void
+pgoutput_stream_commit(struct LogicalDecodingContext *ctx,
+					   ReorderBufferTXN *txn,
+					   XLogRecPtr commit_lsn)
+{
+	/*
+	 * The commit should happen outside streaming block, even for streamed
+	 * transactions. The transaction has to be marked as streamed, though.
+	 */
+	Assert(!in_streaming);
+	Assert(txn->streamed);
+
+	OutputPluginPrepareWrite(ctx, true);
+	logicalrep_write_stream_commit(ctx->out, txn->xid);
+	OutputPluginWrite(ctx, true);
+}
+
+
+static void
+pgoutput_stream_start(struct LogicalDecodingContext *ctx,
+					  ReorderBufferTXN *txn)
+{
+	/* we can't nest streaming of transactions */
+	Assert(!in_streaming);
+
+	OutputPluginPrepareWrite(ctx, true);
+	logicalrep_write_stream_start(ctx->out, txn->xid, !txn->streamed);
+	OutputPluginWrite(ctx, true);
+
+	/* we're streaming a chunk of transaction now */
+	in_streaming = true;
+}
+
+static void
+pgoutput_stream_stop(struct LogicalDecodingContext *ctx,
+					 ReorderBufferTXN *txn)
+{
+	/* we should be streaming a trasanction */
+	Assert(in_streaming);
+
+	OutputPluginPrepareWrite(ctx, true);
+	logicalrep_write_stream_stop(ctx->out, txn->xid);
+	OutputPluginWrite(ctx, true);
+
+	/* we've stopped streaming a transaction */
+	in_streaming = false;
 }
 
 /*
@@ -554,6 +720,27 @@ get_rel_sync_entry(PGOutputData *data, Oid relid)
 		entry->schema_sent = false;
 
 	return entry;
+}
+
+/*
+ * Reset entry_sent flag in the relation schema cache.
+ */
+static void
+reset_rel_sync_cache(TransactionId xid)
+{
+	HASH_SEQ_STATUS hash_seq;
+	RelationSyncEntry *entry;
+
+	Assert(RelationSyncCache != NULL);
+
+	hash_seq_init(&hash_seq, RelationSyncCache);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		/* reset records created by the currently aborting transaction */
+		if (entry->xid == xid)
+			entry->schema_sent = false;
+	}
+
 }
 
 /*
