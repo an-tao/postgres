@@ -32,6 +32,7 @@
 #include "optimizer/planmain.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/var.h"
+#include "port/atomics.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/sampling.h"
@@ -59,6 +60,7 @@ struct FileFdwOption
 static const struct FileFdwOption valid_options[] = {
 	/* Data source options */
 	{"filename", ForeignTableRelationId},
+	{"filenames", ForeignTableRelationId},
 	{"program", ForeignTableRelationId},
 
 	/* Format options */
@@ -86,7 +88,8 @@ static const struct FileFdwOption valid_options[] = {
  */
 typedef struct FileFdwPlanState
 {
-	char	   *filename;		/* file or program to read from */
+	pg_atomic_uint64 *fileno;	/* index of the next file */
+	List	   *filenames;		/* files or programs to read from */
 	bool		is_program;		/* true if filename represents an OS command */
 	List	   *options;		/* merged COPY options, excluding filename and
 								 * is_program */
@@ -99,11 +102,13 @@ typedef struct FileFdwPlanState
  */
 typedef struct FileFdwExecutionState
 {
-	char	   *filename;		/* file or program to read from */
+	pg_atomic_uint64 *fileno;	/* index of the next file */
+	List	   *filenames;		/* files or programs to read from */
 	bool		is_program;		/* true if filename represents an OS command */
 	List	   *options;		/* merged COPY options, excluding filename and
 								 * is_program */
 	CopyState	cstate;			/* COPY execution state */
+	bool		cstate_empty;	/* no more tuples in this file */
 } FileFdwExecutionState;
 
 /*
@@ -136,15 +141,28 @@ static void fileEndForeignScan(ForeignScanState *node);
 static bool fileAnalyzeForeignTable(Relation relation,
 						AcquireSampleRowsFunc *func,
 						BlockNumber *totalpages);
+
+/*
+ * FDW callbacks supporting parallelism
+ */
 static bool fileIsForeignScanParallelSafe(PlannerInfo *root, RelOptInfo *rel,
 							  RangeTblEntry *rte);
-
+static Size fileEstimateDSMForeignScan(ForeignScanState *node,
+							  ParallelContext *pcxt);
+static void fileInitializeDSMForeignScan(ForeignScanState *node,
+							  ParallelContext *pcxt, void *coordinate);
+static void fileReInitializeDSMForeignScan(ForeignScanState *node,
+							  ParallelContext *pcxt, void *coordinate);
+static void fileInitializeWorkerForeignScan(ForeignScanState *node,
+							  shm_toc *toc, void *coordinate);
+static void fileShutdownForeignScan(ForeignScanState *node);
+                         
 /*
  * Helper functions
  */
 static bool is_valid_option(const char *option, Oid context);
 static void fileGetOptions(Oid foreigntableid,
-			   char **filename,
+			   List **filenames,
 			   bool *is_program,
 			   List **other_options);
 static List *get_file_fdw_attribute_options(Oid relid);
@@ -179,7 +197,14 @@ file_fdw_handler(PG_FUNCTION_ARGS)
 	fdwroutine->ReScanForeignScan = fileReScanForeignScan;
 	fdwroutine->EndForeignScan = fileEndForeignScan;
 	fdwroutine->AnalyzeForeignTable = fileAnalyzeForeignTable;
+
+	/* parallelism */
 	fdwroutine->IsForeignScanParallelSafe = fileIsForeignScanParallelSafe;
+	fdwroutine->EstimateDSMForeignScan = fileEstimateDSMForeignScan;
+	fdwroutine->InitializeDSMForeignScan = fileInitializeDSMForeignScan;
+	fdwroutine->ReInitializeDSMForeignScan = fileReInitializeDSMForeignScan;
+	fdwroutine->InitializeWorkerForeignScan = fileInitializeWorkerForeignScan;
+	fdwroutine->ShutdownForeignScan = fileShutdownForeignScan;
 
 	PG_RETURN_POINTER(fdwroutine);
 }
@@ -195,7 +220,7 @@ file_fdw_validator(PG_FUNCTION_ARGS)
 {
 	List	   *options_list = untransformRelOptions(PG_GETARG_DATUM(0));
 	Oid			catalog = PG_GETARG_OID(1);
-	char	   *filename = NULL;
+	List	   *filenames = NIL;
 	DefElem    *force_not_null = NULL;
 	DefElem    *force_null = NULL;
 	List	   *other_options = NIL;
@@ -260,11 +285,33 @@ file_fdw_validator(PG_FUNCTION_ARGS)
 		if (strcmp(def->defname, "filename") == 0 ||
 			strcmp(def->defname, "program") == 0)
 		{
-			if (filename)
+			if (filenames)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("conflicting or redundant options")));
-			filename = defGetString(def);
+
+			filenames = lappend(filenames, pstrdup(defGetString(def)));
+		}
+
+		/*
+		 * Separate out filename, program, and column-specific options, since
+		 * ProcessCopyOptions won't accept them.
+		 */
+		else if (strcmp(def->defname, "filenames") == 0)
+		{
+			char *tmp;
+			char *fname;
+
+			if (filenames)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("conflicting or redundant options")));
+			tmp = defGetString(def);
+
+			while ((fname = strsep(&tmp, ":")))
+			{
+				filenames = lappend(filenames, pstrdup(fname));
+			}
 		}
 
 		/*
@@ -306,7 +353,7 @@ file_fdw_validator(PG_FUNCTION_ARGS)
 	 * Either filename or program option is required for file_fdw foreign
 	 * tables.
 	 */
-	if (catalog == ForeignTableRelationId && filename == NULL)
+	if (catalog == ForeignTableRelationId && filenames == NIL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FDW_DYNAMIC_PARAMETER_VALUE_NEEDED),
 				 errmsg("either filename or program is required for file_fdw foreign tables")));
@@ -338,8 +385,8 @@ is_valid_option(const char *option, Oid context)
  * those must not appear in the options list passed to the core COPY code.
  */
 static void
-fileGetOptions(Oid foreigntableid,
-			   char **filename, bool *is_program, List **other_options)
+fileGetOptions(Oid foreigntableid, List **filenames,
+			   bool *is_program, List **other_options)
 {
 	ForeignTable *table;
 	ForeignServer *server;
@@ -347,6 +394,7 @@ fileGetOptions(Oid foreigntableid,
 	List	   *options;
 	ListCell   *lc,
 			   *prev;
+	char	   *filename = NULL;
 
 	/*
 	 * Extract options from FDW objects.  We ignore user mappings because
@@ -370,7 +418,8 @@ fileGetOptions(Oid foreigntableid,
 	 * Separate out the filename or program option (we assume there is only
 	 * one).
 	 */
-	*filename = NULL;
+	filename = NULL;
+	*filenames = NIL;
 	*is_program = false;
 	prev = NULL;
 	foreach(lc, options)
@@ -379,15 +428,40 @@ fileGetOptions(Oid foreigntableid,
 
 		if (strcmp(def->defname, "filename") == 0)
 		{
-			*filename = defGetString(def);
+			filename = defGetString(def);
 			options = list_delete_cell(options, lc, prev);
+
+			*filenames = lappend(*filenames, pstrdup(filename));
+
+			break;
+		}
+		else if (strcmp(def->defname, "filenames") == 0)
+		{
+			char *tmp;
+			char *fname;
+
+			if (*filenames)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("conflicting or redundant options")));
+			tmp = defGetString(def);
+			options = list_delete_cell(options, lc, prev);
+
+			while ((fname = strsep(&tmp, ":")))
+			{
+				*filenames = lappend(*filenames, pstrdup(fname));
+			}
+
 			break;
 		}
 		else if (strcmp(def->defname, "program") == 0)
 		{
-			*filename = defGetString(def);
+			filename = defGetString(def);
 			*is_program = true;
 			options = list_delete_cell(options, lc, prev);
+
+			*filenames = lappend(*filenames, pstrdup(filename));
+
 			break;
 		}
 		prev = lc;
@@ -397,7 +471,7 @@ fileGetOptions(Oid foreigntableid,
 	 * The validator should have checked that filename or program was included
 	 * in the options, but check again, just in case.
 	 */
-	if (*filename == NULL)
+	if (*filenames == NIL)
 		elog(ERROR, "either filename or program is required for file_fdw foreign tables");
 
 	*other_options = options;
@@ -498,7 +572,7 @@ fileGetForeignRelSize(PlannerInfo *root,
 	 */
 	fdw_private = (FileFdwPlanState *) palloc(sizeof(FileFdwPlanState));
 	fileGetOptions(foreigntableid,
-				   &fdw_private->filename,
+				   &fdw_private->filenames,
 				   &fdw_private->is_program,
 				   &fdw_private->options);
 	baserel->fdw_private = (void *) fdw_private;
@@ -525,6 +599,8 @@ fileGetForeignPaths(PlannerInfo *root,
 	Cost		total_cost;
 	List	   *columns;
 	List	   *coptions = NIL;
+	int			nworkers;
+	Path	   *path;
 
 	/* Decide whether to selectively perform binary conversion */
 	if (check_selective_binary_conversion(baserel,
@@ -554,10 +630,52 @@ fileGetForeignPaths(PlannerInfo *root,
 									 coptions));
 
 	/*
-	 * If data file was sorted, and we knew it somehow, we could insert
-	 * appropriate pathkeys into the ForeignPath node to tell the planner
-	 * that.
+	 * Each worker gets a file, so make sure we don't get more workers
+	 * than files. Also, don't exceed max_parallel_workers_per_gather.
+	 * When the leader participates, it needs to get a file on it's own.
 	 */
+	if (parallel_leader_participation)
+		nworkers = Min(list_length(fdw_private->filenames) - 1,
+					   max_parallel_workers_per_gather);
+	else
+		nworkers = Min(list_length(fdw_private->filenames),
+					   max_parallel_workers_per_gather);
+
+	/* Don't create partial paths if disabled (no workers per gather). */
+	if (nworkers > 0)
+	{
+		/* same logic as in get_parallel_divisor() in costsize.c */
+		double parallel_divisor = nworkers;
+
+		if (parallel_leader_participation)
+		{
+			double		leader_contribution;
+
+			leader_contribution = 1.0 - (0.3 * nworkers);
+			if (leader_contribution > 0)
+				parallel_divisor += leader_contribution;
+		}
+
+		path = (Path *) create_foreignscan_path(root, baserel,
+										 NULL,	/* default pathtarget */
+										 baserel->rows,
+										 startup_cost / parallel_divisor,
+										 total_cost / parallel_divisor,
+										 NIL,	/* no pathkeys */
+										 NULL,	/* no outer rel either */
+										 NULL,	/* no extra plan */
+										 coptions);
+
+		path->parallel_workers = nworkers;
+		path->parallel_aware = true;
+
+		/*
+		 * If data file was sorted, and we knew it somehow, we could insert
+		 * appropriate pathkeys into the ForeignPath node to tell the planner
+		 * that.
+		 */
+		add_partial_path(baserel, path);
+	}
 }
 
 /*
@@ -602,28 +720,40 @@ fileGetForeignPlan(PlannerInfo *root,
 static void
 fileExplainForeignScan(ForeignScanState *node, ExplainState *es)
 {
-	char	   *filename;
+	List	   *filenames;
 	bool		is_program;
 	List	   *options;
 
 	/* Fetch options --- we only need filename and is_program at this point */
 	fileGetOptions(RelationGetRelid(node->ss.ss_currentRelation),
-				   &filename, &is_program, &options);
+				   &filenames, &is_program, &options);
 
 	if (is_program)
-		ExplainPropertyText("Foreign Program", filename, es);
+		ExplainPropertyList("Foreign Program", filenames, es);
 	else
-		ExplainPropertyText("Foreign File", filename, es);
+		ExplainPropertyList("Foreign File", filenames, es);
 
 	/* Suppress file size if we're not showing cost details */
 	if (es->costs)
 	{
 		struct stat stat_buf;
+		Size	size = 0;
+		int		count = 0;
+		ListCell	*lc;
 
-		if (!is_program &&
-			stat(filename, &stat_buf) == 0)
-			ExplainPropertyLong("Foreign File Size", (long) stat_buf.st_size,
-								es);
+		foreach (lc, filenames)
+		{
+			char *filename = (char *)lfirst(lc);
+
+			if (!is_program &&
+				stat(filename, &stat_buf) == 0)
+				size += stat_buf.st_size;
+
+			count++;
+		}
+
+		ExplainPropertyLong("Foreign File Size",  size, es);
+		ExplainPropertyLong("Foreign File Count",  size, es);
 	}
 }
 
@@ -635,11 +765,10 @@ static void
 fileBeginForeignScan(ForeignScanState *node, int eflags)
 {
 	ForeignScan *plan = (ForeignScan *) node->ss.ps.plan;
-	char	   *filename;
 	bool		is_program;
 	List	   *options;
-	CopyState	cstate;
 	FileFdwExecutionState *festate;
+	List	   *filenames;
 
 	/*
 	 * Do nothing in EXPLAIN (no ANALYZE) case.  node->fdw_state stays NULL.
@@ -649,32 +778,24 @@ fileBeginForeignScan(ForeignScanState *node, int eflags)
 
 	/* Fetch options of foreign table */
 	fileGetOptions(RelationGetRelid(node->ss.ss_currentRelation),
-				   &filename, &is_program, &options);
+				   &filenames, &is_program, &options);
 
 	/* Add any options from the plan (currently only convert_selectively) */
 	options = list_concat(options, plan->fdw_private);
-
-	/*
-	 * Create CopyState from FDW options.  We always acquire all columns, so
-	 * as to match the expected ScanTupleSlot signature.
-	 */
-	cstate = BeginCopyFrom(NULL,
-						   node->ss.ss_currentRelation,
-						   filename,
-						   is_program,
-						   NULL,
-						   NIL,
-						   options);
 
 	/*
 	 * Save state in node->fdw_state.  We must save enough information to call
 	 * BeginCopyFrom() again.
 	 */
 	festate = (FileFdwExecutionState *) palloc(sizeof(FileFdwExecutionState));
-	festate->filename = filename;
+	festate->filenames = filenames;
 	festate->is_program = is_program;
 	festate->options = options;
-	festate->cstate = cstate;
+	festate->cstate = NULL;
+
+	/* non-parallel version */
+	festate->fileno = palloc(sizeof(pg_atomic_uint64));
+	pg_atomic_init_u64(festate->fileno, 0);
 
 	node->fdw_state = (void *) festate;
 }
@@ -689,6 +810,7 @@ fileIterateForeignScan(ForeignScanState *node)
 {
 	FileFdwExecutionState *festate = (FileFdwExecutionState *) node->fdw_state;
 	TupleTableSlot *slot = node->ss.ss_ScanTupleSlot;
+	EState *estate = node->ss.ps.state;
 	bool		found;
 	ErrorContextCallback errcallback;
 
@@ -711,11 +833,59 @@ fileIterateForeignScan(ForeignScanState *node)
 	 * foreign tables.
 	 */
 	ExecClearTuple(slot);
-	found = NextCopyFrom(festate->cstate, NULL,
-						 slot->tts_values, slot->tts_isnull,
-						 NULL);
-	if (found)
-		ExecStoreVirtualTuple(slot);
+
+	/*
+	 * We may need to switch to another file, at this point.
+	 */
+	while (true)
+	{
+		/* if no cstate at this point, try getting the next filename */
+		if (festate->cstate_empty)
+		{
+			MemoryContext oldctx;
+			char *filename = NULL;
+			uint64 fileno = pg_atomic_fetch_add_u64(festate->fileno, 1);
+
+			/* no more files in the list */
+			if (fileno >= list_length(festate->filenames))
+				break;
+
+			oldctx = MemoryContextSwitchTo(estate->es_query_cxt);
+
+			/* reset the previous copy state */
+			if (festate->cstate)
+				EndCopyFrom(festate->cstate);
+
+			filename = list_nth(festate->filenames, fileno);
+
+			fprintf(stderr, "worker %d switching to %s (%lu)\n", getpid(), filename, fileno);
+
+			festate->cstate = BeginCopyFrom(NULL,
+											node->ss.ss_currentRelation,
+											filename,
+											festate->is_program,
+											NULL,
+											NIL,
+											festate->options);
+
+			/* mark the cstate as valid (possibly containing more rows) */
+			festate->cstate_empty = false;
+
+			MemoryContextSwitchTo(oldctx);
+		}
+
+		/* try to read next tuple */
+		found = NextCopyFrom(festate->cstate, NULL,
+							slot->tts_values, slot->tts_isnull,
+							NULL);
+		if (found)
+		{
+			ExecStoreVirtualTuple(slot);
+			break;
+		}
+		else /* no more tuples in this file */
+			festate->cstate_empty = true;
+	}
 
 	/* Remove error callback. */
 	error_context_stack = errcallback.previous;
@@ -730,13 +900,18 @@ fileIterateForeignScan(ForeignScanState *node)
 static void
 fileReScanForeignScan(ForeignScanState *node)
 {
+	char *filename;
 	FileFdwExecutionState *festate = (FileFdwExecutionState *) node->fdw_state;
 
 	EndCopyFrom(festate->cstate);
 
+	pg_atomic_init_u64(festate->fileno, 0);
+
+	filename = list_nth(festate->filenames, 0);
+
 	festate->cstate = BeginCopyFrom(NULL,
 									node->ss.ss_currentRelation,
-									festate->filename,
+									filename,
 									festate->is_program,
 									NULL,
 									NIL,
@@ -753,7 +928,7 @@ fileEndForeignScan(ForeignScanState *node)
 	FileFdwExecutionState *festate = (FileFdwExecutionState *) node->fdw_state;
 
 	/* if festate is NULL, we are in EXPLAIN; nothing to do */
-	if (festate)
+	if (festate && festate->cstate)
 		EndCopyFrom(festate->cstate);
 }
 
@@ -766,13 +941,15 @@ fileAnalyzeForeignTable(Relation relation,
 						AcquireSampleRowsFunc *func,
 						BlockNumber *totalpages)
 {
-	char	   *filename;
+	ListCell   *lc;
+	List	   *filenames;
 	bool		is_program;
 	List	   *options;
 	struct stat stat_buf;
+	Size		size;
 
 	/* Fetch options of foreign table */
-	fileGetOptions(RelationGetRelid(relation), &filename, &is_program, &options);
+	fileGetOptions(RelationGetRelid(relation), &filenames, &is_program, &options);
 
 	/*
 	 * If this is a program instead of a file, just return false to skip
@@ -784,21 +961,29 @@ fileAnalyzeForeignTable(Relation relation,
 	if (is_program)
 		return false;
 
-	/*
-	 * Get size of the file.  (XXX if we fail here, would it be better to just
-	 * return false to skip analyzing the table?)
-	 */
-	if (stat(filename, &stat_buf) < 0)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not stat file \"%s\": %m",
-						filename)));
+	size = 0;
+	foreach (lc, filenames)
+	{
+		char *filename = (char *)lfirst(lc);
+
+		/*
+		 * Get size of the file.  (XXX if we fail here, would it be better to just
+		 * return false to skip analyzing the table?)
+		 */
+		if (stat(filename, &stat_buf) < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not stat file \"%s\": %m",
+							filename)));
+
+		size += stat_buf.st_size;
+	}
 
 	/*
 	 * Convert size to pages.  Must return at least 1 so that we can tell
 	 * later on that pg_class.relpages is not default.
 	 */
-	*totalpages = (stat_buf.st_size + (BLCKSZ - 1)) / BLCKSZ;
+	*totalpages = (size + (BLCKSZ - 1)) / BLCKSZ;
 	if (*totalpages < 1)
 		*totalpages = 1;
 
@@ -953,19 +1138,34 @@ estimate_size(PlannerInfo *root, RelOptInfo *baserel,
 	BlockNumber pages;
 	double		ntuples;
 	double		nrows;
+	Size		size = 0;
 
 	/*
 	 * Get size of the file.  It might not be there at plan time, though, in
 	 * which case we have to use a default estimate.  We also have to fall
 	 * back to the default if using a program as the input.
 	 */
-	if (fdw_private->is_program || stat(fdw_private->filename, &stat_buf) < 0)
-		stat_buf.st_size = 10 * BLCKSZ;
+	if (fdw_private->is_program)
+		size = 10 * BLCKSZ;
+	else
+	{
+		ListCell *lc;
+
+		foreach (lc, fdw_private->filenames)
+		{
+			char *filename = (char *) lfirst(lc);
+
+			if (stat(filename, &stat_buf) < 0)
+				size += 10 * BLCKSZ;
+			else
+				size += stat_buf.st_size;
+		}
+	}
 
 	/*
 	 * Convert size to pages for use in I/O cost estimate later.
 	 */
-	pages = (stat_buf.st_size + (BLCKSZ - 1)) / BLCKSZ;
+	pages = (size + (BLCKSZ - 1)) / BLCKSZ;
 	if (pages < 1)
 		pages = 1;
 	fdw_private->pages = pages;
@@ -1082,12 +1282,14 @@ file_acquire_sample_rows(Relation onerel, int elevel,
 	bool	   *nulls;
 	bool		found;
 	char	   *filename;
+	List	   *filenames;
 	bool		is_program;
 	List	   *options;
 	CopyState	cstate;
 	ErrorContextCallback errcallback;
 	MemoryContext oldcontext = CurrentMemoryContext;
 	MemoryContext tupcontext;
+	int			fileno = 0;
 
 	Assert(onerel);
 	Assert(targrows > 0);
@@ -1097,7 +1299,11 @@ file_acquire_sample_rows(Relation onerel, int elevel,
 	nulls = (bool *) palloc(tupDesc->natts * sizeof(bool));
 
 	/* Fetch options of foreign table */
-	fileGetOptions(RelationGetRelid(onerel), &filename, &is_program, &options);
+	fileGetOptions(RelationGetRelid(onerel), &filenames, &is_program, &options);
+
+	fileno = 0;
+	filename = list_nth(filenames, fileno);
+	fileno++;
 
 	/*
 	 * Create CopyState from FDW options.
@@ -1137,8 +1343,27 @@ file_acquire_sample_rows(Relation onerel, int elevel,
 
 		MemoryContextSwitchTo(oldcontext);
 
+		/* no more data in this file, try opening the next one */
 		if (!found)
-			break;
+		{
+			filename = NULL;
+
+			if (fileno < list_length(filenames))
+			{
+				filename = list_nth(filenames, fileno);
+				fileno++;
+			}
+
+			/* no more files */
+			if (!filename)
+				break;
+
+			EndCopyFrom(cstate);
+
+			cstate = BeginCopyFrom(NULL, onerel, filename,
+								   is_program, NULL, NIL, options);
+			continue;
+		}
 
 		/*
 		 * The first targrows sample rows are simply copied into the
@@ -1200,4 +1425,48 @@ file_acquire_sample_rows(Relation onerel, int elevel,
 					*totalrows, numrows)));
 
 	return numrows;
+}
+
+static Size
+fileEstimateDSMForeignScan(ForeignScanState *node, ParallelContext *pcxt)
+{
+	/* integer with the position of the next file */
+	return sizeof(pg_atomic_uint64);
+}
+
+static void
+fileInitializeDSMForeignScan(ForeignScanState *node,
+							 ParallelContext *pcxt, void *coordinate)
+{
+	FileFdwExecutionState *festate = (FileFdwExecutionState *) node->fdw_state;
+
+	festate->fileno = shm_toc_allocate(pcxt->toc, sizeof(pg_atomic_uint64));
+
+	pg_atomic_init_u64(festate->fileno, 0);
+
+	shm_toc_insert(pcxt->toc, node->ss.ps.plan->plan_node_id, festate->fileno);
+}
+
+static void
+fileReInitializeDSMForeignScan(ForeignScanState *node,
+							   ParallelContext *pcxt, void *coordinate)
+{
+	FileFdwExecutionState *festate = (FileFdwExecutionState *) node->fdw_state;
+
+	pg_atomic_init_u64(festate->fileno, 0);
+}
+
+static void
+fileInitializeWorkerForeignScan(ForeignScanState *node,
+								shm_toc *toc, void *coordinate)
+{
+	FileFdwExecutionState *festate = (FileFdwExecutionState *) node->fdw_state;
+
+	festate->fileno = shm_toc_lookup(toc, node->ss.ps.plan->plan_node_id, false);
+}
+
+static void
+fileShutdownForeignScan(ForeignScanState *node)
+{
+	/* nothing */
 }
