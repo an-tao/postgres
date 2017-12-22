@@ -751,6 +751,9 @@ AssertChangeLsnOrder(ReorderBuffer *rb, ReorderBufferTXN *txn)
 
 		prev_lsn = cur_change->lsn;
 	}
+
+	elog(WARNING, "checked LSN order for %d between %X/%X",
+		 txn->xid, (uint32) (prev_lsn >> 32), (uint32) prev_lsn);
 #endif
 }
 
@@ -1686,6 +1689,47 @@ ReorderBufferStreamCommit(ReorderBuffer *rb, ReorderBufferTXN *txn)
 	ReorderBufferCleanupTXN(rb, txn);
 }
 
+static char *
+ReorderBufferChangeAction(ReorderBufferChange *change)
+{
+	switch (change->action)
+	{
+			/* fall through these, they're all similar enough */
+		case REORDER_BUFFER_CHANGE_INSERT:
+			return "INSERT";
+
+		case REORDER_BUFFER_CHANGE_UPDATE:
+			return "UPDATE";
+
+		case REORDER_BUFFER_CHANGE_DELETE:
+			return "DELETE";
+
+		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_INSERT:
+			return "INTERNAL_SPEC_INSERT";
+
+		case REORDER_BUFFER_CHANGE_MESSAGE:
+			return "MESSAGE";
+
+		case REORDER_BUFFER_CHANGE_INTERNAL_SNAPSHOT:
+			return "INTERNAL_SNAPSHOT";
+
+		case REORDER_BUFFER_CHANGE_INTERNAL_SPEC_CONFIRM:
+			return "INTERNAL_SPEC_CONFIRM";
+
+		case REORDER_BUFFER_CHANGE_INTERNAL_COMMAND_ID:
+			return "INTERNAL_COMMAND_ID";
+
+		case REORDER_BUFFER_CHANGE_INTERNAL_TUPLECID:
+			return "INTERNAL_TUPLECID";
+
+		case REORDER_BUFFER_CHANGE_INVALIDATION:
+			return "INVALIDATION";
+
+		default:
+			return "UNKNOWN";
+	}
+}
+
 /*
  * Perform the replay of a transaction and it's non-aborted subtransactions.
  *
@@ -1791,6 +1835,10 @@ ReorderBufferCommit(ReorderBuffer *rb, TransactionId xid,
 		{
 			Relation	relation = NULL;
 			Oid			reloid;
+
+			elog(WARNING, "change LSN %X/%X XID %d SIZE %lu TYPE %s",
+				 (uint32) (change->lsn >> 32), (uint32) change->lsn, change->txn->xid,
+				 ReorderBufferChangeSize(change), ReorderBufferChangeAction(change));
 
 			/*
 			 * Enforce correct ordering of changes, merged from multiple
@@ -2983,6 +3031,8 @@ ReorderBufferStreamTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		return;
 	}
 
+	elog(WARNING, "streaming transaction %d", txn->xid);
+
 	/*
 	 * XXX Not sure if we can make any assumptions about base snapshot here,
 	 * similarly to what ReorderBufferCommit() does. That relies on
@@ -3069,11 +3119,17 @@ ReorderBufferStreamTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		/* start streaming this chunk of transaction */
 		rb->stream_start(rb, txn);
 
+		elog(WARNING, "START STREAMING txn %d", txn->xid);
+
 		iterstate = ReorderBufferStreamIterTXNInit(rb, txn);
 		while ((change = ReorderBufferStreamIterTXNNext(rb, iterstate)) != NULL)
 		{
 			Relation	relation = NULL;
 			Oid			reloid;
+
+			elog(WARNING, "change LSN %X/%X XID %d SIZE %lu TYPE %s",
+				 (uint32) (change->lsn >> 32), (uint32) change->lsn, change->txn->xid,
+				 ReorderBufferChangeSize(change), ReorderBufferChangeAction(change));
 
 			/*
 			 * Enforce correct ordering of changes, merged from multiple
