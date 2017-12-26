@@ -70,6 +70,7 @@ typedef struct RelationSyncEntry
 	Oid			relid;			/* relation oid */
 	TransactionId	xid;		/* transaction that created the record */
 	bool		schema_sent;	/* did we send the schema? */
+	List	   *streamed_txns;
 	bool		replicate_valid;
 	PublicationActions pubactions;
 } RelationSyncEntry;
@@ -78,11 +79,15 @@ typedef struct RelationSyncEntry
 static HTAB *RelationSyncCache = NULL;
 
 static void init_rel_sync_cache(MemoryContext decoding_context);
-static void reset_rel_sync_cache(TransactionId xid);
+static void cleanup_rel_sync_cache(TransactionId xid, bool is_commit);
 static RelationSyncEntry *get_rel_sync_entry(PGOutputData *data, Oid relid);
 static void rel_sync_cache_relation_cb(Datum arg, Oid relid);
 static void rel_sync_cache_publication_cb(Datum arg, int cacheid,
 							  uint32 hashvalue);
+
+static void set_schema_sent_in_streamed_txn(RelationSyncEntry *entry, TransactionId xid);
+static bool get_schema_sent_in_streamed_txn(RelationSyncEntry *entry, TransactionId xid);
+
 
 /*
  * Specify output plugin callbacks
@@ -326,10 +331,12 @@ static void
 pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 				Relation relation, ReorderBufferChange *change)
 {
+	bool schema_sent;
 	PGOutputData *data = (PGOutputData *) ctx->output_plugin_private;
 	MemoryContext old;
 	RelationSyncEntry *relentry;
 	TransactionId xid = InvalidTransactionId;
+	TransactionId topxid = InvalidTransactionId;
 
 	/*
 	 * Remember XID of the (sub)transaction for the change. We don't care if
@@ -341,6 +348,11 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	 */
 	if (in_streaming)
 		xid = change->txn->xid;
+
+	if (change->txn->toptxn)
+		topxid = change->txn->toptxn->xid;
+	else
+		topxid = xid;
 
 	relentry = get_rel_sync_entry(data, RelationGetRelid(relation));
 
@@ -367,9 +379,20 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 	old = MemoryContextSwitchTo(data->context);
 
 	/*
+	 * Do we need to send the schema? We do track streamed transactions
+	 * separately, because those may not be applied later (and the regular
+	 * transactions won't see their effects until then) and in an order
+	 * that we don't know at this point.
+	 */
+	if (in_streaming)
+		schema_sent = get_schema_sent_in_streamed_txn(relentry, topxid);
+	else
+		schema_sent = relentry->schema_sent;
+
+	/*
 	 * Write the relation schema if the current schema haven't been sent yet.
 	 */
-	if (!relentry->schema_sent)
+	if (!schema_sent)
 	{
 		TupleDesc	desc;
 		int			i;
@@ -398,8 +421,12 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 		OutputPluginPrepareWrite(ctx, false);
 		logicalrep_write_rel(ctx->out, xid, relation);
 		OutputPluginWrite(ctx, false);
-		relentry->schema_sent = true;
 		relentry->xid = change->txn->xid;
+
+		if (in_streaming)
+			set_schema_sent_in_streamed_txn(relentry, topxid);
+		else
+			relentry->schema_sent = true;
 	}
 
 	/* Send the data */
@@ -529,11 +556,7 @@ pgoutput_stream_abort(struct LogicalDecodingContext *ctx,
 	logicalrep_write_stream_abort(ctx->out, toptxn->xid, txn->xid);
 	OutputPluginWrite(ctx, true);
 
-	/*
-	 * Reset the relation schema cache, so that we resend the 'R' message
-	 * before the next change.
-	 */
-	reset_rel_sync_cache(txn->xid);
+	cleanup_rel_sync_cache(toptxn->xid, false);
 }
 
 /*
@@ -555,6 +578,8 @@ pgoutput_stream_commit(struct LogicalDecodingContext *ctx,
 	OutputPluginPrepareWrite(ctx, true);
 	logicalrep_write_stream_commit(ctx->out, txn->xid);
 	OutputPluginWrite(ctx, true);
+
+	cleanup_rel_sync_cache(txn->xid, true);
 }
 
 
@@ -625,6 +650,34 @@ init_rel_sync_cache(MemoryContext cachectx)
 }
 
 /*
+ * We expect relatively small number of streamed transactions.
+ */
+static bool
+get_schema_sent_in_streamed_txn(RelationSyncEntry *entry, TransactionId xid)
+{
+	ListCell *lc;
+	foreach (lc, entry->streamed_txns)
+	{
+		if (xid == lfirst_int(lc))
+			return true;
+	}
+
+	return false;
+}
+
+static void
+set_schema_sent_in_streamed_txn(RelationSyncEntry *entry, TransactionId xid)
+{
+	MemoryContext	oldctx;
+
+	oldctx = MemoryContextSwitchTo(CacheMemoryContext);
+
+	entry->streamed_txns = lappend_int(entry->streamed_txns, xid);
+
+	MemoryContextSwitchTo(oldctx);
+}
+
+/*
  * Find or create entry in the relation schema cache.
  */
 static RelationSyncEntry *
@@ -669,6 +722,8 @@ get_rel_sync_entry(PGOutputData *data, Oid relid)
 		 */
 		entry->pubactions.pubinsert = entry->pubactions.pubupdate =
 			entry->pubactions.pubdelete = false;
+
+		entry->streamed_txns = NIL;
 
 		foreach(lc, data->publications)
 		{
@@ -726,7 +781,7 @@ get_rel_sync_entry(PGOutputData *data, Oid relid)
  * Reset entry_sent flag in the relation schema cache.
  */
 static void
-reset_rel_sync_cache(TransactionId xid)
+cleanup_rel_sync_cache(TransactionId xid, bool is_commit)
 {
 	HASH_SEQ_STATUS hash_seq;
 	RelationSyncEntry *entry;
@@ -736,9 +791,13 @@ reset_rel_sync_cache(TransactionId xid)
 	hash_seq_init(&hash_seq, RelationSyncCache);
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
-		/* reset records created by the currently aborting transaction */
-		if (entry->xid == xid)
-			entry->schema_sent = false;
+		if (!list_member_int(entry->streamed_txns, xid))
+			continue;
+
+		if (is_commit)
+			entry->schema_sent = true;
+
+		entry->streamed_txns = list_delete_int(entry->streamed_txns, xid);
 	}
 
 }
