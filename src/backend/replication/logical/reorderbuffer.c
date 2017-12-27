@@ -751,9 +751,6 @@ AssertChangeLsnOrder(ReorderBuffer *rb, ReorderBufferTXN *txn)
 
 		prev_lsn = cur_change->lsn;
 	}
-
-	elog(WARNING, "checked LSN order for %d between %X/%X",
-		 txn->xid, (uint32) (prev_lsn >> 32), (uint32) prev_lsn);
 #endif
 }
 
@@ -1835,10 +1832,6 @@ ReorderBufferCommit(ReorderBuffer *rb, TransactionId xid,
 		{
 			Relation	relation = NULL;
 			Oid			reloid;
-
-			elog(WARNING, "change LSN %X/%X XID %d SIZE %lu TYPE %s",
-				 (uint32) (change->lsn >> 32), (uint32) change->lsn, change->txn->xid,
-				 ReorderBufferChangeSize(change), ReorderBufferChangeAction(change));
 
 			/*
 			 * Enforce correct ordering of changes, merged from multiple
@@ -3031,8 +3024,6 @@ ReorderBufferStreamTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		return;
 	}
 
-	elog(WARNING, "streaming transaction %d", txn->xid);
-
 	/*
 	 * XXX Not sure if we can make any assumptions about base snapshot here,
 	 * similarly to what ReorderBufferCommit() does. That relies on
@@ -3119,17 +3110,11 @@ ReorderBufferStreamTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		/* start streaming this chunk of transaction */
 		rb->stream_start(rb, txn);
 
-		elog(WARNING, "START STREAMING txn %d", txn->xid);
-
 		iterstate = ReorderBufferStreamIterTXNInit(rb, txn);
 		while ((change = ReorderBufferStreamIterTXNNext(rb, iterstate)) != NULL)
 		{
 			Relation	relation = NULL;
 			Oid			reloid;
-
-			elog(WARNING, "change LSN %X/%X XID %d SIZE %lu TYPE %s",
-				 (uint32) (change->lsn >> 32), (uint32) change->lsn, change->txn->xid,
-				 ReorderBufferChangeSize(change), ReorderBufferChangeAction(change));
 
 			/*
 			 * Enforce correct ordering of changes, merged from multiple

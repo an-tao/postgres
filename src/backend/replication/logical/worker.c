@@ -744,8 +744,6 @@ apply_handle_stream_abort(StringInfo s)
 
 		changes_filename(path, MyLogicalRepWorker->subid, xid);
 
-		elog(WARNING, "abort %d truncating file for %d at %ld", xid, subxid, subxacts[subidx].offset);
-
 		if (truncate(path, subxacts[subidx].offset))
 			ereport(ERROR,
 					(errcode_for_file_access(),
@@ -2189,8 +2187,6 @@ subxact_info_add(TransactionId xid)
 
 	subxacts[nsubxacts].xid = xid;
 	subxacts[nsubxacts].offset = lseek(stream_fd, 0, SEEK_END);
-
-	elog(WARNING, "adding %d offset %ld", xid, subxacts[nsubxacts].offset);
 
 	nsubxacts++;
 }
