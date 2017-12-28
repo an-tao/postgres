@@ -772,12 +772,13 @@ apply_handle_stream_commit(StringInfo s)
 
 	char		path[MAXPGPATH];
 	char	   *buffer = NULL;
+	LogicalRepCommitData commit_data;
 
 	MemoryContext oldcxt;
 
 	Assert(!in_streamed_transaction);
 
-	xid = logicalrep_read_stream_commit(s);
+	xid = logicalrep_read_stream_commit(s, &commit_data);
 
 	elog(DEBUG1, "received commit for streamed transaction %u", xid);
 
@@ -890,7 +891,17 @@ apply_handle_stream_commit(StringInfo s)
 
 	CloseTransientFile(fd);
 
+	/*
+	 * Update origin state so we can restart streaming from correct
+	 * position in case of crash.
+	 */
+	replorigin_session_origin_lsn = commit_data.end_lsn;
+	replorigin_session_origin_timestamp = commit_data.committime;
+
 	CommitTransactionCommand();
+	pgstat_report_stat(false);
+
+	store_flush_position(commit_data.end_lsn);
 
 	elog(DEBUG1, "replayed %d (all) changes from file '%s'",
 		 nchanges, path);

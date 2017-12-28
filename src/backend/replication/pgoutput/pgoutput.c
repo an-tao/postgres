@@ -610,7 +610,7 @@ pgoutput_stream_commit(struct LogicalDecodingContext *ctx,
 	Assert(txn->streamed);
 
 	OutputPluginPrepareWrite(ctx, true);
-	logicalrep_write_stream_commit(ctx->out, txn->xid);
+	logicalrep_write_stream_commit(ctx->out, txn, commit_lsn);
 	OutputPluginWrite(ctx, true);
 
 	cleanup_rel_sync_cache(txn->xid, true);

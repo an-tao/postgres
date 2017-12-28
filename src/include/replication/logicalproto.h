@@ -116,9 +116,10 @@ extern void logicalrep_write_stream_stop(StringInfo out,
 							 TransactionId xid);
 extern TransactionId logicalrep_read_stream_stop(StringInfo in);
 
-extern void logicalrep_write_stream_commit(StringInfo out,
-							   TransactionId xid);
-extern TransactionId logicalrep_read_stream_commit(StringInfo out);
+extern void logicalrep_write_stream_commit(StringInfo out, ReorderBufferTXN *txn,
+						XLogRecPtr commit_lsn);
+extern TransactionId logicalrep_read_stream_commit(StringInfo out,
+					   LogicalRepCommitData *commit_data);
 
 extern void logicalrep_write_stream_abort(StringInfo out,
 							  TransactionId xid, TransactionId subxid);

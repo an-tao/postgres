@@ -708,20 +708,45 @@ logicalrep_read_stream_stop(StringInfo in)
 }
 
 void
-logicalrep_write_stream_commit(StringInfo out, TransactionId xid)
+logicalrep_write_stream_commit(StringInfo out, ReorderBufferTXN *txn,
+							   XLogRecPtr commit_lsn)
 {
+	uint8		flags = 0;
+
 	pq_sendbyte(out, 'c');		/* action STREAM COMMIT */
 
-	Assert(TransactionIdIsValid(xid));
+	Assert(TransactionIdIsValid(txn->xid));
 
 	/* transaction ID (we're starting to stream, so must be valid) */
-	pq_sendint32(out, xid);
+	pq_sendint32(out, txn->xid);
+
+	/* send the flags field (unused for now) */
+	pq_sendbyte(out, flags);
+
+	/* send fields */
+	pq_sendint64(out, commit_lsn);
+	pq_sendint64(out, txn->end_lsn);
+	pq_sendint64(out, txn->commit_time);
 }
 
 TransactionId
-logicalrep_read_stream_commit(StringInfo in)
+logicalrep_read_stream_commit(StringInfo in, LogicalRepCommitData *commit_data)
 {
-	TransactionId xid = pq_getmsgint(in, 4);
+	TransactionId	xid;
+	uint8			flags;
+
+	xid = pq_getmsgint(in, 4);
+
+	/* read flags (unused for now) */
+	flags = pq_getmsgbyte(in);
+
+	if (flags != 0)
+		elog(ERROR, "unrecognized flags %u in commit message", flags);
+
+	/* read fields */
+	commit_data->commit_lsn = pq_getmsgint64(in);
+	commit_data->end_lsn = pq_getmsgint64(in);
+	commit_data->committime = pq_getmsgint64(in);
 
 	return xid;
 }
