@@ -759,8 +759,6 @@ apply_handle_stream_abort(StringInfo s)
 
 /*
  * Handle STREAM COMMIT message.
- *
- * XXX Add calls to pgstat_report_wait_start/pgstat_report_wait_end.
  */
 static void
 apply_handle_stream_commit(StringInfo s)
@@ -823,7 +821,9 @@ apply_handle_stream_commit(StringInfo s)
 		int			len;
 
 		/* read length of the on-disk record */
+		pgstat_report_wait_start(WAIT_EVENT_LOGICAL_CHANGES_READ);
 		nbytes = read(fd, &len, sizeof(len));
+		pgstat_report_wait_end();
 
 		/* have we reached end of the file? */
 		if (nbytes == 0)
@@ -834,7 +834,6 @@ apply_handle_stream_commit(StringInfo s)
 		{
 			int			save_errno = errno;
 
-			/* pgstat_report_wait_end(); */
 			CloseTransientFile(fd);
 			errno = save_errno;
 			ereport(ERROR,
@@ -849,11 +848,11 @@ apply_handle_stream_commit(StringInfo s)
 		buffer = repalloc(buffer, len);
 
 		/* and finally read the data into the buffer */
+		pgstat_report_wait_start(WAIT_EVENT_LOGICAL_CHANGES_READ);
 		if (read(fd, buffer, len) != len)
 		{
 			int			save_errno = errno;
 
-			/* pgstat_report_wait_end(); */
 			CloseTransientFile(fd);
 			errno = save_errno;
 			ereport(ERROR,
@@ -861,6 +860,7 @@ apply_handle_stream_commit(StringInfo s)
 					 errmsg("could not read file: %m")));
 			return;
 		}
+		pgstat_report_wait_end();
 
 		/* copy the buffer to the stringinfo and call apply_dispatch */
 		resetStringInfo(&s2);
@@ -1961,13 +1961,12 @@ subxact_info_write(Oid subid, TransactionId xid)
 	COMP_CRC32C(checksum, (char *) subxacts, len);
 	FIN_CRC32C(checksum);
 
-	/* pgstat_report_wait_start() */
+	pgstat_report_wait_start(WAIT_EVENT_LOGICAL_SUBXACT_WRITE);
 
 	if (write(fd, &checksum, sizeof(checksum)) != sizeof(checksum))
 	{
 		int			save_errno = errno;
 
-		/* pgstat_report_wait_end(); */
 		CloseTransientFile(fd);
 		errno = save_errno;
 		ereport(ERROR,
@@ -1981,7 +1980,6 @@ subxact_info_write(Oid subid, TransactionId xid)
 	{
 		int			save_errno = errno;
 
-		/* pgstat_report_wait_end(); */
 		CloseTransientFile(fd);
 		errno = save_errno;
 		ereport(ERROR,
@@ -1995,7 +1993,6 @@ subxact_info_write(Oid subid, TransactionId xid)
 	{
 		int			save_errno = errno;
 
-		/* pgstat_report_wait_end(); */
 		CloseTransientFile(fd);
 		errno = save_errno;
 		ereport(ERROR,
@@ -2005,7 +2002,7 @@ subxact_info_write(Oid subid, TransactionId xid)
 		return;
 	}
 
-	/* pgstat_report_wait_end(); */
+	pgstat_report_wait_end();
 
 	/*
 	 * We don't need to fsync or anything, as we'll recreate the files after a
@@ -2066,14 +2063,13 @@ subxact_info_read(Oid subid, TransactionId xid)
 		return;
 	}
 
-	/* pgstat_report_wait_start() */
+	pgstat_report_wait_start(WAIT_EVENT_LOGICAL_SUBXACT_READ);
 
 	/* read the checksum */
 	if (read(fd, &checksum, sizeof(checksum)) != sizeof(checksum))
 	{
 		int			save_errno = errno;
 
-		/* pgstat_report_wait_end(); */
 		CloseTransientFile(fd);
 		errno = save_errno;
 		ereport(ERROR,
@@ -2088,7 +2084,6 @@ subxact_info_read(Oid subid, TransactionId xid)
 	{
 		int			save_errno = errno;
 
-		/* pgstat_report_wait_end(); */
 		CloseTransientFile(fd);
 		errno = save_errno;
 		ereport(ERROR,
@@ -2097,6 +2092,8 @@ subxact_info_read(Oid subid, TransactionId xid)
 						path)));
 		return;
 	}
+
+	pgstat_report_wait_end();
 
 	len = sizeof(SubXactInfo) * nsubxacts;
 
@@ -2108,11 +2105,12 @@ subxact_info_read(Oid subid, TransactionId xid)
 	subxacts = palloc(nsubxacts_max * sizeof(SubXactInfo));
 	MemoryContextSwitchTo(oldctx);
 
+	pgstat_report_wait_start(WAIT_EVENT_LOGICAL_SUBXACT_READ);
+
 	if ((len > 0) && ((read(fd, subxacts, len)) != len))
 	{
 		int			save_errno = errno;
 
-		/* pgstat_report_wait_end(); */
 		CloseTransientFile(fd);
 		errno = save_errno;
 		ereport(ERROR,
@@ -2121,6 +2119,8 @@ subxact_info_read(Oid subid, TransactionId xid)
 						path)));
 		return;
 	}
+
+	pgstat_report_wait_end();
 
 	/* recompute the checksum */
 	INIT_CRC32C(checksum_new);
@@ -2131,8 +2131,6 @@ subxact_info_read(Oid subid, TransactionId xid)
 	if (checksum_new != checksum)
 		ereport(ERROR,
 				(errmsg("checksum failure when reading subxacts")));
-
-	/* pgstat_report_wait_end(); */
 
 	CloseTransientFile(fd);
 }
@@ -2357,8 +2355,6 @@ stream_close_file(void)
  * XXX The subxact file includes CRC32C of the contents. Maybe we should
  * include something like that here too, but doing so will not be as
  * straighforward, because we write the file in chunks.
- *
- * XXX Add calls to pgstat_report_wait_start/pgstat_report_wait_end.
  */
 static void
 stream_write_change(char action, StringInfo s)
@@ -2371,6 +2367,8 @@ stream_write_change(char action, StringInfo s)
 
 	/* total on-disk size, including the action type character */
 	len = (s->len - s->cursor) + sizeof(char);
+
+	pgstat_report_wait_start(WAIT_EVENT_LOGICAL_CHANGES_WRITE);
 
 	/* first write the size */
 	if (write(stream_fd, &len, sizeof(len)) != sizeof(len))
@@ -2391,6 +2389,8 @@ stream_write_change(char action, StringInfo s)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not serialize streamed change to file: %m")));
+
+	pgstat_report_wait_end();
 }
 
 /* SIGHUP: set flag to reload configuration at next convenient time */
