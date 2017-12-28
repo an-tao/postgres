@@ -19,6 +19,7 @@
 #include "replication/origin.h"
 #include "replication/pgoutput.h"
 
+#include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/int8.h"
 #include "utils/lsyscache.h"
@@ -115,12 +116,13 @@ _PG_output_plugin_init(OutputPluginCallbacks *cb)
 static void
 parse_output_parameters(List *options, uint32 *protocol_version,
 						List **publication_names,
-						bool *enable_streaming)
+						bool *enable_streaming, int *logical_work_mem)
 {
 	ListCell   *lc;
 	bool		protocol_version_given = false;
 	bool		publication_names_given = false;
 	bool		streaming_given = false;
+	bool		work_mem_given = false;
 
 	foreach(lc, options)
 	{
@@ -183,6 +185,23 @@ parse_output_parameters(List *options, uint32 *protocol_version,
 			/* enable streaming if it's 'on' */
 			*enable_streaming = (strcmp(strVal(defel->arg), "on") == 0);
 		}
+		else if (strcmp(defel->defname, "work_mem") == 0)
+		{
+			if (work_mem_given)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("conflicting or redundant options")));
+			work_mem_given = true;
+
+			/* the value must be between 64 and MAX_KILOBYTES */
+			if ((intVal(defel->arg) < 64) || (intVal(defel->arg) > MAX_KILOBYTES))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("invalid workk_mem value")));
+
+			/* enable streaming if it's 'on' */
+			*logical_work_mem = intVal(defel->arg);
+		}
 		else
 			elog(ERROR, "unrecognized pgoutput option: %s", defel->defname);
 	}
@@ -219,7 +238,7 @@ pgoutput_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 		parse_output_parameters(ctx->output_plugin_options,
 								&data->protocol_version,
 								&data->publication_names,
-								&enable_streaming);
+								&enable_streaming, &logical_work_mem);
 
 		/* Check if we support requested protocol */
 		if (data->protocol_version > LOGICALREP_PROTO_VERSION_NUM)

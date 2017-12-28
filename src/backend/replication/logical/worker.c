@@ -2550,8 +2550,9 @@ ApplyWorkerMain(Datum main_arg)
 	options.startpoint = origin_startpos;
 	options.slotname = myslotname;
 	options.proto.logical.proto_version = LOGICALREP_PROTO_VERSION_NUM;
-	options.proto.logical.streaming = true; /* XXX allow customization */
 	options.proto.logical.publication_names = MySubscription->publications;
+	options.proto.logical.streaming = MySubscription->stream;
+	options.proto.logical.work_mem = MySubscription->workmem;
 
 	/* Start normal logical streaming replication. */
 	walrcv_startstreaming(wrconn, &options);
