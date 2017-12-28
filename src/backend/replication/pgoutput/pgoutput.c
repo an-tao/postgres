@@ -187,6 +187,8 @@ parse_output_parameters(List *options, uint32 *protocol_version,
 		}
 		else if (strcmp(defel->defname, "work_mem") == 0)
 		{
+			int64	parsed;
+
 			if (work_mem_given)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
@@ -199,8 +201,21 @@ parse_output_parameters(List *options, uint32 *protocol_version,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						 errmsg("invalid workk_mem value")));
 
+			if (!scanint8(strVal(defel->arg), true, &parsed))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("invalid work_mem")));
+
+			if (parsed > PG_INT32_MAX || parsed < 64)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("work_mem \"%s\" out of range",
+								strVal(defel->arg))));
+
+			elog(WARNING, "found work_mem %ld (%s)", parsed, strVal(defel->arg));
+
 			/* enable streaming if it's 'on' */
-			*logical_work_mem = intVal(defel->arg);
+			*logical_work_mem = (int)parsed;
 		}
 		else
 			elog(ERROR, "unrecognized pgoutput option: %s", defel->defname);

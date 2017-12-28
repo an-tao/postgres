@@ -427,6 +427,18 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 	values[Anum_pg_subscription_subpublications - 1] =
 		publicationListToArray(publications);
 
+	if (logical_wm_given)
+		values[Anum_pg_subscription_subworkmem - 1] =
+			Int32GetDatum(logical_wm);
+	else
+		nulls[Anum_pg_subscription_subworkmem - 1] = true;
+
+	if (streaming_given)
+		values[Anum_pg_subscription_substream - 1] =
+			BoolGetDatum(streaming);
+	else
+		nulls[Anum_pg_subscription_substream - 1] = true;
+
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
 	/* Insert tuple into catalog. */
