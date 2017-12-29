@@ -803,6 +803,8 @@ apply_handle_stream_commit(StringInfo s)
 
 	MemoryContextSwitchTo(oldcxt);
 
+	ensure_transaction();
+
 	/*
 	 * Make sure the handle apply_dispatch methods are aware we're in a remote
 	 * transaction.
