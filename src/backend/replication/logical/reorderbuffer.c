@@ -396,6 +396,9 @@ ReorderBufferGetTXN(ReorderBuffer *rb)
 	dlist_init(&txn->tuplecids);
 	dlist_init(&txn->subtxns);
 
+	/* InvalidCommandId is not zero */
+	txn->command_id = InvalidCommandId;
+
 	return txn;
 }
 
@@ -3023,7 +3026,7 @@ static void
 ReorderBufferStreamTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 {
 	volatile Snapshot snapshot_now;
-	volatile CommandId command_id = FirstCommandId;
+	volatile CommandId command_id;
 	bool		using_subtxn;
 	Size		streamed = 0;
 	ReorderBufferStreamIterTXNState *volatile iterstate = NULL;
@@ -3056,6 +3059,9 @@ ReorderBufferStreamTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		/* make sure this transaction is streamed for the first time */
 		Assert(!txn->streamed);
 
+		/* at the beginning we should have invalid command ID */
+		Assert(txn->command_id == InvalidCommandId);
+
 		dlist_foreach(subxact_i, &txn->subtxns)
 		{
 			ReorderBufferTXN *subtxn;
@@ -3073,7 +3079,9 @@ ReorderBufferStreamTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 			}
 		}
 
-		snapshot_now = txn->base_snapshot;
+		command_id = FirstCommandId;
+		snapshot_now = ReorderBufferCopySnap(rb, txn->base_snapshot,
+											 txn, command_id);
 	}
 	else
 	{
@@ -3087,6 +3095,7 @@ ReorderBufferStreamTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		 * through subxacts again). In fact, we must not do that as we may be
 		 * using snapshot half-way through the subxact.
 		 */
+		command_id = txn->command_id;
 		snapshot_now = txn->snapshot_now;
 	}
 
@@ -3450,6 +3459,7 @@ ReorderBufferStreamTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 	Assert(txn->nentries == 0);
 	Assert(txn->nentries_mem == 0);
 
+	txn->command_id = command_id;
 	txn->snapshot_now = snapshot_now;
 }
 

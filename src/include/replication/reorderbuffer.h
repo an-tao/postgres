@@ -227,6 +227,7 @@ typedef struct ReorderBufferTXN
 	 * Snapshot from the previous streaming run (or NULL).
 	 */
 	Snapshot	snapshot_now;
+	CommandId	command_id;
 
 	/*
 	 * How many ReorderBufferChange's do we have in this txn.
