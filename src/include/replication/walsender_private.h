@@ -75,6 +75,21 @@ typedef struct WalSnd
 	 * SyncRepLock.
 	 */
 	int			sync_standby_priority;
+
+	/*
+	 * 
+	 */
+	int64		spillTxns;
+	int64		spillCount;
+	int64		spillBytes;
+
+	/*
+	 * 
+	 */
+	int64		streamTxns;
+	int64		streamCount;
+	int64		streamBytes;
+
 } WalSnd;
 
 extern WalSnd *MyWalSnd;

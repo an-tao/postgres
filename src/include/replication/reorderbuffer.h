@@ -442,6 +442,16 @@ struct ReorderBuffer
 
 	/* memory accounting */
 	Size		size;
+
+	/*
+	 * XXX
+	 */
+	int64	spillCount;
+	int64	spillTxns;
+	int64	spillBytes;
+	int64	streamCount;
+	int64	streamTxns;
+	int64	streamBytes;
 };
 
 
