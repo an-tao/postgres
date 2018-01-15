@@ -121,6 +121,49 @@ preprocess_targetlist(PlannerInfo *root)
 								  result_relation, target_relation);
 
 	/*
+	 * For MERGE command, handle targetlist of each MergeAction separately. We
+	 * give the same treatment to MergeAction->targetList as we would have
+	 * given to a regular INSERT/UPDATE/DELETE.
+	 */
+	if (command_type == CMD_MERGE)
+	{
+		ListCell *l;
+
+		/*
+		 * First handle the targetlist of the query.
+		 *
+		 * XXX We currently treat CMD_MERGE as CMD_UPDATE in expand_targetlist.
+		 * This ensures that any missing attributes of the updated tuple get
+		 * their value from the old tuple. But is that really safe? What
+		 * happens to MERGE's INSERT action? Would expanding action-specific
+		 * targetlist be enough?
+		 */
+		tlist = expand_targetlist(tlist, command_type,
+								  result_relation, target_relation);
+		foreach(l, parse->mergeActionList)
+		{
+			MergeAction     *action = (MergeAction *) lfirst(l);
+
+			switch (action->commandType)
+			{
+				case CMD_INSERT:
+				case CMD_UPDATE:
+					action->targetList = expand_targetlist(action->targetList,
+							action->commandType,
+							result_relation, target_relation);
+					break;
+				case CMD_DELETE:
+					break;
+				case CMD_NOTHING:
+					break;
+				default:
+					elog(ERROR, "unknown action in MERGE WHEN clause");
+
+			}
+		}
+	}
+
+	/*
 	 * Add necessary junk columns for rowmarked rels.  These values are needed
 	 * for locking of rels selected FOR UPDATE/SHARE, and to do EvalPlanQual
 	 * rechecking.  See comments for PlanRowMark in plannodes.h.
