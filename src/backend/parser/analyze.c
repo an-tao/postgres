@@ -67,6 +67,7 @@ static Node *transformSetOperationTree(ParseState *pstate, SelectStmt *stmt,
 static void determineRecursiveColTypes(ParseState *pstate,
 						   Node *larg, List *nrtargetlist);
 static Query *transformUpdateStmt(ParseState *pstate, UpdateStmt *stmt);
+static Query *transformMergeStmt(ParseState *pstate, MergeStmt *stmt);
 static List *transformReturningList(ParseState *pstate, List *returningList);
 static List *transformUpdateTargetList(ParseState *pstate,
 						  List *targetList);
@@ -267,6 +268,7 @@ transformStmt(ParseState *pstate, Node *parseTree)
 		case T_InsertStmt:
 		case T_UpdateStmt:
 		case T_DeleteStmt:
+		case T_MergeStmt:
 			(void) test_raw_expression_coverage(parseTree, NULL);
 			break;
 		default:
@@ -289,6 +291,10 @@ transformStmt(ParseState *pstate, Node *parseTree)
 
 		case T_UpdateStmt:
 			result = transformUpdateStmt(pstate, (UpdateStmt *) parseTree);
+			break;
+
+		case T_MergeStmt:
+			result = transformMergeStmt(pstate, (MergeStmt *) parseTree);
 			break;
 
 		case T_SelectStmt:
@@ -365,6 +371,7 @@ analyze_requires_snapshot(RawStmt *parseTree)
 		case T_InsertStmt:
 		case T_DeleteStmt:
 		case T_UpdateStmt:
+		case T_MergeStmt:
 		case T_SelectStmt:
 			result = true;
 			break;
@@ -2265,8 +2272,343 @@ transformUpdateStmt(ParseState *pstate, UpdateStmt *stmt)
 }
 
 /*
+ * transformMergeStmt -
+ *	  transforms a MERGE statement
+ */
+static Query *
+transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
+{
+	Query		*qry = makeNode(Query);
+	ListCell	*l;
+	AclMode		targetPerms = ACL_NO_RIGHTS;
+	bool		is_terminal[2];
+	JoinExpr	*joinexpr;
+
+	qry->commandType = CMD_MERGE;
+
+	/*
+	 * Check WHEN clauses for permissions and sanity
+	 */
+	is_terminal[0] = false;
+	is_terminal[1] = false;
+	foreach(l, stmt->mergeActionList)
+	{
+		MergeAction		*action = (MergeAction *) lfirst(l);
+		uint	when_type = (action->matched ? 0 : 1);
+
+		/*
+		 * Collect action types so we can check Target permissions
+		 */
+		switch (action->commandType)
+		{
+			case CMD_INSERT:
+				{
+					InsertStmt *istmt = (InsertStmt *) action->stmt;
+					SelectStmt *selectStmt = (SelectStmt *) istmt->selectStmt;
+
+					/*
+					 * The grammar allows attaching ORDER BY, LIMIT, FOR UPDATE,
+					 * or WITH to a VALUES clause and also multiple VALUES clauses.
+					 * If we have any of those, ERROR.
+					 */
+					if (selectStmt && (selectStmt->valuesLists == NIL ||
+									  selectStmt->sortClause != NIL ||
+									  selectStmt->limitOffset != NULL ||
+									  selectStmt->limitCount != NULL ||
+									  selectStmt->lockingClause != NIL ||
+									  selectStmt->withClause != NULL))
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("SELECT not allowed in MERGE INSERT statement")));
+
+					if (selectStmt && list_length(selectStmt->valuesLists) > 1)
+						ereport(ERROR,
+								(errcode(ERRCODE_SYNTAX_ERROR),
+								 errmsg("Multiple VALUES clauses not allowed in MERGE INSERT statement")));
+
+					targetPerms |= ACL_INSERT;
+				}
+				break;
+			case CMD_UPDATE:
+				targetPerms |= ACL_UPDATE;
+				break;
+			case CMD_DELETE:
+				targetPerms |= ACL_DELETE;
+				break;
+			case CMD_NOTHING:
+				break;
+			default:
+				elog(ERROR, "unknown action in MERGE WHEN clause");
+		}
+
+		/*
+		 * Check for unreachable WHEN clauses
+		 */
+		if (action->condition == NULL)
+			is_terminal[when_type] = true;
+		else if (is_terminal[when_type])
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("unreachable WHEN clause specified after unconditional WHEN clause")));
+	}
+
+	/*
+	 * Construct a query of the form
+	 *  SELECT relation.ctid 	--junk attribute
+	 * 		  ,source_relation.<somecols>
+	 * 		  ,relation.<somecols>
+	 *  FROM relation RIGHT JOIN source_relation
+	 *  ON join_condition
+	 *  -- no WHERE clause - all conditions are applied in executor
+	 *
+	 * We specify the join as a RIGHT JOIN as a simple way of forcing
+	 * the first (larg) RTE to refer to the target table.
+	 *
+	 * The MERGE query's join can be tuned in some cases, see below
+	 * for these special case tweaks.
+	 *
+	 * We set QSRC_PARSER to show query constructed in parse analysis
+	 *
+	 * Note that we have only one Query for a MERGE statement and
+	 * the planner is called only once. That query is executed once
+	 * to produce our stream of candidate change rows, so the query
+	 * must contain all of them columns required by any one of the
+	 * targetlist or conditions.
+	 *
+	 * As top-level statements INSERT, UPDATE and DELETE have a Query,
+	 * whereas with MERGE the individual actions do not require
+	 * separate planning, only different handling in the executor.
+	 * See nodeModifyTable handling of commandType CMD_MERGE.
+	 *
+	 * stmt->relation is the target relation, given as a RangeVar
+	 * stmt->source_relation is a RangeVar or subquery
+	 *
+	 * A sub-query can include the Target, but otherwise the sub-query
+	 * cannot reference the outermost Target table at all.
+	 */
+	qry->querySource = QSRC_PARSER;
+	joinexpr = makeNode(JoinExpr);
+	joinexpr->isNatural = false;
+	joinexpr->alias = NULL;
+	joinexpr->usingClause = NIL;
+	joinexpr->quals = stmt->join_condition;
+
+	/*
+	 * Simplify the MERGE query as much as possible
+	 *
+	 * If there are no INSERT actions we won't be using the non-matching
+	 * candidate rows for anything, so no need for an outer join. We
+	 * do still need an inner join for UPDATE and DELETE actions.
+	 *
+	 * XXX if we have a constant ON clause, we can skip join altogether
+	 *
+	 * XXX if we were really keen we could look through the actionList
+	 * and pull out common conditions, if there were no terminal clauses
+	 * and put them into the main query as an early row filter
+	 * but that seems like an atypical case and so checking for it
+	 * would be likely to just be wasted effort.
+	 *
+	 * These seem like things that could go into Optimizer, but
+	 * they are semantic simplications rather than optimizations, per se.
+	 */
+	joinexpr->larg = (Node *) stmt->relation;
+	joinexpr->rarg = (Node *) stmt->source_relation;
+	if (targetPerms & ACL_INSERT)
+		joinexpr->jointype = JOIN_RIGHT;
+	else
+		joinexpr->jointype = JOIN_INNER;
+
+	/*
+	 * We use a special purpose transformation here because the normal
+	 * routines don't quite work right for the MERGE case.
+	 */
+	qry->resultRelation = transformMergeJoinClause(pstate,
+													stmt->relation,
+													targetPerms,
+													(Node *) joinexpr);
+
+	/* qry has no WHERE clause so absent quals are shown as NULL */
+	qry->jointree = makeFromExpr(pstate->p_joinlist, NULL);
+	qry->rtable = pstate->p_rtable;
+
+	/*
+	 * MERGE is unsupported in various cases
+	 */
+	if (!(pstate->p_target_relation->rd_rel->relkind == RELKIND_RELATION ||
+		  pstate->p_target_relation->rd_rel->relkind == RELKIND_MATVIEW))
+		elog(ERROR, "MERGE is not supported on this relation type");
+
+	/*
+	 * We now have a good query shape, so now look at the when conditions
+	 * and action targetlists.
+	 *
+	 * Overall, the MERGE Query's targetlist is NIL.
+	 *
+	 * Each individual action has its own targetlist that needs separate
+	 * transformation. These transforms don't do anything to the overall
+	 * targetlist, since that is only used for resjunk columns.
+	 *
+	 * We can reference any column in Target or Source, which is OK
+	 * because both of those already have RTEs. There is nothing like
+	 * the EXCLUDED pseudo-relation for INSERT ON CONFLICT.
+	 */
+	qry->targetList = NIL;
+	foreach(l, stmt->mergeActionList)
+	{
+		MergeAction		*action = (MergeAction *) lfirst(l);
+
+		/*
+		 * Transform the when condition.
+		 *
+		 * We don't have a separate plan for each action, so the
+		 * when condition must be executed as a per-row check,
+		 * making it very similar to a CHECK constraint and so we
+		 * adopt the same semantics for that.
+		 *
+		 * SQL Standard says we should not allow anything that possibly
+		 * modifies SQL-data. Parallel safety is a superset of that
+		 * restriction and enforcing that makes it easier to consider
+		 * running MERGE plans in parallel in future, so we adopt
+		 * that restriction here. XXX where to make the check??
+		 *
+		 * Note that we don't add this to the MERGE Query's quals
+		 */
+		action->qual = transformWhereClause(pstate, action->condition,
+								EXPR_KIND_CHECK_CONSTRAINT, "WHEN");
+
+		/*
+		 * Transform target lists for each INSERT and UPDATE action stmt
+		 */
+		switch (action->commandType)
+		{
+			case CMD_INSERT:
+				{
+					InsertStmt *istmt = (InsertStmt *) action->stmt;
+					SelectStmt *selectStmt = (SelectStmt *) istmt->selectStmt;
+					List	   *exprList = NIL;
+					ListCell   *lc;
+					RangeTblEntry *rte;
+					ListCell   *icols;
+					ListCell   *attnos;
+					List	   *icolumns;
+					List	   *attrnos;
+
+					pstate->p_is_insert = true;
+
+					icolumns = checkInsertTargets(pstate, istmt->cols, &attrnos);
+					Assert(list_length(icolumns) == list_length(attrnos));
+
+					/*
+					 * Handle INSERT much like in transformInsertStmt
+					 *
+					 * XXX currently ignore stmt->override, if present
+					 */
+					if (selectStmt == NULL)
+					{
+						/*
+						 * We have INSERT ... DEFAULT VALUES.  We can handle this case by
+						 * emitting an empty targetlist --- all columns will be defaulted when
+						 * the planner expands the targetlist.
+						 */
+						exprList = NIL;
+					}
+					else
+					{
+						/*
+						 * Process INSERT ... VALUES with a single VALUES sublist.  We treat
+						 * this case separately for efficiency.  The sublist is just computed
+						 * directly as the Query's targetlist, with no VALUES RTE.  So it
+						 * works just like a SELECT without any FROM.
+						 */
+						List	   *valuesLists = selectStmt->valuesLists;
+
+						Assert(list_length(valuesLists) == 1);
+						Assert(selectStmt->intoClause == NULL);
+
+						elog(WARNING, "MERGE INSERT actions not fully implemented yet");
+
+						/*
+						 * Do basic expression transformation (same as a ROW() expr, but allow
+						 * SetToDefault at top level)
+						 */
+						exprList = transformExpressionList(pstate,
+														   (List *) linitial(valuesLists),
+														   EXPR_KIND_VALUES_SINGLE,
+														   true);
+
+						/* Prepare row for assignment to target table */
+						exprList = transformInsertRow(pstate, exprList,
+													  istmt->cols,
+													  icolumns, attrnos,
+													  false);
+					}
+
+					/*
+					 * Generate query's target list using the computed list of expressions.
+					 * Also, mark all the target columns as needing insert permissions.
+					 */
+					rte = pstate->p_target_rangetblentry;
+					icols = list_head(icolumns);
+					attnos = list_head(attrnos);
+					foreach(lc, exprList)
+					{
+						Expr	   *expr = (Expr *) lfirst(lc);
+						ResTarget  *col;
+						AttrNumber	attr_num;
+						TargetEntry *tle;
+
+						col = lfirst_node(ResTarget, icols);
+						attr_num = (AttrNumber) lfirst_int(attnos);
+
+						tle = makeTargetEntry(expr,
+											  attr_num,
+											  col->name,
+											  false);
+						action->targetList = lappend(action->targetList, tle);
+
+						rte->insertedCols = bms_add_member(rte->insertedCols,
+														   attr_num - FirstLowInvalidHeapAttributeNumber);
+
+						icols = lnext(icols);
+						attnos = lnext(attnos);
+					}
+				}
+				break;
+			case CMD_UPDATE:
+				{
+					UpdateStmt *ustmt = (UpdateStmt *) action->stmt;
+
+					elog(WARNING, "MERGE UPDATE actions not fully implemented yet");
+
+					pstate->p_is_insert = false;
+					action->targetList = transformUpdateTargetList(pstate, ustmt->targetList);
+				}
+				break;
+			case CMD_DELETE:
+			case CMD_NOTHING:
+				action->targetList = NIL;
+				break;
+			default:
+				elog(ERROR, "unknown action in MERGE WHEN clause");
+		}
+	}
+
+	qry->mergeActionList = stmt->mergeActionList;
+
+	/* XXX maybe later */
+	qry->returningList = NULL;
+
+	qry->hasTargetSRFs = false;
+	qry->hasSubLinks = false;
+
+	assign_query_collations(pstate, qry);
+
+	return qry;
+}
+
+/*
  * transformUpdateTargetList -
- *	handle SET clause in UPDATE/INSERT ... ON CONFLICT UPDATE
+ *	handle SET clause in UPDATE/MERGE/INSERT ... ON CONFLICT UPDATE
  */
 static List *
 transformUpdateTargetList(ParseState *pstate, List *origTlist)

@@ -31,6 +31,7 @@
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/print.h"
 #include "optimizer/tlist.h"
 #include "optimizer/var.h"
 #include "parser/analyze.h"
@@ -160,9 +161,79 @@ transformFromClause(ParseState *pstate, List *frmList)
 }
 
 /*
+ *	  Special handling for MERGE statement is required because we assemble
+ *	  the query manually. This is similar to setTargetTable() followed
+ * 	  by transformFromClause() but with a few less steps.
+ *
+ *	  We open the target relation and acquire a write lock on it.
+ *	  This must be done before processing the FROM list so that we grab
+ *	  the write lock before any read lock.
+ *
+ *	  Process the FROM clause and add items to the query's range table,
+ *	  joinlist, and namespace.
+ *
+ *    Note: we assume that the pstate's p_rtable, p_joinlist, and p_namespace
+ *    lists were initialized to NIL when the pstate was created.
+ *
+ *	  Finally, we mark the relation as requiring the permissions specified
+ *	  by requiredPerms.
+ *
+ *	  Returns the rangetable index of the target relation.
+ */
+int
+transformMergeJoinClause(ParseState *pstate, RangeVar *relation,
+							AclMode requiredPerms, Node *merge)
+{
+	RangeTblEntry *rte;
+	List	   *namespace;
+	int			rtindex;
+	Node		*n;
+
+	/*
+	 * Open target rel and grab suitable lock (which we will hold till end of
+	 * transaction).
+	 *
+	 * free_parsestate() will eventually do the corresponding heap_close(),
+	 * but *not* release the lock.
+	 */
+	pstate->p_target_relation = parserOpenTable(pstate, relation,
+												RowExclusiveLock);
+
+	n = transformFromClauseItem(pstate, merge,
+									&rte,
+									&rtindex,
+									&namespace);
+
+	pstate->p_joinlist = list_make1(n);
+	pstate->p_namespace = list_concat(pstate->p_namespace, namespace);
+	setNamespaceLateralState(pstate->p_namespace, false, true);
+
+	/*
+	 * Target relation gets added as first RTE because we set that as larg,
+	 * so our left outer join (if any) is specified as JOIN_RIGHT.
+	 */
+	rtindex = 1;
+	rte = rt_fetch(rtindex, pstate->p_rtable);
+
+	/*
+	 * Override addRangeTableEntry's default ACL_SELECT permissions check, and
+	 * instead mark target table as requiring exactly the specified
+	 * permissions.
+	 *
+	 * If we find an explicit reference to the rel later during parse
+	 * analysis, we will add the ACL_SELECT bit back again; see
+	 * markVarForSelectPriv and its callers.
+	 */
+	rte->requiredPerms = requiredPerms;
+	pstate->p_target_rangetblentry = rte;
+
+	return rtindex;
+}
+
+/*
  * setTargetTable
- *	  Add the target relation of INSERT/UPDATE/DELETE to the range table,
- *	  and make the special links to it in the ParseState.
+ *	  Add the target relation of INSERT/UPDATE/DELETE to the
+ *	  range table, and make the special links to it in the ParseState.
  *
  *	  We also open the target relation and acquire a write lock on it.
  *	  This must be done before processing the FROM list, in case the target

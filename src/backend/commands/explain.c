@@ -896,6 +896,9 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				case CMD_DELETE:
 					pname = operation = "Delete";
 					break;
+				case CMD_MERGE:
+					pname = operation = "Merge";
+					break;
 				default:
 					pname = "???";
 					break;
@@ -2926,6 +2929,10 @@ show_modifytable_info(ModifyTableState *mtstate, List *ancestors,
 			operation = "Delete";
 			foperation = "Foreign Delete";
 			break;
+		case CMD_MERGE:
+			operation = "Merge";
+			foperation = "Foreign Merge";
+			break;
 		default:
 			operation = "???";
 			foperation = "Foreign ???";
@@ -3045,6 +3052,13 @@ show_modifytable_info(ModifyTableState *mtstate, List *ancestors,
 			ExplainPropertyFloat("Tuples Inserted", insert_path, 0, es);
 			ExplainPropertyFloat("Conflicting Tuples", other_path, 0, es);
 		}
+	}
+	else if (node->operation == CMD_MERGE)
+	{
+		/*
+		 * XXX Add more detailed instrumentation for MERGE changes
+		 * when running EXPLAIN ANALYZE?
+		 */
 	}
 
 	if (labeltargets)

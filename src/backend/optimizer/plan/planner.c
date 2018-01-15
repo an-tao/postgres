@@ -1542,6 +1542,7 @@ inheritance_planner(PlannerInfo *root)
 									 returningLists,
 									 rowMarks,
 									 NULL,
+									 NULL,
 									 SS_assign_special_param(root)));
 }
 
@@ -2140,8 +2141,8 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 		}
 
 		/*
-		 * If this is an INSERT/UPDATE/DELETE, and we're not being called from
-		 * inheritance_planner, add the ModifyTable node.
+		 * If this is an INSERT/UPDATE/DELETE/MERGE, and we're not being called
+		 * from inheritance_planner, add the ModifyTable node.
 		 */
 		if (parse->commandType != CMD_SELECT && !inheritance_update)
 		{
@@ -2187,6 +2188,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 										returningLists,
 										rowMarks,
 										parse->onConflict,
+										parse->mergeActionList,
 										SS_assign_special_param(root));
 		}
 

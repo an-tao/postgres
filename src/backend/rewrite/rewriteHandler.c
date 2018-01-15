@@ -3330,12 +3330,55 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 		}
 		else if (event == CMD_UPDATE)
 		{
+			Assert(parsetree->override == OVERRIDING_NOT_SET);
 			parsetree->targetList =
-				rewriteTargetListIU(parsetree->targetList,
+					rewriteTargetListIU(parsetree->targetList,
 									parsetree->commandType,
 									parsetree->override,
 									rt_entry_relation,
 									parsetree->resultRelation, NULL);
+		}
+		else if (event == CMD_MERGE)
+		{
+			Assert(parsetree->override == OVERRIDING_NOT_SET);
+
+			/*
+			 * Rewrite each action targetlist separately
+			 */
+			foreach(lc1, parsetree->mergeActionList)
+			{
+				MergeAction     *action = (MergeAction *) lfirst(lc1);
+
+				switch (action->commandType)
+				{
+					case CMD_NOTHING:
+					case CMD_DELETE: /* Nothing to do here */
+						break;
+					case CMD_UPDATE:
+						action->targetList =
+									rewriteTargetListIU(action->targetList,
+														action->commandType,
+														parsetree->override,
+														rt_entry_relation,
+														parsetree->resultRelation,
+														NULL);
+						break;
+					case CMD_INSERT:
+			/*			InsertStmt *istmt = (InsertStmt *) action->stmt; */
+
+						action->targetList =
+									rewriteTargetListIU(action->targetList,
+														action->commandType,
+														parsetree->override, /* istmt->override, */
+														rt_entry_relation,
+														parsetree->resultRelation,
+														NULL);
+						break;
+					default:
+						elog(ERROR, "unrecognized commandType: %d", action->commandType);
+						break;
+				}
+			}
 		}
 		else if (event == CMD_DELETE)
 		{
@@ -3350,7 +3393,13 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 		locks = matchLocks(event, rt_entry_relation->rd_rules,
 						   result_relation, parsetree, &hasUpdate);
 
-		product_queries = fireRules(parsetree,
+		/*
+		 * First rule of MERGE club is we don't talk about rules
+		 */
+		if (event == CMD_MERGE)
+			product_queries = NIL;
+		else
+			product_queries = fireRules(parsetree,
 									result_relation,
 									event,
 									locks,

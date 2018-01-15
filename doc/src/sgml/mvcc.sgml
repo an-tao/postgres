@@ -900,7 +900,8 @@ ERROR:  could not serialize access due to read/write dependencies among transact
 
         <para>
          The commands <command>UPDATE</command>,
-         <command>DELETE</command>, and <command>INSERT</command>
+         <command>DELETE</command>, <command>INSERT</command> and
+         <command>MERGE</command>
          acquire this lock mode on the target table (in addition to
          <literal>ACCESS SHARE</literal> locks on any other referenced
          tables).  In general, this lock mode will be acquired by any

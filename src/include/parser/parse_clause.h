@@ -17,6 +17,8 @@
 #include "parser/parse_node.h"
 
 extern void transformFromClause(ParseState *pstate, List *frmList);
+extern int transformMergeJoinClause(ParseState *pstate, RangeVar *relation,
+				AclMode requiredPerms, Node *merge);
 extern int setTargetTable(ParseState *pstate, RangeVar *relation,
 			   bool inh, bool alsoSource, AclMode requiredPerms);
 extern bool interpretOidsOption(List *defList, bool allowOids);

@@ -3284,6 +3284,7 @@ create_lockrows_path(PlannerInfo *root, RelOptInfo *rel,
  * 'rowMarks' is a list of PlanRowMarks (non-locking only)
  * 'onconflict' is the ON CONFLICT clause, or NULL
  * 'epqParam' is the ID of Param for EvalPlanQual re-eval
+ * 'mergeActionList' is a list of MERGE actions
  */
 ModifyTablePath *
 create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
@@ -3294,7 +3295,7 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 						List *subroots,
 						List *withCheckOptionLists, List *returningLists,
 						List *rowMarks, OnConflictExpr *onconflict,
-						int epqParam)
+						List *mergeActionList, int epqParam)
 {
 	ModifyTablePath *pathnode = makeNode(ModifyTablePath);
 	double		total_size;
@@ -3366,6 +3367,7 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->rowMarks = rowMarks;
 	pathnode->onconflict = onconflict;
 	pathnode->epqParam = epqParam;
+	pathnode->mergeActionList = mergeActionList;
 
 	return pathnode;
 }

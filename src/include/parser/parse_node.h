@@ -127,7 +127,8 @@ typedef Node *(*CoerceParamHook) (ParseState *pstate, Param *param,
  * p_parent_cte: CommonTableExpr that immediately contains the current query,
  * if any.
  *
- * p_target_relation: target relation, if query is INSERT, UPDATE, or DELETE.
+ * p_target_relation: target relation, if query is INSERT, UPDATE, DELETE
+ * or MERGE.
  *
  * p_target_rangetblentry: target relation's entry in the rtable list.
  *
@@ -181,7 +182,7 @@ struct ParseState
 	List	   *p_ctenamespace; /* current namespace for common table exprs */
 	List	   *p_future_ctes;	/* common table exprs not yet in namespace */
 	CommonTableExpr *p_parent_cte;	/* this query's containing CTE */
-	Relation	p_target_relation;	/* INSERT/UPDATE/DELETE target rel */
+	Relation	p_target_relation;	/* INSERT/UPDATE/DELETE/MERGE target rel */
 	RangeTblEntry *p_target_rangetblentry;	/* target rel's RTE */
 	bool		p_is_insert;	/* process assignment like INSERT not UPDATE */
 	List	   *p_windowdefs;	/* raw representations of window clauses */

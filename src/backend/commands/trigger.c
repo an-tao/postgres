@@ -4435,6 +4435,14 @@ MakeTransitionCaptureState(TriggerDesc *trigdesc, Oid relid, CmdType cmdType)
 			need_old = trigdesc->trig_delete_old_table;
 			need_new = false;
 			break;
+		case CMD_MERGE:
+			if (trigdesc->trig_insert_new_table ||
+				trigdesc->trig_update_new_table ||
+				trigdesc->trig_update_old_table ||
+				trigdesc->trig_delete_old_table)
+				elog(ERROR, "cannot execute MERGE on table with transition capture triggers");
+			need_old = need_new = false;
+			break;
 		default:
 			elog(ERROR, "unexpected CmdType: %d", (int) cmdType);
 			need_old = need_new = false;	/* keep compiler quiet */

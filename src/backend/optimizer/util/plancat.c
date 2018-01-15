@@ -1835,6 +1835,10 @@ has_row_triggers(PlannerInfo *root, Index rti, CmdType event)
 				 trigDesc->trig_delete_before_row))
 				result = true;
 			break;
+		/* MERGE doesn't have triggers, only INSERT/UPDATE/DELETE */
+		case CMD_MERGE:
+			result = false;
+			break;
 		default:
 			elog(ERROR, "unrecognized CmdType: %d", (int) event);
 			break;

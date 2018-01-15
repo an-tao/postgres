@@ -270,6 +270,7 @@ _readQuery(void)
 	READ_NODE_FIELD(setOperations);
 	READ_NODE_FIELD(constraintDeps);
 	/* withCheckOptions intentionally omitted, see comment in parsenodes.h */
+	READ_NODE_FIELD(mergeActionList);
 	READ_LOCATION_FIELD(stmt_location);
 	READ_LOCATION_FIELD(stmt_len);
 

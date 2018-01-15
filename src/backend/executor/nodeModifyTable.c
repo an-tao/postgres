@@ -715,6 +715,7 @@ ExecDelete(ModifyTableState *mtstate,
 		   ItemPointer tupleid,
 		   HeapTuple oldtuple,
 		   TupleTableSlot *planSlot,
+		   bool error_on_SelfUpdate,
 		   EPQState *epqstate,
 		   EState *estate,
 		   bool *tupleDeleted,
@@ -811,6 +812,7 @@ ldelete:;
 							 estate->es_crosscheck_snapshot,
 							 true /* wait for commit */ ,
 							 &hufd);
+
 		switch (result)
 		{
 			case HeapTupleSelfUpdated:
@@ -818,11 +820,23 @@ ldelete:;
 				/*
 				 * The target tuple was already updated or deleted by the
 				 * current command, or by a later command in the current
-				 * transaction.  The former case is possible in a join DELETE
+				 * transaction.
+				 */
+
+				/*
+				 * The former case is possible in a join UPDATE
 				 * where multiple tuples join to the same target tuple. This
-				 * is somewhat questionable, but Postgres has always allowed
-				 * it: we just ignore additional deletion attempts.
-				 *
+				 * is pretty questionable, but Postgres has always allowed it:
+				 * we just execute the first update action and ignore
+				 * additional update attempts.  SQLStandard disallows this for
+				 * MERGE, so allow the caller to select how to handle this.
+				 */
+				if (error_on_SelfUpdate)
+					ereport(ERROR,
+							(errcode(ERRCODE_CARDINALITY_VIOLATION),
+							 errmsg("MERGE command cannot affect row a second time")));
+
+				/*
 				 * The latter case arises if the tuple is modified by a
 				 * command in a BEFORE trigger, or perhaps by a command in a
 				 * volatile function used in the query.  In such situations we
@@ -1010,6 +1024,7 @@ ExecUpdate(ModifyTableState *mtstate,
 		   HeapTuple oldtuple,
 		   TupleTableSlot *slot,
 		   TupleTableSlot *planSlot,
+		   bool error_on_SelfUpdate,
 		   EPQState *epqstate,
 		   EState *estate,
 		   bool canSetTag)
@@ -1266,12 +1281,23 @@ lreplace:;
 				/*
 				 * The target tuple was already updated or deleted by the
 				 * current command, or by a later command in the current
-				 * transaction.  The former case is possible in a join UPDATE
+				 * transaction.
+				 */
+
+				/*
+				 * The former case is possible in a join UPDATE
 				 * where multiple tuples join to the same target tuple. This
 				 * is pretty questionable, but Postgres has always allowed it:
 				 * we just execute the first update action and ignore
-				 * additional update attempts.
-				 *
+				 * additional update attempts.  SQLStandard disallows this for
+				 * MERGE, so allow the caller to select how to handle this.
+				 */
+				if (error_on_SelfUpdate)
+					ereport(ERROR,
+							(errcode(ERRCODE_CARDINALITY_VIOLATION),
+							 errmsg("MERGE command cannot affect row a second time")));
+
+				/*
 				 * The latter case arises if the tuple is modified by a
 				 * command in a BEFORE trigger, or perhaps by a command in a
 				 * volatile function used in the query.  In such situations we
@@ -1445,7 +1471,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 			 * there's no historical behavior to break.
 			 *
 			 * It is the user's responsibility to prevent this situation from
-			 * occurring.  These problems are why SQL-2003 similarly specifies
+			 * occurring.  These problems are why SQL Standard similarly specifies
 			 * that for SQL MERGE, an exception must be raised in the event of
 			 * an attempt to update the same row twice.
 			 */
@@ -1567,7 +1593,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 
 	/* Execute UPDATE with projection */
 	*returning = ExecUpdate(mtstate, &tuple.t_self, NULL,
-							mtstate->mt_conflproj, planSlot,
+							mtstate->mt_conflproj, planSlot, false,
 							&mtstate->mt_epqstate, mtstate->ps.state,
 							canSetTag);
 
@@ -1578,6 +1604,9 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 
 /*
  * Process BEFORE EACH STATEMENT triggers
+ *
+ * The precedent set by ON CONFLICT is that we fire INSERT then UPDATE.
+ * MERGE follows the same logic, firing INSERT, then UPDATE, then DELETE.
  */
 static void
 fireBSTriggers(ModifyTableState *node)
@@ -1605,6 +1634,14 @@ fireBSTriggers(ModifyTableState *node)
 			break;
 		case CMD_DELETE:
 			ExecBSDeleteTriggers(node->ps.state, resultRelInfo);
+			break;
+		case CMD_MERGE:
+			if (node->mt_mergeSTriggers & ACL_INSERT)
+				ExecBSInsertTriggers(node->ps.state, resultRelInfo);
+			if (node->mt_mergeSTriggers & ACL_UPDATE)
+				ExecBSUpdateTriggers(node->ps.state, resultRelInfo);
+			if (node->mt_mergeSTriggers & ACL_DELETE)
+				ExecBSDeleteTriggers(node->ps.state, resultRelInfo);
 			break;
 		default:
 			elog(ERROR, "unknown operation");
@@ -1636,6 +1673,9 @@ getTargetResultRelInfo(ModifyTableState *node)
 
 /*
  * Process AFTER EACH STATEMENT triggers
+ *
+ * The precedent set by ON CONFLICT is that when we have multiple
+ * triggers to fire we do that in reverse order to fireBSTriggers()
  */
 static void
 fireASTriggers(ModifyTableState *node)
@@ -1659,6 +1699,17 @@ fireASTriggers(ModifyTableState *node)
 		case CMD_DELETE:
 			ExecASDeleteTriggers(node->ps.state, resultRelInfo,
 								 node->mt_transition_capture);
+			break;
+		case CMD_MERGE:
+			if (node->mt_mergeSTriggers & ACL_DELETE)
+				ExecASDeleteTriggers(node->ps.state, resultRelInfo,
+									 node->mt_transition_capture);
+			if (node->mt_mergeSTriggers & ACL_UPDATE)
+				ExecASUpdateTriggers(node->ps.state, resultRelInfo,
+									 node->mt_transition_capture);
+			if (node->mt_mergeSTriggers & ACL_INSERT)
+				ExecASInsertTriggers(node->ps.state, resultRelInfo,
+									 node->mt_transition_capture);
 			break;
 		default:
 			elog(ERROR, "unknown operation");
@@ -1858,6 +1909,7 @@ ExecModifyTable(PlanState *pstate)
 	ItemPointerData tuple_ctid;
 	HeapTupleData oldtupdata;
 	HeapTuple	oldtuple;
+	bool		matched = false;
 
 	CHECK_FOR_INTERRUPTS();
 
@@ -1982,7 +2034,9 @@ ExecModifyTable(PlanState *pstate)
 			/*
 			 * extract the 'ctid' or 'wholerow' junk attribute.
 			 */
-			if (operation == CMD_UPDATE || operation == CMD_DELETE)
+			if (operation == CMD_UPDATE ||
+				operation == CMD_DELETE ||
+				operation == CMD_MERGE)
 			{
 				char		relkind;
 				Datum		datum;
@@ -1995,12 +2049,24 @@ ExecModifyTable(PlanState *pstate)
 												 junkfilter->jf_junkAttNo,
 												 &isNull);
 					/* shouldn't ever get a null result... */
-					if (isNull)
+					if (isNull && operation != CMD_MERGE)
 						elog(ERROR, "ctid is NULL");
 
-					tupleid = (ItemPointer) DatumGetPointer(datum);
-					tuple_ctid = *tupleid;	/* be sure we don't free ctid!! */
-					tupleid = &tuple_ctid;
+					if (isNull)
+					{
+						Assert(operation == CMD_MERGE);
+						matched = false;
+
+						tupleid = NULL; /* we don't need it for INSERT actions */
+					}
+					else
+					{
+						matched = true; /* Meaningful only for CMD_MERGE */
+
+						tupleid = (ItemPointer) DatumGetPointer(datum);
+						tuple_ctid = *tupleid;	/* be sure we don't free ctid!! */
+						tupleid = &tuple_ctid;
+					}
 				}
 
 				/*
@@ -2042,9 +2108,9 @@ ExecModifyTable(PlanState *pstate)
 			}
 
 			/*
-			 * apply the junkfilter if needed.
+			 * apply the junkfilter if needed - we do this later for CMD_MERGE
 			 */
-			if (operation != CMD_DELETE)
+			if (operation == CMD_UPDATE || operation == CMD_INSERT)
 				slot = ExecFilterJunk(junkfilter, slot);
 		}
 
@@ -2056,13 +2122,132 @@ ExecModifyTable(PlanState *pstate)
 								  estate, node->canSetTag);
 				break;
 			case CMD_UPDATE:
-				slot = ExecUpdate(node, tupleid, oldtuple, slot, planSlot,
+				slot = ExecUpdate(node, tupleid, oldtuple, slot, planSlot, false,
 								  &node->mt_epqstate, estate, node->canSetTag);
 				break;
 			case CMD_DELETE:
-				slot = ExecDelete(node, tupleid, oldtuple, planSlot,
+				slot = ExecDelete(node, tupleid, oldtuple, planSlot, false,
 								  &node->mt_epqstate, estate,
 								  NULL, true, node->canSetTag);
+				break;
+			case CMD_MERGE:
+				{
+					ListCell   *l;
+					ExprContext *econtext = node->ps.ps_ExprContext;
+					HeapTuple	tuple;
+
+#ifdef MERGE_DEBUG
+					elog(NOTICE, "MERGE row: %s",
+										(!matched ? "not matched" : "matched"));
+#endif
+
+					ResetExprContext(econtext);
+
+					/* Note that the row is already visible, no need to recheck */
+
+					/*
+					 * The main tuple arriving here is a superset of the columns we
+					 * need for all of the actions. So we now get the tuple out of
+					 * the slot so we can re-project it for use in the condition
+					 * and any appropriate actions.
+					 *
+					 * We don't need to do this for CMD_DELETE actions, but we don't
+					 * know yet which those are, so we need to do it anyway.
+					 */
+					tuple = ExecMaterializeSlot(slot);
+
+					/* Store target's existing tuple in the state's dedicated slot */
+					ExecStoreTuple(tuple, node->mt_existing, InvalidBuffer, false);
+
+					/*
+					 * Make tuple and any needed join variables available to ExecQual and
+					 * ExecProject.  The target's existing tuple is installed in the
+					 * scantuple.
+					 */
+					econtext->ecxt_scantuple = node->mt_existing;
+					econtext->ecxt_innertuple = NULL; /* ? */
+					econtext->ecxt_outertuple = NULL;
+
+					foreach(l, node->mt_mergeActionStateList)
+					{
+						MergeActionState *action = (MergeActionState *) lfirst(l);
+
+#ifdef MERGE_DEBUG
+						elog(NOTICE, "  action: %s %s",
+										(action->matched ?
+										(action->commandType == CMD_UPDATE ? "UPDATE" : "DELETE") :
+										(action->commandType == CMD_INSERT ? "INSERT" : "DO NOTHING")),
+										(action->matched == matched ? "act " : "skip"));
+#endif
+
+						/*
+						 * Apply either MATCHED or NOT MATCHED actions.
+						 *
+						 * The presence of a NULL value for ctid indicates that
+						 * the source query did not match a target row and so at
+						 * the time of the snapshot there was no matching row.
+						 *
+						 * The state of matched or not matched should not change
+						 * after the first action is tested, otherwise we would
+						 * not have a deterministic outcome, hence why the matched
+						 * variable is local and non-modifiable by functions.
+						 *
+						 * It is valid if no actions are activated, we just do
+						 * nothing for that candidate change row and move to next.
+						 */
+						if (action->matched != matched)
+							continue;
+
+						/*
+						 * Test condition, if any
+						 *
+						 * In the absence of a condition we perform the action
+						 * unconditionally.
+						 *
+						 * If the whole condition evaluates to NULL we assume this
+						 * acts like a WHERE clause and rejects the row.
+						 */
+						if (action->condition)
+						{
+							elog(NOTICE, "checking condition");
+							if (!ExecQual(action->condition, econtext))
+								continue;
+						}
+
+						/* Perform stated action */
+						switch (action->commandType)
+						{
+							case CMD_INSERT:
+								ExecProject(action->proj);
+								action->slot = ExecFilterJunk(junkfilter, action->slot);
+								action->slot = ExecInsert(node, action->slot, planSlot,
+												  NULL, ONCONFLICT_NONE, estate, node->canSetTag);
+								break;
+							case CMD_UPDATE:
+								ExecProject(action->proj);
+								action->slot = ExecFilterJunk(junkfilter, action->slot);
+								slot = ExecUpdate(node, tupleid, oldtuple, action->slot, planSlot, false, /* should be true */
+												  &node->mt_epqstate, estate, node->canSetTag);
+								break;
+							case CMD_DELETE:
+								action->slot = ExecFilterJunk(junkfilter, action->slot);
+								slot = ExecDelete(node, tupleid, oldtuple, planSlot, true,
+												  &node->mt_epqstate, estate, node->canSetTag);
+								break;
+							case CMD_NOTHING:
+								/* Do Nothing */
+								break;
+							default:
+								elog(ERROR, "unknown action in MERGE WHEN clause");
+						}
+
+						/*
+						 * We've activated one of the WHEN clauses, so we don't search further.
+						 * This is required behaviour, not an optimisation.
+						 */
+						break;
+					}
+				}
 				break;
 			default:
 				elog(ERROR, "unknown operation");
@@ -2240,6 +2425,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 * valid trigger query context, so skip it in explain-only mode.
 	 */
 	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+		/* Check for transition tables on the directly targeted relation. */
 		ExecSetupTransitionCaptureState(mtstate, estate);
 
 	/*
@@ -2409,6 +2595,89 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		}
 	}
 
+	/*
+	 * Initialize everything for CMD_MERGE
+	 */
+	mtstate->mt_mergeActionStateList = NIL;
+	if (node->mergeActionList)
+	{
+		ListCell   *l;
+		ExprContext *econtext;
+
+		Assert(operation == CMD_MERGE);
+
+		/* merge may only have one plan, inheritance is not expanded */
+		Assert(nplans == 1);
+
+		mtstate->mt_mergeSTriggers = 0;
+
+		if (mtstate->ps.ps_ExprContext == NULL)
+			ExecAssignExprContext(estate, &mtstate->ps);
+
+		econtext = mtstate->ps.ps_ExprContext;
+
+		/* initialize slot for the existing tuple */
+		mtstate->mt_existing = ExecInitExtraTupleSlot(mtstate->ps.state);
+		ExecSetSlotDescriptor(mtstate->mt_existing,
+							  resultRelInfo->ri_RelationDesc->rd_att);
+
+		/*
+		 * Create a MergeActionState for each action on the mergeActionList
+		 */
+		foreach(l, node->mergeActionList)
+		{
+			MergeAction *action = (MergeAction *) lfirst(l);
+			MergeActionState *action_state = makeNode(MergeActionState);
+
+			action_state->matched = action->matched;
+			action_state->commandType = action->commandType;
+			if (action->qual)
+			{
+				elog(NOTICE, "ExecInitQual");
+// Commented out because it crashes at present
+//				action_state->condition = ExecInitQual((List *) action->qual,
+//													&mtstate->ps);
+			}
+
+			/* create target slot for this action's projection */
+			tupDesc = ExecTypeFromTL((List *) action->targetList,
+								 resultRelInfo->ri_RelationDesc->rd_rel->relhasoids);
+			action_state->slot = ExecInitExtraTupleSlot(mtstate->ps.state);
+			ExecSetSlotDescriptor(action_state->slot, tupDesc);
+
+			/* build action projection state */
+			action_state->proj =
+				ExecBuildProjectionInfo(action->targetList, econtext,
+										action_state->slot, &mtstate->ps,
+										resultRelInfo->ri_RelationDesc->rd_att);
+
+			mtstate->mt_mergeActionStateList = lappend(mtstate->mt_mergeActionStateList,
+														action_state);
+
+			/*
+			 * XXX if we support transition tables this would need to move earlier
+			 * before ExecSetupTransitionCaptureState()
+			 */
+			switch (action->commandType)
+			{
+				case CMD_INSERT:
+					mtstate->mt_mergeSTriggers |= ACL_INSERT;
+					break;
+				case CMD_UPDATE:
+					mtstate->mt_mergeSTriggers |= ACL_UPDATE;
+					break;
+				case CMD_DELETE:
+					mtstate->mt_mergeSTriggers |= ACL_DELETE;
+					break;
+				case CMD_NOTHING:
+					break;
+				default:
+					elog(ERROR, "unknown operation");
+					break;
+			}
+		}
+	}
+
 	/* select first subplan */
 	mtstate->mt_whichplan = 0;
 	subplan = (Plan *) linitial(node->plans);
@@ -2422,7 +2691,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 * --- no need to look first.  Typically, this will be a 'ctid' or
 	 * 'wholerow' attribute, but in the case of a foreign data wrapper it
 	 * might be a set of junk attributes sufficient to identify the remote
-	 * row.
+	 * row. We follow this logic for MERGE, so it always has a junk 'ctid'.
 	 *
 	 * If there are multiple result relations, each one needs its own junk
 	 * filter.  Note multiple rels are only possible for UPDATE/DELETE, so we
@@ -2450,6 +2719,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 				break;
 			case CMD_UPDATE:
 			case CMD_DELETE:
+			case CMD_MERGE:
 				junk_filter_needed = true;
 				break;
 			default:
@@ -2465,6 +2735,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 				JunkFilter *j;
 
 				subplan = mtstate->mt_plans[i]->plan;
+				/* XXX we probably need to check plan output for CMD_MERGE also */
 				if (operation == CMD_INSERT || operation == CMD_UPDATE)
 					ExecCheckPlanOutput(resultRelInfo->ri_RelationDesc,
 										subplan->targetlist);
@@ -2473,7 +2744,9 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 									   resultRelInfo->ri_RelationDesc->rd_att->tdhasoid,
 									   ExecInitExtraTupleSlot(estate, NULL));
 
-				if (operation == CMD_UPDATE || operation == CMD_DELETE)
+				if (operation == CMD_UPDATE ||
+					operation == CMD_DELETE ||
+					operation == CMD_MERGE)
 				{
 					/* For UPDATE/DELETE, find the appropriate junk attr now */
 					char		relkind;

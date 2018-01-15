@@ -105,7 +105,9 @@ preprocess_targetlist(PlannerInfo *root)
 	 * scribbles on parse->targetList, which is not very desirable, but we
 	 * keep it that way to avoid changing APIs used by FDWs.
 	 */
-	if (command_type == CMD_UPDATE || command_type == CMD_DELETE)
+	if (command_type == CMD_UPDATE ||
+		command_type == CMD_DELETE ||
+		command_type == CMD_MERGE)
 		rewriteTargetListUD(parse, target_rte, target_relation);
 
 	/*
@@ -348,6 +350,7 @@ expand_targetlist(List *tlist, int command_type,
 													  true /* byval */ );
 					}
 					break;
+				case CMD_MERGE:
 				case CMD_UPDATE:
 					if (!att_tup->attisdropped)
 					{
