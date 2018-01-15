@@ -2628,6 +2628,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		{
 			MergeAction *action = (MergeAction *) lfirst(l);
 			MergeActionState *action_state = makeNode(MergeActionState);
+			TupleDesc	tupDesc;
 
 			action_state->matched = action->matched;
 			action_state->commandType = action->commandType;
