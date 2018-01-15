@@ -2219,18 +2219,24 @@ ExecModifyTable(PlanState *pstate)
 						{
 							case CMD_INSERT:
 								ExecProject(action->proj);
-								action->slot = ExecFilterJunk(junkfilter, action->slot);
-								action->slot = ExecInsert(node, action->slot, planSlot,
+								/*
+								 * XXX We must not change action->slot since
+								 * that's what we have passed to
+								 * ExecBuildProjectionInfo and ExecProject will
+								 * keep projecting to the original slot.
+								 */
+								slot = ExecFilterJunk(junkfilter, action->slot);
+								slot = ExecInsert(node, slot, planSlot,
 												  NULL, ONCONFLICT_NONE, estate, node->canSetTag);
 								break;
 							case CMD_UPDATE:
 								ExecProject(action->proj);
-								action->slot = ExecFilterJunk(junkfilter, action->slot);
-								slot = ExecUpdate(node, tupleid, oldtuple, action->slot, planSlot, false, /* should be true */
+								slot = ExecFilterJunk(junkfilter, action->slot);
+								slot = ExecUpdate(node, tupleid, oldtuple, slot, planSlot, false, /* should be true */
 												  &node->mt_epqstate, estate, node->canSetTag);
 								break;
 							case CMD_DELETE:
-								action->slot = ExecFilterJunk(junkfilter, action->slot);
+								slot = ExecFilterJunk(junkfilter, action->slot);
 								slot = ExecDelete(node, tupleid, oldtuple, planSlot, true,
 												  &node->mt_epqstate, estate, node->canSetTag);
 								break;
