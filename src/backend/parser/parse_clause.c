@@ -181,7 +181,7 @@ transformFromClause(ParseState *pstate, List *frmList)
  *	the join is populated and returned. Note that when the JoinExpr is
  *	setup by transformMergeStmt, the left subtree has the target result
  *	relation and the right subtree has the source relation.
- *	  
+ *
  *	Finally, we mark the relation as requiring the permissions specified
  *	by requiredPerms.
  *
