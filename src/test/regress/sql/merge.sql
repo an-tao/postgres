@@ -333,10 +333,18 @@ MERGE INTO target t
 USING source AS s
 ON t.tid = s.sid
 WHEN NOT MATCHED THEN
-	INSERT (tid, balance) VALUES (t.tid, s.delta)
+	INSERT (tid, balance) VALUES (s.sid, s.delta)
 ;
 SELECT * FROM target ORDER BY tid;
 ROLLBACK;
+
+-- and again with a subtle error: referring to non-existent target row for NOT MATCHED
+MERGE INTO target t
+USING source AS s
+ON t.tid = s.sid
+WHEN NOT MATCHED THEN
+	INSERT (tid, balance) VALUES (t.tid, s.delta)
+;
 
 -- and again with a constant ON clause
 BEGIN;
@@ -448,10 +456,10 @@ ROLLBACK;
 --source constants
 BEGIN;
 MERGE INTO target t
-USING (SELECT 100 AS sid, 57 AS delta) AS s
+USING (SELECT 9 AS sid, 57 AS delta) AS s
 ON t.tid = s.sid
 WHEN NOT MATCHED THEN
-	INSERT (tid, balance) VALUES (t.tid, s.delta)
+	INSERT (tid, balance) VALUES (s.sid, s.delta)
 ;
 SELECT * FROM target ORDER BY tid;
 ROLLBACK;
@@ -498,7 +506,7 @@ USING
  ORDER BY sid ASC) AS s
 ON t.tid = s.sid
 WHEN NOT MATCHED THEN
-	INSERT (tid, balance) VALUES (t.tid, s.delta)
+	INSERT (tid, balance) VALUES (s.sid, s.delta)
 ;
 SELECT * FROM target ORDER BY tid;
 ROLLBACK;
