@@ -2200,20 +2200,17 @@ ExecModifyTable(PlanState *pstate)
 						switch (action->commandType)
 						{
 							case CMD_INSERT:
-								ExecProject(action->proj);
-								/*
-								 * XXX We must not change action->slot since
-								 * that's what we have passed to
-								 * ExecBuildProjectionInfo and ExecProject will
-								 * keep projecting to the original slot.
-								 *
-								 * XXX We must not call ExecFilterJunk()
-								 * because the projected tuple using the INSERT
-								 * action's targetlist doesn't really have any
-								 * junk attribute.
-								 */
-								slot = ExecInsert(node, action->slot, planSlot,
-												  NULL, ONCONFLICT_NONE, estate, node->canSetTag);
+								{
+									/*
+									 * We set up the projection earlier, so all we do
+									 * here is Project, no need for any other tasks
+									 * prior to the ExecInsert.
+									 */
+									ExecProject(action->proj);
+
+									slot = ExecInsert(node, action->slot, planSlot,
+													  NULL, ONCONFLICT_NONE, estate, node->canSetTag);
+								}
 								break;
 							case CMD_UPDATE:
 								{
@@ -2234,7 +2231,7 @@ ExecModifyTable(PlanState *pstate)
 									 * But if we do need, then we probably
 									 * should be looking at the return value of
 									 * heap_lock_tuple() and take appropriate
-									 * action.
+									 * action. So more needed around concurrency.
 									 */
 									tuple.t_self = *tupleid;
 									test = heap_lock_tuple(relation, &tuple, estate->es_output_cid,
@@ -2245,14 +2242,13 @@ ExecModifyTable(PlanState *pstate)
 									/* Store target's existing tuple in the state's dedicated slot */
 									ExecStoreTuple(&tuple, node->mt_existing, buffer, false);
 
+									/*
+									 * We set up the projection earlier, so all we do
+									 * here is Project, no need for any other tasks
+									 * prior to the ExecUpdate.
+									 */
 									ExecProject(action->proj);
 
-									/*
-									 * XXX We must not call ExecFilterJunk()
-									 * because the projected tuple using the
-									 * UPDATE action's targetlist doesn't really
-									 * have any junk attribute.
-									 */
 									slot = ExecUpdate(node, tupleid, oldtuple,
 											action->slot, planSlot, true,
 													  &node->mt_epqstate, estate, node->canSetTag);
@@ -2261,8 +2257,12 @@ ExecModifyTable(PlanState *pstate)
 								}
 								break;
 							case CMD_DELETE:
-								slot = ExecDelete(node, tupleid, oldtuple, planSlot, true,
-												  &node->mt_epqstate, estate, node->canSetTag);
+								{
+									/* Nothing to Project for a DELETE action */
+
+									slot = ExecDelete(node, tupleid, oldtuple, planSlot, true,
+													  &node->mt_epqstate, estate, node->canSetTag);
+								}
 								break;
 							case CMD_NOTHING:
 								/* Do Nothing */
