@@ -2543,8 +2543,6 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 						Assert(list_length(valuesLists) == 1);
 						Assert(selectStmt->intoClause == NULL);
 
-						elog(WARNING, "MERGE INSERT actions not fully implemented yet");
-
 						/*
 						 * Do basic expression transformation (same as a ROW() expr, but allow
 						 * SetToDefault at top level)
@@ -2607,8 +2605,6 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 			case CMD_UPDATE:
 				{
 					UpdateStmt *ustmt = (UpdateStmt *) action->stmt;
-
-					elog(WARNING, "MERGE UPDATE actions not fully implemented yet");
 
 					pstate->p_is_insert = false;
 					action->targetList = transformUpdateTargetList(pstate, ustmt->targetList);
