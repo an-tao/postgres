@@ -2664,7 +2664,6 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 			action_state->commandType = action->commandType;
 			if (action->qual)
 			{
-				elog(NOTICE, "ExecInitQual");
 // Commented out because it crashes at present
 //				action_state->condition = ExecInitQual((List *) action->qual,
 //													&mtstate->ps);
