@@ -163,29 +163,29 @@ transformFromClause(ParseState *pstate, List *frmList)
 }
 
 /*
- *	  Special handling for MERGE statement is required because we assemble
- *	  the query manually. This is similar to setTargetTable() followed
- * 	  by transformFromClause() but with a few less steps.
+ *	Special handling for MERGE statement is required because we assemble
+ *	the query manually. This is similar to setTargetTable() followed
+ * 	by transformFromClause() but with a few less steps.
  *
- *	  We open the target relation and acquire a write lock on it.
- *	  This must be done before processing the FROM list so that we grab
- *	  the write lock before any read lock.
+ *	We open the target relation and acquire a write lock on it.
+ *	This must be done before processing the FROM list so that we grab
+ *	the write lock before any read lock.
  *
- *	  Process the FROM clause and add items to the query's range table,
- *	  joinlist, and namespace.
+ *	Process the FROM clause and add items to the query's range table,
+ *	joinlist, and namespace.
  *
- *    Note: we assume that the pstate's p_rtable, p_joinlist, and p_namespace
- *    lists were initialized to NIL when the pstate was created.
+ *	Note: we assume that the pstate's p_rtable, p_joinlist, and p_namespace
+ *  lists were initialized to NIL when the pstate was created.
  *
- *	  A special targetlist comprising of the columns from the right-subtree of
- *	  the join is populated and returned. Note that when the JoinExpr is
- *	  setup by transformMergeStmt, the left subtree has the target result
- *	  relation and the right subtree has the source relation.
+ *	A special targetlist comprising of the columns from the right-subtree of
+ *	the join is populated and returned. Note that when the JoinExpr is
+ *	setup by transformMergeStmt, the left subtree has the target result
+ *	relation and the right subtree has the source relation.
  *	  
- *	  Finally, we mark the relation as requiring the permissions specified
- *	  by requiredPerms.
+ *	Finally, we mark the relation as requiring the permissions specified
+ *	by requiredPerms.
  *
- *	  Returns the rangetable index of the target relation.
+ *	Returns the rangetable index of the target relation.
  */
 int
 transformMergeJoinClause(ParseState *pstate, RangeVar *relation,
