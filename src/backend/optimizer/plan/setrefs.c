@@ -894,8 +894,8 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 								rtoffset);
 
 						/* Fix quals too. */
-						action->qual = fix_join_expr(root,
-								action->qual,
+						action->qual = (Node *) fix_join_expr(root,
+								(List *) action->qual,
 								NULL, itlist,
 								linitial_int(splan->resultRelations),
 								rtoffset);
