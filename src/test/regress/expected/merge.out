@@ -337,8 +337,8 @@ SELECT * FROM target ORDER BY tid;
  tid | balance 
 -----+---------
    1 |      10
-   2 |       0
-   3 |       0
+   2 |      20
+   3 |      30
    4 |        
 (4 rows)
 
@@ -523,8 +523,8 @@ SELECT * FROM target ORDER BY tid;
 -----+---------
    1 |      10
    2 |      25
-   3 |      50  
-   4 |      40  
+   3 |      50
+   4 |      40
 (4 rows)
 
 ROLLBACK;
@@ -553,7 +553,7 @@ SELECT * FROM target ORDER BY tid;
 -----+---------
    1 |      10
    2 |      15
-   3 |      10  
+   3 |      10
 (3 rows)
 
 ROLLBACK;
@@ -601,6 +601,8 @@ WHEN NOT MATCHED THEN
 NOTICE:  BEFORE INSERT STATEMENT trigger
 NOTICE:  BEFORE UPDATE STATEMENT trigger
 NOTICE:  BEFORE DELETE STATEMENT trigger
+NOTICE:  BEFORE INSERT ROW trigger
+NOTICE:  BEFORE UPDATE ROW trigger
 NOTICE:  BEFORE UPDATE ROW trigger
 NOTICE:  AFTER INSERT ROW trigger
 NOTICE:  AFTER UPDATE ROW trigger
@@ -613,8 +615,8 @@ SELECT * FROM target ORDER BY tid;
 -----+---------
    1 |      10
    2 |      15
-   3 |      10  
-   4 |      40  
+   3 |      10
+   4 |      40
 (4 rows)
 
 ROLLBACK;
@@ -771,6 +773,8 @@ END;
 $$;
 SELECT merge_func(3, 4);
 NOTICE:  BEFORE UPDATE STATEMENT trigger
+NOTICE:  BEFORE UPDATE ROW trigger
+NOTICE:  AFTER UPDATE ROW trigger
 NOTICE:  AFTER UPDATE STATEMENT trigger
  merge_func 
 ------------
