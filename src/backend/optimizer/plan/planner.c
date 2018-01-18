@@ -1543,6 +1543,7 @@ inheritance_planner(PlannerInfo *root)
 									 rowMarks,
 									 NULL,
 									 NULL,
+									 NULL,
 									 SS_assign_special_param(root)));
 }
 
@@ -2188,6 +2189,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 										returningLists,
 										rowMarks,
 										parse->onConflict,
+										parse->mergeSourceTargetList,
 										parse->mergeActionList,
 										SS_assign_special_param(root));
 		}

@@ -1689,6 +1689,7 @@ typedef struct ModifyTablePath
 	List	   *rowMarks;		/* PlanRowMarks (non-locking only) */
 	OnConflictExpr *onconflict; /* ON CONFLICT clause, or NULL */
 	int			epqParam;		/* ID of Param for EvalPlanQual re-eval */
+	List	   *mergeSourceTargetList;
 	List	   *mergeActionList; /* actions for MERGE */
 } ModifyTablePath;
 

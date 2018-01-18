@@ -2421,11 +2421,30 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	/*
 	 * We use a special purpose transformation here because the normal
 	 * routines don't quite work right for the MERGE case.
+	 *
+	 * A special mergeSourceTargetList is setup by transformMergeJoinClause().
+	 * It refers to all the attributes provided by the source relation. This is
+	 * later used by set_plan_refs() to fix the UPDATE/INSERT target lists to
+	 * so that they can correctly fetch the attributes from the source
+	 * relation.
 	 */
 	qry->resultRelation = transformMergeJoinClause(pstate,
 													stmt->relation,
 													targetPerms,
-													(Node *) joinexpr);
+													(Node *) joinexpr,
+													&qry->mergeSourceTargetList);
+
+	/*
+	 * This query should just provide the source relation columns. Later, in
+	 * preprocess_targetlist(), we shall also add "ctid" attribute of the
+	 * target relation to ensure that the target tuple can be fetched
+	 * correctly.
+	 *
+	 * XXX It's not clear if this targetlist can also include columns from the
+	 * target relation so that both source and target columns are available in
+	 * the tuple obtained from executing the plan.
+	 */
+	qry->targetList = qry->mergeSourceTargetList;
 
 	/* qry has no WHERE clause so absent quals are shown as NULL */
 	qry->jointree = makeFromExpr(pstate->p_joinlist, NULL);
@@ -2452,7 +2471,6 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	 * because both of those already have RTEs. There is nothing like
 	 * the EXCLUDED pseudo-relation for INSERT ON CONFLICT.
 	 */
-	qry->targetList = NIL;
 	foreach(l, stmt->mergeActionList)
 	{
 		MergeAction		*action = (MergeAction *) lfirst(l);
@@ -2535,6 +2553,18 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 														   (List *) linitial(valuesLists),
 														   EXPR_KIND_VALUES_SINGLE,
 														   true);
+						/*
+						 * !!TODO
+						 *
+						 * We should really not allow referencing the
+						 * columns from the target relation in the INSERT
+						 * values. Note that the grammer allows INSERT action
+						 * only for NOT MATCHED rows and hence there is no
+						 * target row when the INSERT action is executed.
+						 * Without this check, we get execution time errors.
+						 * But we should ideally catch them during parsing
+						 * itself.
+						 */
 
 						/* Prepare row for assignment to target table */
 						exprList = transformInsertRow(pstate, exprList,

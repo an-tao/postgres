@@ -2134,30 +2134,12 @@ ExecModifyTable(PlanState *pstate)
 				{
 					ListCell   *l;
 					ExprContext *econtext = node->ps.ps_ExprContext;
-					HeapTuple	tuple;
+					HeapTupleData	tuple;
 
 #ifdef MERGE_DEBUG
 					elog(NOTICE, "MERGE row: %s",
 										(!matched ? "not matched" : "matched"));
 #endif
-
-					ResetExprContext(econtext);
-
-					/* Note that the row is already visible, no need to recheck */
-
-					/*
-					 * The main tuple arriving here is a superset of the columns we
-					 * need for all of the actions. So we now get the tuple out of
-					 * the slot so we can re-project it for use in the condition
-					 * and any appropriate actions.
-					 *
-					 * We don't need to do this for CMD_DELETE actions, but we don't
-					 * know yet which those are, so we need to do it anyway.
-					 */
-					tuple = ExecMaterializeSlot(slot);
-
-					/* Store target's existing tuple in the state's dedicated slot */
-					ExecStoreTuple(tuple, node->mt_existing, InvalidBuffer, false);
 
 					/*
 					 * Make tuple and any needed join variables available to ExecQual and
@@ -2165,7 +2147,7 @@ ExecModifyTable(PlanState *pstate)
 					 * scantuple.
 					 */
 					econtext->ecxt_scantuple = node->mt_existing;
-					econtext->ecxt_innertuple = NULL; /* ? */
+					econtext->ecxt_innertuple = planSlot; /* ? */
 					econtext->ecxt_outertuple = NULL;
 
 					foreach(l, node->mt_mergeActionStateList)
@@ -2224,19 +2206,61 @@ ExecModifyTable(PlanState *pstate)
 								 * that's what we have passed to
 								 * ExecBuildProjectionInfo and ExecProject will
 								 * keep projecting to the original slot.
+								 *
+								 * XXX We must not call ExecFilterJunk()
+								 * because the projected tuple using the INSERT
+								 * action's targetlist doesn't really have any
+								 * junk attribute.
 								 */
-								slot = ExecFilterJunk(junkfilter, action->slot);
-								slot = ExecInsert(node, slot, planSlot,
+								slot = ExecInsert(node, action->slot, planSlot,
 												  NULL, ONCONFLICT_NONE, estate, node->canSetTag);
 								break;
 							case CMD_UPDATE:
-								ExecProject(action->proj);
-								slot = ExecFilterJunk(junkfilter, action->slot);
-								slot = ExecUpdate(node, tupleid, oldtuple, slot, planSlot, false, /* should be true */
-												  &node->mt_epqstate, estate, node->canSetTag);
+								{
+									HeapUpdateFailureData hufd;
+									LockTupleMode lockmode;
+									HTSU_Result test;
+									Buffer		buffer;
+									Relation	relation = resultRelInfo->ri_RelationDesc;
+
+									/* Determine lock mode to use */
+									lockmode = ExecUpdateLockMode(estate, resultRelInfo);
+
+									/*
+									 * Lock tuple for update.
+									 *
+									 * XXX Is this really needed? I put this in
+									 * just to get hold of the existing tuple.
+									 * But if we do need, then we probably
+									 * should be looking at the return value of
+									 * heap_lock_tuple() and take appropriate
+									 * action.
+									 */
+									tuple.t_self = *tupleid;
+									test = heap_lock_tuple(relation, &tuple, estate->es_output_cid,
+											lockmode, LockWaitBlock, false, &buffer,
+											&hufd);
+
+
+									/* Store target's existing tuple in the state's dedicated slot */
+									ExecStoreTuple(&tuple, node->mt_existing, buffer, false);
+
+									ExecProject(action->proj);
+
+									/*
+									 * XXX We must not call ExecFilterJunk()
+									 * because the projected tuple using the
+									 * UPDATE action's targetlist doesn't really
+									 * have any junk attribute.
+									 */
+									slot = ExecUpdate(node, tupleid, oldtuple,
+											action->slot, planSlot, false, /* should be true */
+													  &node->mt_epqstate, estate, node->canSetTag);
+
+									ReleaseBuffer(buffer);
+								}
 								break;
 							case CMD_DELETE:
-								slot = ExecFilterJunk(junkfilter, action->slot);
 								slot = ExecDelete(node, tupleid, oldtuple, planSlot, true,
 												  &node->mt_epqstate, estate, node->canSetTag);
 								break;

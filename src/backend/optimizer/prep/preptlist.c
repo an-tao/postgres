@@ -129,17 +129,6 @@ preprocess_targetlist(PlannerInfo *root)
 	{
 		ListCell *l;
 
-		/*
-		 * First handle the targetlist of the query.
-		 *
-		 * XXX We currently treat CMD_MERGE as CMD_UPDATE in expand_targetlist.
-		 * This ensures that any missing attributes of the updated tuple get
-		 * their value from the old tuple. But is that really safe? What
-		 * happens to MERGE's INSERT action? Would expanding action-specific
-		 * targetlist be enough?
-		 */
-		tlist = expand_targetlist(tlist, command_type,
-								  result_relation, target_relation);
 		foreach(l, parse->mergeActionList)
 		{
 			MergeAction     *action = (MergeAction *) lfirst(l);

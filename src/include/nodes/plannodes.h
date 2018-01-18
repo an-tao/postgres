@@ -237,6 +237,7 @@ typedef struct ModifyTable
 	Node	   *onConflictWhere;	/* WHERE for ON CONFLICT UPDATE */
 	Index		exclRelRTI;		/* RTI of the EXCLUDED pseudo relation */
 	List	   *exclRelTlist;	/* tlist of the EXCLUDED pseudo relation */
+	List	   *mergeSourceTargetList;
 	List	   *mergeActionList; /* actions for MERGE */
 } ModifyTable;
 

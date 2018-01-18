@@ -221,6 +221,7 @@ _copyModifyTable(const ModifyTable *from)
 	COPY_NODE_FIELD(onConflictWhere);
 	COPY_SCALAR_FIELD(exclRelRTI);
 	COPY_NODE_FIELD(exclRelTlist);
+	COPY_NODE_FIELD(mergeSourceTargetList);
 	COPY_NODE_FIELD(mergeActionList);
 
 	return newnode;
@@ -2977,6 +2978,7 @@ _copyQuery(const Query *from)
 	COPY_NODE_FIELD(setOperations);
 	COPY_NODE_FIELD(constraintDeps);
 	COPY_NODE_FIELD(withCheckOptions);
+	COPY_NODE_FIELD(mergeSourceTargetList);
 	COPY_NODE_FIELD(mergeActionList);
 	COPY_LOCATION_FIELD(stmt_location);
 	COPY_LOCATION_FIELD(stmt_len);

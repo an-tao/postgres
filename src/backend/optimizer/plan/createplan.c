@@ -285,6 +285,7 @@ static ModifyTable *make_modifytable(PlannerInfo *root,
 				 List *resultRelations, List *subplans,
 				 List *withCheckOptionLists, List *returningLists,
 				 List *rowMarks, OnConflictExpr *onconflict,
+				 List *mergeSourceTargetList,
 				 List *mergeActionList, int epqParam);
 static GatherMerge *create_gather_merge_plan(PlannerInfo *root,
 						 GatherMergePath *best_path);
@@ -2392,6 +2393,7 @@ create_modifytable_plan(PlannerInfo *root, ModifyTablePath *best_path)
 							best_path->returningLists,
 							best_path->rowMarks,
 							best_path->onconflict,
+							best_path->mergeSourceTargetList,
 							best_path->mergeActionList,
 							best_path->epqParam);
 
@@ -6462,6 +6464,7 @@ make_modifytable(PlannerInfo *root,
 				 List *resultRelations, List *subplans,
 				 List *withCheckOptionLists, List *returningLists,
 				 List *rowMarks, OnConflictExpr *onconflict,
+				 List *mergeSourceTargetList,
 				 List *mergeActionList, int epqParam)
 {
 	ModifyTable *node = makeNode(ModifyTable);
@@ -6520,6 +6523,7 @@ make_modifytable(PlannerInfo *root,
 	node->withCheckOptionLists = withCheckOptionLists;
 	node->returningLists = returningLists;
 	node->rowMarks = rowMarks;
+	node->mergeSourceTargetList = mergeSourceTargetList;
 	node->mergeActionList = mergeActionList;
 	node->epqParam = epqParam;
 

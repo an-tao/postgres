@@ -18,7 +18,8 @@
 
 extern void transformFromClause(ParseState *pstate, List *frmList);
 extern int transformMergeJoinClause(ParseState *pstate, RangeVar *relation,
-				AclMode requiredPerms, Node *merge);
+				AclMode requiredPerms, Node *merge,
+				List **mergeTargetList);
 extern int setTargetTable(ParseState *pstate, RangeVar *relation,
 			   bool inh, bool alsoSource, AclMode requiredPerms);
 extern bool interpretOidsOption(List *defList, bool allowOids);

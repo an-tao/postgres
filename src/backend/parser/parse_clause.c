@@ -79,6 +79,7 @@ static TableSampleClause *transformRangeTableSample(ParseState *pstate,
 						  RangeTableSample *rts);
 static Node *transformFromClauseItem(ParseState *pstate, Node *n,
 						RangeTblEntry **top_rte, int *top_rti,
+						RangeTblEntry **right_rte, int *right_rti,
 						List **namespace);
 static Node *buildMergedJoinVar(ParseState *pstate, JoinType jointype,
 				   Var *l_colvar, Var *r_colvar);
@@ -140,6 +141,7 @@ transformFromClause(ParseState *pstate, List *frmList)
 		n = transformFromClauseItem(pstate, n,
 									&rte,
 									&rtindex,
+									NULL, NULL,
 									&namespace);
 
 		checkNameSpaceConflicts(pstate, pstate->p_namespace, namespace);
@@ -175,6 +177,11 @@ transformFromClause(ParseState *pstate, List *frmList)
  *    Note: we assume that the pstate's p_rtable, p_joinlist, and p_namespace
  *    lists were initialized to NIL when the pstate was created.
  *
+ *	  A special targetlist comprising of the columns from the right-subtree of
+ *	  the join is populated and returned. Note that when the JoinExpr is
+ *	  setup by transformMergeStmt, the left subtree has the target result
+ *	  relation and the right subtree has the source relation.
+ *	  
  *	  Finally, we mark the relation as requiring the permissions specified
  *	  by requiredPerms.
  *
@@ -182,11 +189,12 @@ transformFromClause(ParseState *pstate, List *frmList)
  */
 int
 transformMergeJoinClause(ParseState *pstate, RangeVar *relation,
-							AclMode requiredPerms, Node *merge)
+							AclMode requiredPerms, Node *merge,
+							List **mergeTargetList)
 {
-	RangeTblEntry *rte;
+	RangeTblEntry *rte, *rt_rte;
 	List	   *namespace;
-	int			rtindex;
+	int			rtindex, rt_rtindex;
 	Node		*n;
 
 	/*
@@ -202,6 +210,8 @@ transformMergeJoinClause(ParseState *pstate, RangeVar *relation,
 	n = transformFromClauseItem(pstate, merge,
 									&rte,
 									&rtindex,
+									&rt_rte,
+									&rt_rtindex,
 									&namespace);
 
 	pstate->p_joinlist = list_make1(n);
@@ -226,6 +236,13 @@ transformMergeJoinClause(ParseState *pstate, RangeVar *relation,
 	 */
 	rte->requiredPerms = requiredPerms;
 	pstate->p_target_rangetblentry = rte;
+
+	/*
+	 * Expand the right relation and add its columns to the
+	 * mergeTargetList. Note that the right relation can either be a plain
+	 * relation or a subquery or anything that can have a RangeTableEntry.
+	 */
+	*mergeTargetList = expandRelAttrs(pstate, rt_rte, rt_rtindex, 0, -1);
 
 	return rtindex;
 }
@@ -1174,6 +1191,7 @@ getRTEForSpecialRelationTypes(ParseState *pstate, RangeVar *rv)
 static Node *
 transformFromClauseItem(ParseState *pstate, Node *n,
 						RangeTblEntry **top_rte, int *top_rti,
+						RangeTblEntry **right_rte, int *right_rti,
 						List **namespace)
 {
 	if (IsA(n, RangeVar))
@@ -1265,7 +1283,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 
 		/* Recursively transform the contained relation */
 		rel = transformFromClauseItem(pstate, rts->relation,
-									  top_rte, top_rti, namespace);
+									  top_rte, top_rti, NULL, NULL, namespace);
 		/* Currently, grammar could only return a RangeVar as contained rel */
 		rtr = castNode(RangeTblRef, rel);
 		rte = rt_fetch(rtr->rtindex, pstate->p_rtable);
@@ -1311,6 +1329,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		j->larg = transformFromClauseItem(pstate, j->larg,
 										  &l_rte,
 										  &l_rtindex,
+										  NULL, NULL,
 										  &l_namespace);
 
 		/*
@@ -1338,6 +1357,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		j->rarg = transformFromClauseItem(pstate, j->rarg,
 										  &r_rte,
 										  &r_rtindex,
+										  NULL, NULL,
 										  &r_namespace);
 
 		/* Remove the left-side RTEs from the namespace list again */
@@ -1365,6 +1385,12 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 				  &l_colnames, &l_colvars);
 		expandRTE(r_rte, r_rtindex, 0, -1, false,
 				  &r_colnames, &r_colvars);
+
+		if (right_rte)
+			*right_rte = r_rte;
+
+		if (right_rti)
+			*right_rti = r_rtindex;
 
 		/*
 		 * Natural join does not explicitly specify columns; must generate
