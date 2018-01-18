@@ -369,6 +369,7 @@ ON t.tid = s.sid
 WHEN MATCHED THEN
 	UPDATE SET balance = 0
 ;
+ERROR:  MERGE command cannot affect row a second time
 ROLLBACK;
 BEGIN;
 MERGE INTO target t

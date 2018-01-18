@@ -2254,7 +2254,7 @@ ExecModifyTable(PlanState *pstate)
 									 * have any junk attribute.
 									 */
 									slot = ExecUpdate(node, tupleid, oldtuple,
-											action->slot, planSlot, false, /* should be true */
+											action->slot, planSlot, true,
 													  &node->mt_epqstate, estate, node->canSetTag);
 
 									ReleaseBuffer(buffer);
