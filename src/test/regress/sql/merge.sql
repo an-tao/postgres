@@ -491,7 +491,6 @@ SELECT * FROM wq_target;
 
 DROP TABLE wq_target, wq_source;
 
-
 -- test triggers
 create or replace function trigfunc () returns trigger
 language plpgsql as
@@ -524,6 +523,7 @@ CREATE TRIGGER merge_ard AFTER DELETE ON target FOR EACH ROW EXECUTE PROCEDURE t
 
 -- now the classic UPSERT, with a DELETE
 BEGIN;
+UPDATE target SET balance = 0 WHERE tid = 3;
 MERGE INTO target t
 USING source AS s
 ON t.tid = s.sid
@@ -644,9 +644,8 @@ ROLLBACK;
 -- prepare
 
 RESET SESSION AUTHORIZATION;
-DROP TABLE target;
-DROP TABLE target2;
-DROP TABLE source;
-DROP TABLE source2;
+DROP TABLE target, target2;
+DROP TABLE source, source2;
+DROP FUNCTION trigfunc();
 DROP USER merge_privs;
 DROP USER merge_no_privs;

@@ -747,6 +747,11 @@ CREATE TRIGGER merge_aru AFTER UPDATE ON target FOR EACH ROW EXECUTE PROCEDURE t
 CREATE TRIGGER merge_ard AFTER DELETE ON target FOR EACH ROW EXECUTE PROCEDURE trigfunc ();
 -- now the classic UPSERT, with a DELETE
 BEGIN;
+UPDATE target SET balance = 0 WHERE tid = 3;
+NOTICE:  BEFORE UPDATE STATEMENT trigger
+NOTICE:  BEFORE UPDATE ROW trigger
+NOTICE:  AFTER UPDATE ROW trigger
+NOTICE:  AFTER UPDATE STATEMENT trigger
 MERGE INTO target t
 USING source AS s
 ON t.tid = s.sid
@@ -761,10 +766,10 @@ NOTICE:  BEFORE INSERT STATEMENT trigger
 NOTICE:  BEFORE UPDATE STATEMENT trigger
 NOTICE:  BEFORE DELETE STATEMENT trigger
 NOTICE:  BEFORE INSERT ROW trigger
-NOTICE:  BEFORE UPDATE ROW trigger
+NOTICE:  BEFORE DELETE ROW trigger
 NOTICE:  BEFORE UPDATE ROW trigger
 NOTICE:  AFTER INSERT ROW trigger
-NOTICE:  AFTER UPDATE ROW trigger
+NOTICE:  AFTER DELETE ROW trigger
 NOTICE:  AFTER UPDATE ROW trigger
 NOTICE:  AFTER DELETE STATEMENT trigger
 NOTICE:  AFTER UPDATE STATEMENT trigger
@@ -774,9 +779,8 @@ SELECT * FROM target ORDER BY tid;
 -----+---------
    1 |      10
    2 |      15
-   3 |      10
    4 |      40
-(4 rows)
+(3 rows)
 
 ROLLBACK;
 -- test from PL/pgSQL
@@ -955,11 +959,8 @@ ROLLBACK;
 -- TODO
 -- prepare
 RESET SESSION AUTHORIZATION;
-DROP TABLE target;
-DROP TABLE target2;
-DROP TABLE source;
-DROP TABLE source2;
+DROP TABLE target, target2;
+DROP TABLE source, source2;
+DROP FUNCTION trigfunc();
 DROP USER merge_privs;
-ERROR:  role "merge_privs" cannot be dropped because some objects depend on it
-DETAIL:  owner of function trigfunc()
 DROP USER merge_no_privs;
