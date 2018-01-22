@@ -50,6 +50,7 @@ typedef enum ParseExprKind
 	EXPR_KIND_INSERT_TARGET,	/* INSERT target list item */
 	EXPR_KIND_UPDATE_SOURCE,	/* UPDATE assignment source item */
 	EXPR_KIND_UPDATE_TARGET,	/* UPDATE assignment target item */
+	EXPR_KIND_MERGE_WHEN_AND,	/* MERGE WHEN ... AND condition */
 	EXPR_KIND_GROUP_BY,			/* GROUP BY */
 	EXPR_KIND_ORDER_BY,			/* ORDER BY */
 	EXPR_KIND_DISTINCT_ON,		/* DISTINCT ON */

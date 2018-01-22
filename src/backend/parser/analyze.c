@@ -2494,7 +2494,7 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 		 * Note that we don't add this to the MERGE Query's quals
 		 */
 		action->qual = transformWhereClause(pstate, action->condition,
-								EXPR_KIND_CHECK_CONSTRAINT, "WHEN");
+								EXPR_KIND_MERGE_WHEN_AND, "WHEN");
 
 		/*
 		 * Transform target lists for each INSERT and UPDATE action stmt

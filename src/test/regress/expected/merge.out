@@ -692,7 +692,7 @@ MERGE INTO wq_target t
 USING wq_source s ON t.tid = s.sid
 WHEN MATCHED AND t.xmin = t.xmax THEN
 	UPDATE SET balance = t.balance + s.balance;
-ERROR:  system column "xmin" reference in check constraint is invalid
+ERROR:  system column "xmin" reference in WHEN AND condition is invalid
 LINE 3: WHEN MATCHED AND t.xmin = t.xmax THEN
                          ^
 SELECT * FROM wq_target;
@@ -706,7 +706,7 @@ MERGE INTO wq_target t
 USING wq_source s ON t.tid = s.sid
 WHEN MATCHED AND t.balance > (SELECT max(balance) FROM target) THEN
 	UPDATE SET balance = t.balance + s.balance;
-ERROR:  cannot use subquery in check constraint
+ERROR:  cannot use subquery in WHEN AND condition
 LINE 3: WHEN MATCHED AND t.balance > (SELECT max(balance) FROM targe...
                                      ^
 SELECT * FROM wq_target;
