@@ -2135,6 +2135,7 @@ ExecModifyTable(PlanState *pstate)
 					ListCell   *l;
 					ExprContext *econtext = node->ps.ps_ExprContext;
 					HeapTupleData	tuple;
+					Buffer		buffer = InvalidBuffer;
 
 #ifdef MERGE_DEBUG
 					elog(NOTICE, "MERGE row: %s",
@@ -2181,90 +2182,118 @@ ExecModifyTable(PlanState *pstate)
 							continue;
 
 						/*
+						 * For UPDATE/DELETE actions, ensure that the target
+						 * tuple is set before we evaluate conditions or
+						 * project the resultant tuple.
+						 */
+						if (action->commandType == CMD_UPDATE ||
+							action->commandType == CMD_DELETE)
+						{
+							HeapUpdateFailureData hufd;
+							LockTupleMode lockmode;
+							HTSU_Result test;
+							Relation	relation = resultRelInfo->ri_RelationDesc;
+
+							/*
+							 * UPDATE/DELETE is only invoked for matched rows.
+							 * And we must have found the tupleid of the target
+							 * row in that case.
+							 */
+							Assert(matched);
+							Assert(tupleid != NULL);
+
+							/* Determine lock mode to use */
+							lockmode = ExecUpdateLockMode(estate, resultRelInfo);
+
+							/*
+							 * Lock tuple for update.
+							 *
+							 * XXX Is this really needed? I put this in
+							 * just to get hold of the existing tuple.
+							 * But if we do need, then we probably
+							 * should be looking at the return value of
+							 * heap_lock_tuple() and take appropriate
+							 * action.
+							 */
+							tuple.t_self = *tupleid;
+							test = heap_lock_tuple(relation, &tuple, estate->es_output_cid,
+									lockmode, LockWaitBlock, false, &buffer,
+									&hufd);
+
+							/* Store target's existing tuple in the state's dedicated slot */
+							ExecStoreTuple(&tuple, node->mt_existing, buffer, false);
+						}
+						else
+						{
+							/*
+							 * INSERT/DO_NOTHING actions are only hit when
+							 * tuples are not matched.
+							 */
+							Assert(!matched);
+						}
+
+						/*
 						 * Test condition, if any
 						 *
 						 * In the absence of a condition we perform the action
-						 * unconditionally.
-						 *
-						 * If the whole condition evaluates to NULL we assume this
-						 * acts like a WHERE clause and rejects the row.
+						 * unconditionally (no need to check separately since
+						 * ExecQual() will return true if there are no
+						 * conditions to evaluate).
 						 */
-						if (action->condition)
+						if (!ExecQual(action->whenqual, econtext))
 						{
-							elog(NOTICE, "checking condition");
-							if (!ExecQual(action->condition, econtext))
-								continue;
+							if (BufferIsValid(buffer))
+								ReleaseBuffer(buffer);
+							continue;
 						}
 
 						/* Perform stated action */
 						switch (action->commandType)
 						{
 							case CMD_INSERT:
-								{
-									/*
-									 * We set up the projection earlier, so all we do
-									 * here is Project, no need for any other tasks
-									 * prior to the ExecInsert.
-									 */
-									ExecProject(action->proj);
+								/*
+								 * We set up the projection earlier, so all we
+								 * do here is Project, no need for any other
+								 * tasks prior to the ExecInsert.
+								 */
+								ExecProject(action->proj);
 
-									slot = ExecInsert(node, action->slot, planSlot,
-													  NULL, ONCONFLICT_NONE, estate, node->canSetTag);
-								}
+								slot = ExecInsert(node, action->slot, planSlot,
+												  NULL, ONCONFLICT_NONE, estate, node->canSetTag);
+								Assert(!BufferIsValid(buffer));
 								break;
 							case CMD_UPDATE:
-								{
-									HeapUpdateFailureData hufd;
-									LockTupleMode lockmode;
-									HTSU_Result test;
-									Buffer		buffer;
-									Relation	relation = resultRelInfo->ri_RelationDesc;
+								/*
+								 * We set up the projection earlier, so all we
+								 * do here is Project, no need for any other
+								 * tasks prior to the ExecUpdate.
+								 */
+								ExecProject(action->proj);
+								/*
+								 * XXX We must not call ExecFilterJunk()
+								 * because the projected tuple using the UPDATE
+								 * action's targetlist doesn't really have any
+								 * junk attribute.
+								 */
+								slot = ExecUpdate(node, tupleid, oldtuple,
+												  action->slot, planSlot, true,
+												  &node->mt_epqstate, estate,
+												  node->canSetTag);
 
-									/* Determine lock mode to use */
-									lockmode = ExecUpdateLockMode(estate, resultRelInfo);
-
-									/*
-									 * Lock tuple for update.
-									 *
-									 * XXX Is this really needed? I put this in
-									 * just to get hold of the existing tuple.
-									 * But if we do need, then we probably
-									 * should be looking at the return value of
-									 * heap_lock_tuple() and take appropriate
-									 * action. So more needed around concurrency.
-									 */
-									tuple.t_self = *tupleid;
-									test = heap_lock_tuple(relation, &tuple, estate->es_output_cid,
-											lockmode, LockWaitBlock, false, &buffer,
-											&hufd);
-
-
-									/* Store target's existing tuple in the state's dedicated slot */
-									ExecStoreTuple(&tuple, node->mt_existing, buffer, false);
-
-									/*
-									 * We set up the projection earlier, so all we do
-									 * here is Project, no need for any other tasks
-									 * prior to the ExecUpdate.
-									 */
-									ExecProject(action->proj);
-
-									slot = ExecUpdate(node, tupleid, oldtuple,
-											action->slot, planSlot, true,
-													  &node->mt_epqstate, estate, node->canSetTag);
-
-									ReleaseBuffer(buffer);
-								}
+								Assert(BufferIsValid(buffer));
+								ReleaseBuffer(buffer);
 								break;
 							case CMD_DELETE:
-								{
-									/* Nothing to Project for a DELETE action */
-
-									slot = ExecDelete(node, tupleid, oldtuple, planSlot, true,
-													  &node->mt_epqstate, estate, node->canSetTag);
-								}
+								/* Nothing to Project for a DELETE action */
+								slot = ExecDelete(node, tupleid, oldtuple,
+												  planSlot, true,
+												  &node->mt_epqstate, estate,
+												  node->canSetTag);
+								Assert(BufferIsValid(buffer));
+								ReleaseBuffer(buffer);
 								break;
 							case CMD_NOTHING:
+								Assert(!BufferIsValid(buffer));
 								/* Do Nothing */
 								break;
 							default:
@@ -2662,12 +2691,8 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 
 			action_state->matched = action->matched;
 			action_state->commandType = action->commandType;
-			if (action->qual)
-			{
-// Commented out because it crashes at present
-//				action_state->condition = ExecInitQual((List *) action->qual,
-//													&mtstate->ps);
-			}
+			action_state->whenqual = ExecInitQual((List *) action->qual,
+													&mtstate->ps);
 
 			/* create target slot for this action's projection */
 			tupDesc = ExecTypeFromTL((List *) action->targetList,

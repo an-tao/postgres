@@ -978,7 +978,7 @@ typedef struct MergeActionState
 {
 	NodeTag     type;
 	bool        matched;        /* MATCHED or NOT MATCHED */
-	ExprState	*condition;  	/* conditional expr (transformWhereClause) */
+	ExprState	*whenqual;  	/* WHEN quals */
 	CmdType     commandType;    /* type of action */
 	Node       *stmt;           /* T_UpdateStmt etc */
 	TupleTableSlot *slot;		/* instead of ResultRelInfo */

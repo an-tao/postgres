@@ -383,15 +383,114 @@ WHEN MATCHED AND s.delta > 0 THEN
 ROLLBACK;
 
 -- conditional WHEN clause
+CREATE TABLE wq_target (tid integer not null, balance integer DEFAULT -1);
+CREATE TABLE wq_source (balance integer, sid integer);
+
+INSERT INTO wq_source (sid, balance) VALUES (1, 100);
+
 BEGIN;
-MERGE INTO target t
-USING source AS s
-ON t.tid = s.sid
-WHEN MATCHED AND s.delta > 0 THEN
-	UPDATE SET balance = t.balance - s.delta
-;
-SELECT * FROM target ORDER BY tid;
+-- try a simple INSERT with default values first
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN NOT MATCHED THEN
+	INSERT (tid) VALUES (s.sid);
+SELECT * FROM wq_target;
 ROLLBACK;
+
+-- this time with a FALSE condition
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN NOT MATCHED AND FALSE THEN
+	INSERT (tid) VALUES (s.sid);
+SELECT * FROM wq_target;
+
+-- this time with an actual condition which returns false
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN NOT MATCHED AND s.balance <> 100 THEN
+	INSERT (tid) VALUES (s.sid);
+SELECT * FROM wq_target;
+
+BEGIN;
+-- and now with a condition which returns true
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN NOT MATCHED AND s.balance = 100 THEN
+	INSERT (tid) VALUES (s.sid);
+SELECT * FROM wq_target;
+ROLLBACK;
+
+-- conditions in the NOT MATCHED clause can only refer to source columns
+BEGIN;
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN NOT MATCHED AND t.balance = 100 THEN
+	INSERT (tid) VALUES (s.sid);
+SELECT * FROM wq_target;
+ROLLBACK;
+
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN NOT MATCHED AND s.balance = 100 THEN
+	INSERT (tid) VALUES (s.sid);
+SELECT * FROM wq_target;
+
+-- conditions in MATCHED clause can refer to both source and target
+SELECT * FROM wq_source;
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN MATCHED AND s.balance = 100 THEN
+	UPDATE SET balance = t.balance + s.balance;
+SELECT * FROM wq_target;
+
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN MATCHED AND t.balance = 100 THEN
+	UPDATE SET balance = t.balance + s.balance;
+SELECT * FROM wq_target;
+
+-- check if AND works
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN MATCHED AND t.balance = 99 AND s.balance > 100 THEN
+	UPDATE SET balance = t.balance + s.balance;
+SELECT * FROM wq_target;
+
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN MATCHED AND t.balance = 99 AND s.balance = 100 THEN
+	UPDATE SET balance = t.balance + s.balance;
+SELECT * FROM wq_target;
+
+-- check if OR works
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN MATCHED AND t.balance = 99 OR s.balance > 100 THEN
+	UPDATE SET balance = t.balance + s.balance;
+SELECT * FROM wq_target;
+
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN MATCHED AND t.balance = 199 OR s.balance > 100 THEN
+	UPDATE SET balance = t.balance + s.balance;
+SELECT * FROM wq_target;
+
+-- check if we can access system columns in the conditions
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN MATCHED AND t.xmin = t.xmax THEN
+	UPDATE SET balance = t.balance + s.balance;
+SELECT * FROM wq_target;
+
+-- check if subqueries work in the conditions?
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN MATCHED AND t.balance > (SELECT max(balance) FROM target) THEN
+	UPDATE SET balance = t.balance + s.balance;
+SELECT * FROM wq_target;
+
+DROP TABLE wq_target, wq_source;
+
 
 -- test triggers
 create or replace function trigfunc () returns trigger
