@@ -217,6 +217,14 @@ DELETE
       clause will be activated and the corresponding action will occur for
       that row.
      </para>
+     <para>
+      A condition on a <literal>WHEN MATCHED</literal> clause can refer to columns
+      in both the source and the target relation. A condition on a
+      <literal>WHEN NOT MATCHED</literal> clause can only refer to columns from
+      the source relation, since by definition there is no matching target row.
+      A condition cannot contain subqueries, set returning functions,
+      nor can it contain window or aggregate functions.
+     </para>
     </listitem>
    </varlistentry>
 
@@ -253,6 +261,12 @@ DELETE
       For example, <literal>INSERT INTO tab VALUES (1, 50)</literal> is invalid.
       Column names may not be specified more than once.
       <command>INSERT</command> actions cannot contain sub-selects. 
+     </para>
+     <para>
+      The <literal>VALUES</literal> clause can only refer to columns from
+      the source relation, since by definition there is no matching target row.
+      The <literal>VALUES</literal> clause cannot contain subqueries, set
+      returning functions, nor can it contain window or aggregate functions.
      </para>
     </listitem>
    </varlistentry>
