@@ -2506,11 +2506,13 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	qry->rtable = pstate->p_rtable;
 
 	/*
-	 * MERGE is unsupported in various cases
+	 * XXX MERGE is unsupported in various cases
 	 */
 	if (!(pstate->p_target_relation->rd_rel->relkind == RELKIND_RELATION ||
 		  pstate->p_target_relation->rd_rel->relkind == RELKIND_MATVIEW))
-		elog(ERROR, "MERGE is not supported on this relation type");
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("MERGE is not supported for this relation type")));
 
 	/*
 	 * We now have a good query shape, so now look at the when conditions

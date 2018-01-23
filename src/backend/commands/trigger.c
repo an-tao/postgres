@@ -4440,7 +4440,9 @@ MakeTransitionCaptureState(TriggerDesc *trigdesc, Oid relid, CmdType cmdType)
 				trigdesc->trig_update_new_table ||
 				trigdesc->trig_update_old_table ||
 				trigdesc->trig_delete_old_table)
-				elog(ERROR, "cannot execute MERGE on table with transition capture triggers");
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("MERGE on table with transition capture triggers is not implemented")));
 			need_old = need_new = false;
 			break;
 		default:
