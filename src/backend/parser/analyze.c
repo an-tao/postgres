@@ -2418,6 +2418,9 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	 *  ON join_condition
 	 *  -- no WHERE clause - all conditions are applied in executor
 	 *
+	 * stmt->relation is the target relation, given as a RangeVar
+	 * stmt->source_relation is a RangeVar or subquery
+	 *
 	 * We specify the join as a RIGHT JOIN as a simple way of forcing
 	 * the first (larg) RTE to refer to the target table.
 	 *
@@ -2437,9 +2440,6 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	 * separate planning, only different handling in the executor.
 	 * See nodeModifyTable handling of commandType CMD_MERGE.
 	 *
-	 * stmt->relation is the target relation, given as a RangeVar
-	 * stmt->source_relation is a RangeVar or subquery
-	 *
 	 * A sub-query can include the Target, but otherwise the sub-query
 	 * cannot reference the outermost Target table at all.
 	 */
@@ -2453,9 +2453,14 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	/*
 	 * Simplify the MERGE query as much as possible
 	 *
+	 * These seem like things that could go into Optimizer, but
+	 * they are semantic simplications rather than optimizations, per se.
+	 *
 	 * If there are no INSERT actions we won't be using the non-matching
 	 * candidate rows for anything, so no need for an outer join. We
 	 * do still need an inner join for UPDATE and DELETE actions.
+	 *
+	 * Possible additional simplifications...
 	 *
 	 * XXX if we have a constant ON clause, we can skip join altogether
 	 *
@@ -2466,9 +2471,6 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	 * and put them into the main query as an early row filter
 	 * but that seems like an atypical case and so checking for it
 	 * would be likely to just be wasted effort.
-	 *
-	 * These seem like things that could go into Optimizer, but
-	 * they are semantic simplications rather than optimizations, per se.
 	 */
 	joinexpr->larg = (Node *) stmt->relation;
 	joinexpr->rarg = (Node *) stmt->source_relation;
