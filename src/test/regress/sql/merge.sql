@@ -635,6 +635,66 @@ SELECT merge_func(3, 4);
 SELECT * FROM target ORDER BY tid;
 ROLLBACK;
 
+-- subqueries in source relation
+
+CREATE TABLE sq_target (tid integer NOT NULL, balance integer);
+CREATE TABLE sq_source (delta integer, sid integer, balance integer DEFAULT 0);
+
+INSERT INTO sq_target(tid, balance) VALUES (1,100), (2,200), (3,300);
+INSERT INTO sq_source(sid, delta) VALUES (1,10), (2,20), (4,40);
+
+BEGIN;
+MERGE INTO sq_target t
+USING (SELECT * FROM sq_source) s
+ON tid = sid
+WHEN MATCHED AND t.balance > delta THEN
+	UPDATE SET balance = t.balance + delta;
+SELECT * FROM sq_target;
+ROLLBACK;
+
+-- try a view
+CREATE VIEW v AS SELECT * FROM sq_source WHERE sid < 2;
+
+BEGIN;
+MERGE INTO sq_target
+USING v
+ON tid = sid
+WHEN MATCHED THEN
+    UPDATE SET balance = v.balance + delta;
+SELECT * FROM sq_target;
+ROLLBACK;
+
+-- ambiguous reference to a column
+BEGIN;
+MERGE INTO sq_target
+USING v
+ON tid = sid
+WHEN MATCHED AND tid > 2 THEN
+    UPDATE SET balance = balance + delta
+WHEN NOT MATCHED THEN
+	INSERT (balance, tid) VALUES (balance + delta, sid)
+WHEN MATCHED AND tid < 2 THEN
+	DELETE;
+SELECT * FROM sq_target;
+ROLLBACK;
+
+BEGIN;
+INSERT INTO sq_source (sid, balance, delta) VALUES (-1, -1, -10);
+MERGE INTO sq_target t
+USING v
+ON tid = sid
+WHEN MATCHED AND tid > 2 THEN
+    UPDATE SET balance = t.balance + delta
+WHEN NOT MATCHED THEN
+	INSERT (balance, tid) VALUES (balance + delta, sid)
+WHEN MATCHED AND tid < 2 THEN
+	DELETE;
+SELECT * FROM sq_target;
+ROLLBACK;
+
+
+DROP TABLE sq_target, sq_source CASCADE;
+
 -- SERIALIZABLE test
 -- handled in isolation tests
 

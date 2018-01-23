@@ -2272,6 +2272,63 @@ transformUpdateStmt(ParseState *pstate, UpdateStmt *stmt)
 }
 
 /*
+ * Make appropriate changes to the namespace visibility while transforming
+ * individual action's quals and targetlist expressions. In particular, for
+ * INSERT actions we must only see the source relation (since INSERT action is
+ * invoked for NOT MATCHED tuples and hence there is no target tuple to deal
+ * with). On the other hand, UPDATE and DELETE actions can see both source and
+ * target relations.
+ *
+ * Also, since the internal MergeJoin node can hide the source and target
+ * relations, we must explicitly make the respective relation as visible so
+ * that columns can be referenced unqualified from these relations.
+ */
+static void
+setNamespaceForMergeAction(ParseState *pstate, MergeAction *action)
+{
+	RangeTblEntry	*targetRelRTE, *sourceRelRTE;
+
+	/* Assume target relation is at index 1 */
+	targetRelRTE = rt_fetch(1, pstate->p_rtable);
+
+	/*
+	 * Assume that the top-level join RTE is at the end. The source relation is
+	 * just before that.
+	 */
+	sourceRelRTE = rt_fetch(list_length(pstate->p_rtable) - 1, pstate->p_rtable);
+
+	switch (action->commandType)
+	{
+		case CMD_INSERT:
+			/*
+			 * Inserts can't see target relation, but they can see source
+			 * relation.
+			 */
+			setNamespaceVisibilityForRTE(pstate->p_namespace,
+					targetRelRTE, false, false);
+			setNamespaceVisibilityForRTE(pstate->p_namespace,
+					sourceRelRTE, true, true);
+			break;
+
+		case CMD_UPDATE:
+		case CMD_DELETE:
+			/*
+			 * Updates and deletes can see both target and source relations.
+			 */
+			setNamespaceVisibilityForRTE(pstate->p_namespace,
+					targetRelRTE, true, true);
+			setNamespaceVisibilityForRTE(pstate->p_namespace,
+					sourceRelRTE, true, true);
+			break;
+
+		case CMD_NOTHING:
+			break;
+		default:
+			elog(ERROR, "unknown action in MERGE WHEN clause");
+	}
+}
+
+/*
  * transformMergeStmt -
  *	  transforms a MERGE statement
  */
@@ -2476,6 +2533,14 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 		MergeAction		*action = (MergeAction *) lfirst(l);
 
 		/*
+		 * Set namespace for the specific action. This must be done before
+		 * analysing the WHEN quals and the action targetlisst.
+		 *
+		 * XXX Do we need to restore the old values back?
+		 */
+		setNamespaceForMergeAction(pstate, action);
+
+		/*
 		 * Transform the when condition.
 		 *
 		 * We don't have a separate plan for each action, so the
@@ -2494,7 +2559,7 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 		 * Note that we don't add this to the MERGE Query's quals
 		 */
 		action->qual = transformWhereClause(pstate, action->condition,
-								EXPR_KIND_MERGE_WHEN_AND, "WHEN");
+				EXPR_KIND_MERGE_WHEN_AND, "WHEN");
 
 		/*
 		 * Transform target lists for each INSERT and UPDATE action stmt
@@ -2613,6 +2678,8 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 				}
 				break;
 			case CMD_DELETE:
+				break;
+
 			case CMD_NOTHING:
 				action->targetList = NIL;
 				break;

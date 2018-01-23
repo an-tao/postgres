@@ -215,7 +215,25 @@ transformMergeJoinClause(ParseState *pstate, RangeVar *relation,
 									&namespace);
 
 	pstate->p_joinlist = list_make1(n);
+
+	/*
+	 * We created an internal join between the target and the source relation
+	 * to carry out the MERGE actions. Normally such an unaliased join hides
+	 * the joining relations, unless the column references are qualified. Also,
+	 * any unqualified column refernces are resolved to the Join RTE, if there
+	 * is a matching entry in the targetlist. But the way MERGE execution is
+	 * later setup, we expect all column references to resolve to either the
+	 * source or the target relation. Hence we must not add the Join RTE to the
+	 * namespace.
+	 *
+	 * Truncate the last entry, which must be for the top-level Join RTE.
+	 */
+	namespace = list_truncate(namespace, list_length(namespace) - 1);
+
+	/* Now add everything else to the namespace.  */
 	pstate->p_namespace = list_concat(pstate->p_namespace, namespace);
+
+	/* XXX Do we need this? */
 	setNamespaceLateralState(pstate->p_namespace, false, true);
 
 	/*
@@ -1787,6 +1805,27 @@ setNamespaceColumnVisibility(List *namespace, bool cols_visible)
 
 		nsitem->p_cols_visible = cols_visible;
 	}
+}
+
+void
+setNamespaceVisibilityForRTE(List *namespace, RangeTblEntry *rte,
+		bool rel_visible,
+		bool cols_visible)
+{
+	ListCell   *lc;
+
+	foreach(lc, namespace)
+	{
+		ParseNamespaceItem *nsitem = (ParseNamespaceItem *) lfirst(lc);
+
+		if (nsitem->p_rte == rte)
+		{
+			nsitem->p_rel_visible = rel_visible;
+			nsitem->p_cols_visible = cols_visible;
+			break;
+		}
+	}
+
 }
 
 /*

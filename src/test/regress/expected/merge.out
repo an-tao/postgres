@@ -503,7 +503,10 @@ ON t.tid = s.sid
 WHEN NOT MATCHED THEN
 	INSERT (tid, balance) VALUES (t.tid, s.delta)
 ;
-ERROR:  cannot extract attribute from empty tuple slot
+ERROR:  invalid reference to FROM-clause entry for table "t"
+LINE 5:  INSERT (tid, balance) VALUES (t.tid, s.delta)
+                                       ^
+HINT:  There is an entry for table "t", but it cannot be referenced from this part of the query.
 -- and again with a constant ON clause
 BEGIN;
 MERGE INTO target t
@@ -512,7 +515,10 @@ ON (SELECT true)
 WHEN NOT MATCHED THEN
 	INSERT (tid, balance) VALUES (t.tid, s.delta)
 ;
-ERROR:  cannot handle unplanned sub-select
+ERROR:  invalid reference to FROM-clause entry for table "t"
+LINE 5:  INSERT (tid, balance) VALUES (t.tid, s.delta)
+                                       ^
+HINT:  There is an entry for table "t", but it cannot be referenced from this part of the query.
 SELECT * FROM target ORDER BY tid;
 ERROR:  current transaction is aborted, commands ignored until end of transaction block
 ROLLBACK;
@@ -604,7 +610,10 @@ MERGE INTO wq_target t
 USING wq_source s ON t.tid = s.sid
 WHEN NOT MATCHED AND t.balance = 100 THEN
 	INSERT (tid) VALUES (s.sid);
-ERROR:  cannot extract attribute from empty tuple slot
+ERROR:  invalid reference to FROM-clause entry for table "t"
+LINE 3: WHEN NOT MATCHED AND t.balance = 100 THEN
+                             ^
+HINT:  There is an entry for table "t", but it cannot be referenced from this part of the query.
 SELECT * FROM wq_target;
 ERROR:  current transaction is aborted, commands ignored until end of transaction block
 ROLLBACK;
@@ -953,6 +962,82 @@ SELECT * FROM target ORDER BY tid;
 (3 rows)
 
 ROLLBACK;
+-- subqueries in source relation
+CREATE TABLE sq_target (tid integer NOT NULL, balance integer);
+CREATE TABLE sq_source (delta integer, sid integer, balance integer DEFAULT 0);
+INSERT INTO sq_target(tid, balance) VALUES (1,100), (2,200), (3,300);
+INSERT INTO sq_source(sid, delta) VALUES (1,10), (2,20), (4,40);
+BEGIN;
+MERGE INTO sq_target t
+USING (SELECT * FROM sq_source) s
+ON tid = sid
+WHEN MATCHED AND t.balance > delta THEN
+	UPDATE SET balance = t.balance + delta;
+SELECT * FROM sq_target;
+ tid | balance 
+-----+---------
+   3 |     300
+   1 |     110
+   2 |     220
+(3 rows)
+
+ROLLBACK;
+-- try a view
+CREATE VIEW v AS SELECT * FROM sq_source WHERE sid < 2;
+BEGIN;
+MERGE INTO sq_target
+USING v
+ON tid = sid
+WHEN MATCHED THEN
+    UPDATE SET balance = v.balance + delta;
+SELECT * FROM sq_target;
+ tid | balance 
+-----+---------
+   2 |     200
+   3 |     300
+   1 |      10
+(3 rows)
+
+ROLLBACK;
+-- ambiguous reference to a column
+BEGIN;
+MERGE INTO sq_target
+USING v
+ON tid = sid
+WHEN MATCHED AND tid > 2 THEN
+    UPDATE SET balance = balance + delta
+WHEN NOT MATCHED THEN
+	INSERT (balance, tid) VALUES (balance + delta, sid)
+WHEN MATCHED AND tid < 2 THEN
+	DELETE;
+ERROR:  column reference "balance" is ambiguous
+LINE 5:     UPDATE SET balance = balance + delta
+                                 ^
+SELECT * FROM sq_target;
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK;
+BEGIN;
+INSERT INTO sq_source (sid, balance, delta) VALUES (-1, -1, -10);
+MERGE INTO sq_target t
+USING v
+ON tid = sid
+WHEN MATCHED AND tid > 2 THEN
+    UPDATE SET balance = t.balance + delta
+WHEN NOT MATCHED THEN
+	INSERT (balance, tid) VALUES (balance + delta, sid)
+WHEN MATCHED AND tid < 2 THEN
+	DELETE;
+SELECT * FROM sq_target;
+ tid | balance 
+-----+---------
+   2 |     200
+   3 |     300
+  -1 |     -11
+(3 rows)
+
+ROLLBACK;
+DROP TABLE sq_target, sq_source CASCADE;
+NOTICE:  drop cascades to view v
 -- SERIALIZABLE test
 -- handled in isolation tests
 -- test triggers
