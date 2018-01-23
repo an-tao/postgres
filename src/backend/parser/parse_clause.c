@@ -175,7 +175,7 @@ transformFromClause(ParseState *pstate, List *frmList)
  *	joinlist, and namespace.
  *
  *	Note: we assume that the pstate's p_rtable, p_joinlist, and p_namespace
- *  lists were initialized to NIL when the pstate was created.
+ *	lists were initialized to NIL when the pstate was created.
  *
  *	A special targetlist comprising of the columns from the right-subtree of
  *	the join is populated and returned. Note that when the JoinExpr is
@@ -267,8 +267,8 @@ transformMergeJoinClause(ParseState *pstate, RangeVar *relation,
 
 /*
  * setTargetTable
- *	  Add the target relation of INSERT/UPDATE/DELETE to the
- *	  range table, and make the special links to it in the ParseState.
+ *	  Add the target relation of INSERT/UPDATE/DELETE to the range table,
+ *	  and make the special links to it in the ParseState.
  *
  *	  We also open the target relation and acquire a write lock on it.
  *	  This must be done before processing the FROM list, in case the target

@@ -2626,7 +2626,7 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 					}
 
 					/*
-					 * Generate query's target list using the computed list of expressions.
+					 * Generate action's target list using the computed list of expressions.
 					 * Also, mark all the target columns as needing insert permissions.
 					 */
 					rte = pstate->p_target_rangetblentry;
