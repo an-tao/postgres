@@ -489,12 +489,6 @@ MERGE <replaceable class="parameter">total-count</replaceable>
   </para>
 
   <para>
-   If the <literal>ON</literal> clause is a constant expression that evaluates to false
-   then no join takes place and the source is used directly as candidate change
-   rows.
-  </para>
-
-  <para>
    If a <literal>WHEN</literal> clause omits an <literal>AND</literal> clause it becomes
    the final reachable clause of that kind (<literal>MATCHED</literal> or
    <literal>NOT MATCHED</literal>). If a later <literal>WHEN</literal> clause of that kind
@@ -509,6 +503,12 @@ MERGE <replaceable class="parameter">total-count</replaceable>
    Actions of <command>INSERT</command>, <command>UPDATE</command> and <command>DELETE</command>
    cannot contain <literal>RETURNING</literal> or <literal>WITH</literal> clauses.
   </para>
+
+  </para>
+   <command>MERGE</command> cannot be used against tables with row security, nor will
+   it operate on tables with inheritance or partitioning. These restrictions may be
+   lifted in later releases. 
+  <para>
  </refsect1>
 
  <refsect1>
