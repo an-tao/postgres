@@ -962,6 +962,13 @@ SELECT * FROM target ORDER BY tid;
 (3 rows)
 
 ROLLBACK;
+-- PREPARE
+prepare foom as merge into target t using (select 1 as sid) s on (t.tid = s.sid) when matched then update set balance = 1;
+execute foom;
+NOTICE:  BEFORE UPDATE STATEMENT trigger
+NOTICE:  BEFORE UPDATE ROW trigger
+NOTICE:  AFTER UPDATE ROW trigger
+NOTICE:  AFTER UPDATE STATEMENT trigger
 -- subqueries in source relation
 CREATE TABLE sq_target (tid integer NOT NULL, balance integer);
 CREATE TABLE sq_source (delta integer, sid integer, balance integer DEFAULT 0);
@@ -1040,8 +1047,6 @@ DROP TABLE sq_target, sq_source CASCADE;
 NOTICE:  drop cascades to view v
 -- SERIALIZABLE test
 -- handled in isolation tests
--- test triggers
--- TODO
 -- prepare
 RESET SESSION AUTHORIZATION;
 DROP TABLE target, target2;

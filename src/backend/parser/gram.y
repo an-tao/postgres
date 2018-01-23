@@ -10735,6 +10735,7 @@ PreparableStmt:
 			| InsertStmt
 			| UpdateStmt
 			| DeleteStmt					/* by default all are $$=$1 */
+			| MergeStmt
 		;
 
 /*****************************************************************************

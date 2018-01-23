@@ -635,6 +635,10 @@ SELECT merge_func(3, 4);
 SELECT * FROM target ORDER BY tid;
 ROLLBACK;
 
+-- PREPARE
+prepare foom as merge into target t using (select 1 as sid) s on (t.tid = s.sid) when matched then update set balance = 1;
+execute foom;
+
 -- subqueries in source relation
 
 CREATE TABLE sq_target (tid integer NOT NULL, balance integer);
@@ -697,9 +701,6 @@ DROP TABLE sq_target, sq_source CASCADE;
 
 -- SERIALIZABLE test
 -- handled in isolation tests
-
--- test triggers
--- TODO
 
 -- prepare
 
