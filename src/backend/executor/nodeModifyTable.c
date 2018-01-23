@@ -2148,7 +2148,7 @@ ExecModifyTable(PlanState *pstate)
 					 * scantuple.
 					 */
 					econtext->ecxt_scantuple = node->mt_existing;
-					econtext->ecxt_innertuple = planSlot; /* ? */
+					econtext->ecxt_innertuple = planSlot;
 					econtext->ecxt_outertuple = NULL;
 
 					foreach(l, node->mt_mergeActionStateList)
@@ -2484,7 +2484,6 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 * valid trigger query context, so skip it in explain-only mode.
 	 */
 	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
-		/* Check for transition tables on the directly targeted relation. */
 		ExecSetupTransitionCaptureState(mtstate, estate);
 
 	/*

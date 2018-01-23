@@ -2429,8 +2429,8 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	 * Note that we have only one Query for a MERGE statement and
 	 * the planner is called only once. That query is executed once
 	 * to produce our stream of candidate change rows, so the query
-	 * must contain all of them columns required by any one of the
-	 * targetlist or conditions.
+	 * must contain all of the columns required by each of the
+	 * targetlist or conditions for each action.
 	 *
 	 * As top-level statements INSERT, UPDATE and DELETE have a Query,
 	 * whereas with MERGE the individual actions do not require
@@ -2458,6 +2458,8 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	 * do still need an inner join for UPDATE and DELETE actions.
 	 *
 	 * XXX if we have a constant ON clause, we can skip join altogether
+	 *
+	 * XXX if we have a constant subquery, we can also skip join
 	 *
 	 * XXX if we were really keen we could look through the actionList
 	 * and pull out common conditions, if there were no terminal clauses
@@ -2496,10 +2498,6 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	 * preprocess_targetlist(), we shall also add "ctid" attribute of the
 	 * target relation to ensure that the target tuple can be fetched
 	 * correctly.
-	 *
-	 * XXX It's not clear if this targetlist can also include columns from the
-	 * target relation so that both source and target columns are available in
-	 * the tuple obtained from executing the plan.
 	 */
 	qry->targetList = qry->mergeSourceTargetList;
 
@@ -2557,6 +2555,7 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 		 * XXX where to make the check for pre-reqs of AND clause??
 		 *
 		 * Note that we don't add this to the MERGE Query's quals
+		 * because that's not the logic MERGE uses.
 		 */
 		action->qual = transformWhereClause(pstate, action->condition,
 				EXPR_KIND_MERGE_WHEN_AND, "WHEN");
@@ -2618,18 +2617,6 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 														   (List *) linitial(valuesLists),
 														   EXPR_KIND_VALUES_SINGLE,
 														   true);
-						/*
-						 * !!TODO
-						 *
-						 * We should really not allow referencing the
-						 * columns from the target relation in the INSERT
-						 * values. Note that the grammer allows INSERT action
-						 * only for NOT MATCHED rows and hence there is no
-						 * target row when the INSERT action is executed.
-						 * Without this check, we get execution time errors.
-						 * But we should ideally catch them during parsing
-						 * itself.
-						 */
 
 						/* Prepare row for assignment to target table */
 						exprList = transformInsertRow(pstate, exprList,
