@@ -36,8 +36,13 @@ step "merge2c" { MERGE INTO target t USING (SELECT 1 as key, 'merge2c' as val) s
 step "select2" { SELECT * FROM target; }
 step "c2" { COMMIT; }
 
+# Basic effects
 permutation "merge1" "c1" "select2" "c2"
+
+# One after the other, no concurrency
 permutation "merge1" "c1" "merge2a" "select2" "c2"
+
+# Now with concurrency
 permutation "merge1" "merge2a" "c1" "select2" "c2"
 permutation "merge1" "merge2a" "a1" "select2" "c2"
 permutation "merge1" "merge2b" "c1" "select2" "c2"
