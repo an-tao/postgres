@@ -118,7 +118,8 @@ DELETE
     <term><replaceable class="parameter">target_table_name</replaceable></term>
     <listitem>
      <para>
-      The name (optionally schema-qualified) of the target table to merge into.
+      The name (optionally schema-qualified) of the target table or materialized
+      view to merge into.
      </para>
     </listitem>
    </varlistentry>
@@ -506,8 +507,10 @@ MERGE <replaceable class="parameter">total-count</replaceable>
 
   </para>
    <command>MERGE</command> cannot be used against tables with row security, nor will
-   it operate on tables with inheritance or partitioning. These restrictions may be
-   lifted in later releases. 
+   it operate on tables with inheritance or partitioning. <command>MERGE</command> can
+   use a transition table as a source, but it cannot be used on a target table that has
+   statement triggers that require a transition table.
+   These restrictions may be lifted in later releases. 
   <para>
  </refsect1>
 
