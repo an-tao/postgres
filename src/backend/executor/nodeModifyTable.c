@@ -1174,8 +1174,8 @@ lreplace:;
 			 * Row movement, part 1.  Delete the tuple, but skip RETURNING
 			 * processing. We want to return rows from INSERT.
 			 */
-			ExecDelete(mtstate, tupleid, oldtuple, planSlot, epqstate, estate,
-					   &tuple_deleted, false, false);
+			ExecDelete(mtstate, tupleid, oldtuple, planSlot, false, epqstate,
+					   estate, &tuple_deleted, false, false);
 
 			/*
 			 * For some reason if DELETE didn't happen (e.g. trigger prevented
@@ -2257,7 +2257,6 @@ ExecModifyTable(PlanState *pstate)
 							action->commandType == CMD_DELETE)
 						{
 							Relation	relation = resultRelInfo->ri_RelationDesc;
-							bool		status;
 
 							/*
 							 * UPDATE/DELETE is only invoked for matched rows.
@@ -2341,6 +2340,7 @@ ExecModifyTable(PlanState *pstate)
 								slot = ExecDelete(node, tupleid, oldtuple,
 												  planSlot, true,
 												  &node->mt_epqstate, estate,
+												  NULL, false,
 												  node->canSetTag);
 								Assert(BufferIsValid(buffer));
 								ReleaseBuffer(buffer);
