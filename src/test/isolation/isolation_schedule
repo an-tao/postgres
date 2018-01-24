@@ -34,6 +34,7 @@ test: insert-conflict-do-update-2
 test: insert-conflict-do-update-3
 test: insert-conflict-toast
 test: merge-insert-update
+test: merge-update
 test: delete-abort-savept
 test: delete-abort-savept-2
 test: aborted-keyrevoke
