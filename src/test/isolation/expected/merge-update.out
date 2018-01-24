@@ -1,0 +1,29 @@
+Parsed test spec with 2 sessions
+
+starting permutation: b1 b2 update21 merge11 c2 c1 select1
+step b1: BEGIN ISOLATION LEVEL READ COMMITTED;
+step b2: BEGIN ISOLATION LEVEL READ COMMITTED;
+step update21: UPDATE target SET balance = 10000 WHERE tid = 1;
+step merge11: MERGE INTO target t USING source s ON t.tid = s.sid WHEN MATCHED THEN UPDATE SET balance = t.balance + s.delta + 999; <waiting ...>
+step c2: COMMIT;
+step merge11: <... completed>
+step c1: COMMIT;
+step select1: SELECT * FROM target ORDER BY tid;
+tid            balance        
+
+1              11341          
+2              20             
+
+starting permutation: b1 b2 update22 merge11 c2 c1 select1
+step b1: BEGIN ISOLATION LEVEL READ COMMITTED;
+step b2: BEGIN ISOLATION LEVEL READ COMMITTED;
+step update22: UPDATE target SET tid = 3 WHERE tid = 1;
+step merge11: MERGE INTO target t USING source s ON t.tid = s.sid WHEN MATCHED THEN UPDATE SET balance = t.balance + s.delta + 999; <waiting ...>
+step c2: COMMIT;
+step merge11: <... completed>
+step c1: COMMIT;
+step select1: SELECT * FROM target ORDER BY tid;
+tid            balance        
+
+2              20             
+3              1683           

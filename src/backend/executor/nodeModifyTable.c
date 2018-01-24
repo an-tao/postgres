@@ -1027,6 +1027,7 @@ ExecUpdate(ModifyTableState *mtstate,
 		   bool error_on_SelfUpdate,
 		   EPQState *epqstate,
 		   EState *estate,
+		   MergeActionState *actionState,
 		   bool canSetTag)
 {
 	HeapTuple	tuple;
@@ -1036,6 +1037,7 @@ ExecUpdate(ModifyTableState *mtstate,
 	HeapUpdateFailureData hufd;
 	List	   *recheckIndexes = NIL;
 	TupleConversionMap *saved_tcs_map = NULL;
+	ExprContext *econtext = mtstate->ps.ps_ExprContext;
 
 	/*
 	 * abort the operation if not running transactions
@@ -1343,8 +1345,69 @@ lreplace:;
 					if (!TupIsNull(epqslot))
 					{
 						*tupleid = hufd.ctid;
-						slot = ExecFilterJunk(resultRelInfo->ri_junkFilter, epqslot);
-						tuple = ExecMaterializeSlot(slot);
+						if (actionState == NULL)
+						{
+							/* Normal UPDATE path */
+							slot = ExecFilterJunk(resultRelInfo->ri_junkFilter, epqslot);
+							tuple = ExecMaterializeSlot(slot);
+						}
+						else
+						{
+							Buffer			buffer = InvalidBuffer;
+							HeapTupleData	nexttuple;
+
+							/*
+							 * If we're running UPDATE action of the MERGE
+							 * query, we have to do things a bit differently.
+							 * 
+							 * UPDATE's targetlist must be evaluated again
+							 * after populating the scan-tuple and the
+							 * inner-tuple correctly. The ON condition itself
+							 * must have been re-evaluated by EvalPlanQual()
+							 * and if necessary, a new matching tuple from the
+							 * source relation might have been found.
+							 */
+
+							/*
+							 * Fetch the updated tuple..
+							 */
+							nexttuple.t_self = *tupleid;
+							if (!heap_fetch(resultRelationDesc, SnapshotAny, &nexttuple,
+									&buffer, true, NULL))
+							{
+								elog(ERROR, "Failed to fetch updated tuple");
+							}
+
+							/*
+							 * And store the target tuple in the scan slot.
+							 * That's where ExecProject expects to see.
+							 */
+							ExecStoreTuple(&nexttuple, mtstate->mt_existing, buffer, false);
+
+							/*
+							 * Also set the source tuple in the inner slot.
+							 * That's where ExecProject expects to see.
+							 */
+							econtext->ecxt_innertuple = epqslot;
+
+							/*
+							 * Recheck WHEN conditions. If it fails, do
+							 * nothing.
+							 */
+							if (!ExecQual(actionState->whenqual, econtext))
+							{
+								ReleaseBuffer(buffer);
+								return NULL;
+							}
+
+							/*
+							 * Finally project using the new tuples and
+							 * materialise the tuple.
+							 */
+							slot = ExecProject(actionState->proj);
+							tuple = ExecMaterializeSlot(slot);
+							ReleaseBuffer(buffer);
+						}
 						goto lreplace;
 					}
 				}
@@ -1595,6 +1658,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 	*returning = ExecUpdate(mtstate, &tuple.t_self, NULL,
 							mtstate->mt_conflproj, planSlot, false,
 							&mtstate->mt_epqstate, mtstate->ps.state,
+							NULL,
 							canSetTag);
 
 	ReleaseBuffer(buffer);
@@ -2108,7 +2172,10 @@ ExecModifyTable(PlanState *pstate)
 			}
 
 			/*
-			 * apply the junkfilter if needed - we do this later for CMD_MERGE
+			 * apply the junkfilter if needed. We don't do this for MERGE
+			 * because the action's targetlists do not contain any junk
+			 * attributes and the to-be-inserted or updated tuples are
+			 * constructed using those targetlists.
 			 */
 			if (operation == CMD_UPDATE || operation == CMD_INSERT)
 				slot = ExecFilterJunk(junkfilter, slot);
@@ -2123,7 +2190,7 @@ ExecModifyTable(PlanState *pstate)
 				break;
 			case CMD_UPDATE:
 				slot = ExecUpdate(node, tupleid, oldtuple, slot, planSlot, false,
-								  &node->mt_epqstate, estate, node->canSetTag);
+								  &node->mt_epqstate, estate, NULL, node->canSetTag);
 				break;
 			case CMD_DELETE:
 				slot = ExecDelete(node, tupleid, oldtuple, planSlot, false,
@@ -2189,10 +2256,8 @@ ExecModifyTable(PlanState *pstate)
 						if (action->commandType == CMD_UPDATE ||
 							action->commandType == CMD_DELETE)
 						{
-							HeapUpdateFailureData hufd;
-							LockTupleMode lockmode;
-							HTSU_Result test;
 							Relation	relation = resultRelInfo->ri_RelationDesc;
+							bool		status;
 
 							/*
 							 * UPDATE/DELETE is only invoked for matched rows.
@@ -2202,23 +2267,10 @@ ExecModifyTable(PlanState *pstate)
 							Assert(matched);
 							Assert(tupleid != NULL);
 
-							/* Determine lock mode to use */
-							lockmode = ExecUpdateLockMode(estate, resultRelInfo);
-
-							/*
-							 * Lock tuple for update.
-							 *
-							 * XXX Is this really needed? I put this in
-							 * just to get hold of the existing tuple.
-							 * But if we do need, then we probably
-							 * should be looking at the return value of
-							 * heap_lock_tuple() and take appropriate
-							 * action.
-							 */
 							tuple.t_self = *tupleid;
-							test = heap_lock_tuple(relation, &tuple, estate->es_output_cid,
-									lockmode, LockWaitBlock, false, &buffer,
-									&hufd);
+							if (!heap_fetch(relation, estate->es_snapshot, &tuple,
+									&buffer, true, NULL))
+								elog(ERROR, "Failed to fetch updated tuple");
 
 							/* Store target's existing tuple in the state's dedicated slot */
 							ExecStoreTuple(&tuple, node->mt_existing, buffer, false);
@@ -2278,6 +2330,7 @@ ExecModifyTable(PlanState *pstate)
 								slot = ExecUpdate(node, tupleid, oldtuple,
 												  action->slot, planSlot, true,
 												  &node->mt_epqstate, estate,
+												  action,
 												  node->canSetTag);
 
 								Assert(BufferIsValid(buffer));
