@@ -720,6 +720,7 @@ ExecDelete(ModifyTableState *mtstate,
 		   EState *estate,
 		   bool *tupleDeleted,
 		   bool processReturning,
+		   MergeActionState *actionState,
 		   bool canSetTag)
 {
 	ResultRelInfo *resultRelInfo;
@@ -884,6 +885,47 @@ ldelete:;
 					if (!TupIsNull(epqslot))
 					{
 						*tupleid = hufd.ctid;
+
+						if (actionState)
+						{
+							Buffer			buffer = InvalidBuffer;
+							HeapTupleData	nexttuple;
+							ExprContext *econtext = mtstate->ps.ps_ExprContext;
+
+							/*
+							 * Fetch the updated tuple..
+							 */
+							nexttuple.t_self = *tupleid;
+							if (!heap_fetch(resultRelationDesc, SnapshotAny, &nexttuple,
+										&buffer, true, NULL))
+							{
+								elog(ERROR, "Failed to fetch updated tuple");
+							}
+
+							/*
+							 * And store the target tuple in the scan slot.
+							 * That's where ExecProject expects to see.
+							 */
+							ExecStoreTuple(&nexttuple, mtstate->mt_existing, buffer, false);
+
+							/*
+							 * Also set the source tuple in the inner slot.
+							 * That's where ExecProject expects to see.
+							 */
+							econtext->ecxt_innertuple = epqslot;
+
+							/*
+							 * Recheck WHEN conditions. If it fails, do
+							 * nothing.
+							 */
+							if (!ExecQual(actionState->whenqual, econtext))
+							{
+								ReleaseBuffer(buffer);
+								return NULL;
+							}
+
+							ReleaseBuffer(buffer);
+						}
 						goto ldelete;
 					}
 				}
@@ -1175,7 +1217,7 @@ lreplace:;
 			 * processing. We want to return rows from INSERT.
 			 */
 			ExecDelete(mtstate, tupleid, oldtuple, planSlot, false, epqstate,
-					   estate, &tuple_deleted, false, false);
+					   estate, &tuple_deleted, false, NULL, false);
 
 			/*
 			 * For some reason if DELETE didn't happen (e.g. trigger prevented
@@ -2195,7 +2237,7 @@ ExecModifyTable(PlanState *pstate)
 			case CMD_DELETE:
 				slot = ExecDelete(node, tupleid, oldtuple, planSlot, false,
 								  &node->mt_epqstate, estate,
-								  NULL, true, node->canSetTag);
+								  NULL, true, NULL, node->canSetTag);
 				break;
 			case CMD_MERGE:
 				{
@@ -2340,7 +2382,7 @@ ExecModifyTable(PlanState *pstate)
 								slot = ExecDelete(node, tupleid, oldtuple,
 												  planSlot, true,
 												  &node->mt_epqstate, estate,
-												  NULL, false,
+												  NULL, false, action,
 												  node->canSetTag);
 								Assert(BufferIsValid(buffer));
 								ReleaseBuffer(buffer);
