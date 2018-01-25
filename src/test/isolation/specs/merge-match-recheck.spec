@@ -20,9 +20,31 @@ setup
 {
   BEGIN ISOLATION LEVEL READ COMMITTED;
 }
-step "merge_status" { MERGE INTO target t USING (SELECT 1 as key) s ON s.key = t.key WHEN MATCHED AND status = 's1' THEN UPDATE SET status = 's2', val = t.val || ' when1' WHEN MATCHED AND status = 's2' THEN UPDATE SET status = 's3', val = t.val || ' when2' WHEN MATCHED AND status = 's3' THEN UPDATE SET status = 's4', val = t.val || ' when3'; }
+step "merge_status"
+{ 
+  MERGE INTO target t
+  USING (SELECT 1 as key) s
+  ON s.key = t.key
+  WHEN MATCHED AND status = 's1' THEN
+	UPDATE SET status = 's2', val = t.val || ' when1'
+  WHEN MATCHED AND status = 's2' THEN
+	UPDATE SET status = 's3', val = t.val || ' when2'
+  WHEN MATCHED AND status = 's3' THEN
+	UPDATE SET status = 's4', val = t.val || ' when3';
+}
 
-step "merge_bal" { MERGE INTO target t USING (SELECT 1 as key) s ON s.key = t.key WHEN MATCHED AND balance < 100 THEN UPDATE SET balance = balance * 2, val = t.val || ' when1' WHEN MATCHED AND balance < 200 THEN UPDATE SET balance = balance * 4, val = t.val || ' when2' WHEN MATCHED AND balance < 300 THEN UPDATE SET balance = balance * 8, val = t.val || ' when3'; }
+step "merge_bal"
+{
+  MERGE INTO target t
+  USING (SELECT 1 as key) s
+  ON s.key = t.key
+  WHEN MATCHED AND balance < 100 THEN
+	UPDATE SET balance = balance * 2, val = t.val || ' when1'
+  WHEN MATCHED AND balance < 200 THEN
+	UPDATE SET balance = balance * 4, val = t.val || ' when2'
+  WHEN MATCHED AND balance < 300 THEN
+	UPDATE SET balance = balance * 8, val = t.val || ' when3';
+}
 
 step "select1" { SELECT * FROM target; }
 step "c1" { COMMIT; }
