@@ -111,7 +111,7 @@ ON target.tid = source2.sid
 WHEN MATCHED THEN
 	UPDATE SET balance = 0
 ;
-ERROR:  permission denied for relation source2
+ERROR:  permission denied for table source2
 GRANT INSERT ON target TO merge_no_privs;
 SET SESSION AUTHORIZATION merge_no_privs;
 MERGE INTO target
@@ -120,7 +120,7 @@ ON target.tid = source2.sid
 WHEN MATCHED THEN
 	UPDATE SET balance = 0
 ;
-ERROR:  permission denied for relation target
+ERROR:  permission denied for table target
 GRANT UPDATE ON target2 TO merge_privs;
 SET SESSION AUTHORIZATION merge_privs;
 MERGE INTO target2
@@ -129,14 +129,14 @@ ON target2.tid = source.sid
 WHEN MATCHED THEN
 	DELETE
 ;
-ERROR:  permission denied for relation target2
+ERROR:  permission denied for table target2
 MERGE INTO target2
 USING source
 ON target2.tid = source.sid
 WHEN NOT MATCHED THEN
 	INSERT DEFAULT VALUES
 ;
-ERROR:  permission denied for relation target2
+ERROR:  permission denied for table target2
 --
 -- initial tests
 --
@@ -726,7 +726,7 @@ SELECT * FROM wq_target;
 
 DROP TABLE wq_target, wq_source;
 -- test triggers
-create or replace function trigfunc () returns trigger
+create or replace function merge_trigfunc () returns trigger
 language plpgsql as
 $$
 BEGIN
@@ -742,18 +742,18 @@ BEGIN
 	END IF;
 END;
 $$;
-CREATE TRIGGER merge_bsi BEFORE INSERT ON target FOR EACH STATEMENT EXECUTE PROCEDURE trigfunc ();
-CREATE TRIGGER merge_bsu BEFORE UPDATE ON target FOR EACH STATEMENT EXECUTE PROCEDURE trigfunc ();
-CREATE TRIGGER merge_bsd BEFORE DELETE ON target FOR EACH STATEMENT EXECUTE PROCEDURE trigfunc ();
-CREATE TRIGGER merge_asi AFTER INSERT ON target FOR EACH STATEMENT EXECUTE PROCEDURE trigfunc ();
-CREATE TRIGGER merge_asu AFTER UPDATE ON target FOR EACH STATEMENT EXECUTE PROCEDURE trigfunc ();
-CREATE TRIGGER merge_asd AFTER DELETE ON target FOR EACH STATEMENT EXECUTE PROCEDURE trigfunc ();
-CREATE TRIGGER merge_bri BEFORE INSERT ON target FOR EACH ROW EXECUTE PROCEDURE trigfunc ();
-CREATE TRIGGER merge_bru BEFORE UPDATE ON target FOR EACH ROW EXECUTE PROCEDURE trigfunc ();
-CREATE TRIGGER merge_brd BEFORE DELETE ON target FOR EACH ROW EXECUTE PROCEDURE trigfunc ();
-CREATE TRIGGER merge_ari AFTER INSERT ON target FOR EACH ROW EXECUTE PROCEDURE trigfunc ();
-CREATE TRIGGER merge_aru AFTER UPDATE ON target FOR EACH ROW EXECUTE PROCEDURE trigfunc ();
-CREATE TRIGGER merge_ard AFTER DELETE ON target FOR EACH ROW EXECUTE PROCEDURE trigfunc ();
+CREATE TRIGGER merge_bsi BEFORE INSERT ON target FOR EACH STATEMENT EXECUTE PROCEDURE merge_trigfunc ();
+CREATE TRIGGER merge_bsu BEFORE UPDATE ON target FOR EACH STATEMENT EXECUTE PROCEDURE merge_trigfunc ();
+CREATE TRIGGER merge_bsd BEFORE DELETE ON target FOR EACH STATEMENT EXECUTE PROCEDURE merge_trigfunc ();
+CREATE TRIGGER merge_asi AFTER INSERT ON target FOR EACH STATEMENT EXECUTE PROCEDURE merge_trigfunc ();
+CREATE TRIGGER merge_asu AFTER UPDATE ON target FOR EACH STATEMENT EXECUTE PROCEDURE merge_trigfunc ();
+CREATE TRIGGER merge_asd AFTER DELETE ON target FOR EACH STATEMENT EXECUTE PROCEDURE merge_trigfunc ();
+CREATE TRIGGER merge_bri BEFORE INSERT ON target FOR EACH ROW EXECUTE PROCEDURE merge_trigfunc ();
+CREATE TRIGGER merge_bru BEFORE UPDATE ON target FOR EACH ROW EXECUTE PROCEDURE merge_trigfunc ();
+CREATE TRIGGER merge_brd BEFORE DELETE ON target FOR EACH ROW EXECUTE PROCEDURE merge_trigfunc ();
+CREATE TRIGGER merge_ari AFTER INSERT ON target FOR EACH ROW EXECUTE PROCEDURE merge_trigfunc ();
+CREATE TRIGGER merge_aru AFTER UPDATE ON target FOR EACH ROW EXECUTE PROCEDURE merge_trigfunc ();
+CREATE TRIGGER merge_ard AFTER DELETE ON target FOR EACH ROW EXECUTE PROCEDURE merge_trigfunc ();
 -- now the classic UPSERT, with a DELETE
 BEGIN;
 UPDATE target SET balance = 0 WHERE tid = 3;
@@ -1051,6 +1051,6 @@ NOTICE:  drop cascades to view v
 RESET SESSION AUTHORIZATION;
 DROP TABLE target, target2;
 DROP TABLE source, source2;
-DROP FUNCTION trigfunc();
+DROP FUNCTION merge_trigfunc();
 DROP USER merge_privs;
 DROP USER merge_no_privs;
