@@ -82,6 +82,7 @@ step merge2: <... completed>
 step select2: SELECT * FROM target;
 key            val            
 
+TO BE DECIDED
 step c2: COMMIT;
 
 starting permutation: merge_delete merge2 c1 select2 c2
@@ -92,4 +93,5 @@ step merge2: <... completed>
 step select2: SELECT * FROM target;
 key            val            
 
+TO BE DECIDED
 step c2: COMMIT;
