@@ -3,7 +3,7 @@ doc/src/sgml/ref/merge.sgml
 PostgreSQL documentation
 -->
 
-<refentry id="SQL-MERGE">
+<refentry id="sql-merge">
 
  <refmeta>
   <refentrytitle>MERGE</refentrytitle>
@@ -505,13 +505,13 @@ MERGE <replaceable class="parameter">total-count</replaceable>
    cannot contain <literal>RETURNING</literal> or <literal>WITH</literal> clauses.
   </para>
 
-  </para>
+  <para>
    <command>MERGE</command> cannot be used against tables with row security, nor will
    it operate on tables with inheritance or partitioning. <command>MERGE</command> can
    use a transition table as a source, but it cannot be used on a target table that has
    statement triggers that require a transition table.
    These restrictions may be lifted in later releases. 
-  <para>
+  </para>
  </refsect1>
 
  <refsect1>
