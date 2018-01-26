@@ -21,7 +21,7 @@ setup
   BEGIN ISOLATION LEVEL READ COMMITTED;
 }
 step "merge_status"
-{ 
+{
   MERGE INTO target t
   USING (SELECT 1 as key) s
   ON s.key = t.key
