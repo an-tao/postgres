@@ -216,7 +216,8 @@ DELETE
       An expression that returns a value of type <type>boolean</type>.
       If this expression returns <literal>true</literal> then the <literal>WHEN</literal>
       clause will be activated and the corresponding action will occur for
-      that row.
+      that row. The expression may not contain functions that possibly performs
+      writes to the database.
      </para>
      <para>
       A condition on a <literal>WHEN MATCHED</literal> clause can refer to columns
@@ -224,7 +225,8 @@ DELETE
       <literal>WHEN NOT MATCHED</literal> clause can only refer to columns from
       the source relation, since by definition there is no matching target row.
       A condition cannot contain subqueries, set returning functions,
-      nor can it contain window or aggregate functions.
+      nor can it contain window or aggregate functions. Only the system
+      attributes tableoid and oid are accessible.
      </para>
     </listitem>
    </varlistentry>
