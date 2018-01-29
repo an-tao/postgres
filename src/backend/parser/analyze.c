@@ -2561,12 +2561,12 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 		 * adopt the same semantics for that.
 		 *
 		 * SQL Standard says we should not allow anything that possibly
-		 * modifies SQL-data. Parallel safety is a superset of that
-		 * restriction and enforcing that makes it easier to consider
-		 * running MERGE plans in parallel in future, so we adopt
-		 * that restriction here.
+		 * modifies SQL-data. We enforce that with an executor check
+		 * that we have not written any WAL.
 		 *
-		 * XXX where to make the check for pre-reqs of AND clause??
+		 * XXX Perhaps we require Parallel Safety since that is a superset
+		 * of the restriction and enforcing that makes it easier to
+		 * consider running MERGE plans in parallel in future.
 		 *
 		 * Note that we don't add this to the MERGE Query's quals
 		 * because that's not the logic MERGE uses.
