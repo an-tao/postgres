@@ -2336,8 +2336,8 @@ lmerge:;
 							 */
 							if (startWAL < GetXactWALBytes())
 								ereport(ERROR,
-										(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-										 errmsg("could not serialize access due to concurrent update")));
+										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+										 errmsg("cannot write to database within WHEN AND condition")));
 
 							if (!qual)
 							{
