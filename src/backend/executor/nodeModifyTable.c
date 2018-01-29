@@ -890,12 +890,21 @@ ldelete:;
 							goto ldelete;
 						else
 						{
-							/*
-							 * Also set the source tuple in the inner slot.
-							 * That's where ExecProject expects to see.
-							 */
-							epqstate->epqresult = EPQ_TUPLE_IS_NOT_NULL;
-							econtext->ecxt_innertuple = epqslot;
+							Datum	datum;
+							bool	isNull;
+
+							datum = ExecGetJunkAttribute(epqslot, resultRelInfo->ri_junkFilter->jf_junkAttNo, &isNull);
+							if (isNull)
+								epqstate->epqresult = EPQ_TUPLE_IS_NULL;
+							else
+							{
+								epqstate->epqresult = EPQ_TUPLE_IS_NOT_NULL;
+								/*
+								 * Also set the source tuple in the inner slot.
+								 * That's where ExecProject expects to see.
+								 */
+								econtext->ecxt_innertuple = epqslot;
+							}
 							return NULL;
 						}
 					}
@@ -1372,13 +1381,41 @@ lreplace:;
 						}
 						else
 						{
+							Datum	datum;
+							bool	isNull;
+
 							/*
-							 * We have a new tuple, so evaluation of MERGE WHEN
-							 * clauses could be completely different with this tuple,
-							 * so remember this tuple and return for another go.
+							 * We have a new tuple, but it may not be a
+							 * matched-tuple. Since we're performing a right
+							 * outer join between the target relation and the
+							 * source relation, if the target tuple is updated
+							 * such that it no longer satisifies the join
+							 * condition, then EvalPlanQual will return the
+							 * current source tuple, with target tuple filled
+							 * with NULLs.
+							 *
+							 * We first check if the tuple returned by EPQ has
+							 * a valid "ctid" attribute. If ctid is NULL, then
+							 * we assume that the join failed to find a
+							 * matching row.
+							 *
+							 * When a valid matching tuple is returned, the
+							 * evaluation of MERGE WHEN clauses could be
+							 * completely different with this tuple, so
+							 * remember this tuple and return for another go.
 							 */
-							epqstate->epqresult = EPQ_TUPLE_IS_NOT_NULL;
-							econtext->ecxt_innertuple = epqslot;
+							datum = ExecGetJunkAttribute(epqslot, resultRelInfo->ri_junkFilter->jf_junkAttNo, &isNull);
+							if (isNull)
+								epqstate->epqresult = EPQ_TUPLE_IS_NULL;
+							else
+							{
+								epqstate->epqresult = EPQ_TUPLE_IS_NOT_NULL;
+								/*
+								 * Also set the source tuple in the inner slot.
+								 * That's where ExecProject expects to see.
+								 */
+								econtext->ecxt_innertuple = epqslot;
+							}
 
 							return NULL;
 						}

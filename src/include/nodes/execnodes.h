@@ -1026,7 +1026,6 @@ typedef struct ModifyTableState
 	/* controls transition table population for INSERT...ON CONFLICT UPDATE */
 	TupleConversionMap **mt_per_subplan_tupconv_maps;
 	/* Per plan map for tuple conversion from child to root */
-	List		*mt_mergeActionList;	/* List of MERGE actions */
 	List		*mt_mergeActionStateList;	/* List of MERGE action states */
 	AclMode		mt_merge_subcommands;	/* Flags show which cmd types are present */
 } ModifyTableState;
