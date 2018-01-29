@@ -925,6 +925,13 @@ typedef struct PlanState
 			((PlanState *)(node))->instrument->nfiltered2 += (delta); \
 	} while(0)
 
+typedef enum EPQResult
+{
+	EPQ_UNUSED,
+	EPQ_TUPLE_IS_NULL,
+	EPQ_TUPLE_IS_NOT_NULL
+} EPQResult;
+
 /*
  * EPQState is state for executing an EvalPlanQual recheck on a candidate
  * tuple in ModifyTable or LockRows.  The estate and planstate fields are
@@ -938,6 +945,7 @@ typedef struct EPQState
 	Plan	   *plan;			/* plan tree to be executed */
 	List	   *arowMarks;		/* ExecAuxRowMarks (non-locking only) */
 	int			epqParam;		/* ID of Param to force scan node re-eval */
+	EPQResult	epqresult;		/* Result code used by MERGE */
 } EPQState;
 
 
@@ -1020,7 +1028,7 @@ typedef struct ModifyTableState
 	/* Per plan map for tuple conversion from child to root */
 	List		*mt_mergeActionList;	/* List of MERGE actions */
 	List		*mt_mergeActionStateList;	/* List of MERGE action states */
-	AclMode		mt_mergeSTriggers;		/* Statement Trigger flags */
+	AclMode		mt_merge_subcommands;	/* Flags show which cmd types are present */
 } ModifyTableState;
 
 /* ----------------

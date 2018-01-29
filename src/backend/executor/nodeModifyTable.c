@@ -729,6 +729,7 @@ ExecDelete(ModifyTableState *mtstate,
 	HeapUpdateFailureData hufd;
 	TupleTableSlot *slot = NULL;
 	TransitionCaptureState *ar_delete_trig_tcs;
+	ExprContext *econtext = mtstate->ps.ps_ExprContext;
 
 	if (tupleDeleted)
 		*tupleDeleted = false;
@@ -885,50 +886,25 @@ ldelete:;
 					if (!TupIsNull(epqslot))
 					{
 						*tupleid = hufd.ctid;
-
-						if (actionState)
+						if (actionState == NULL)
+							goto ldelete;
+						else
 						{
-							Buffer			buffer = InvalidBuffer;
-							HeapTupleData	nexttuple;
-							ExprContext *econtext = mtstate->ps.ps_ExprContext;
-
-							/*
-							 * Fetch the updated tuple..
-							 */
-							nexttuple.t_self = *tupleid;
-							if (!heap_fetch(resultRelationDesc, SnapshotAny, &nexttuple,
-										&buffer, true, NULL))
-							{
-								elog(ERROR, "Failed to fetch updated tuple");
-							}
-
-							/*
-							 * And store the target tuple in the scan slot.
-							 * That's where ExecProject expects to see.
-							 */
-							ExecStoreTuple(&nexttuple, mtstate->mt_existing, buffer, false);
-
 							/*
 							 * Also set the source tuple in the inner slot.
 							 * That's where ExecProject expects to see.
 							 */
+							epqstate->epqresult = EPQ_TUPLE_IS_NOT_NULL;
 							econtext->ecxt_innertuple = epqslot;
-
-							/*
-							 * Recheck WHEN conditions. If it fails, do
-							 * nothing.
-							 */
-							if (!ExecQual(actionState->whenqual, econtext))
-							{
-								ReleaseBuffer(buffer);
-								return NULL;
-							}
-
-							ReleaseBuffer(buffer);
+							return NULL;
 						}
-						goto ldelete;
 					}
 				}
+
+				/*
+				 * MERGE needs to know the result of any EvalPlanQual.
+				 */
+				epqstate->epqresult = EPQ_TUPLE_IS_NULL;
 				/* tuple already deleted; nothing to do */
 				return NULL;
 
@@ -1392,67 +1368,28 @@ lreplace:;
 							/* Normal UPDATE path */
 							slot = ExecFilterJunk(resultRelInfo->ri_junkFilter, epqslot);
 							tuple = ExecMaterializeSlot(slot);
+							goto lreplace;
 						}
 						else
 						{
-							Buffer			buffer = InvalidBuffer;
-							HeapTupleData	nexttuple;
-
 							/*
-							 * If we're running UPDATE action of the MERGE
-							 * query, we have to do things a bit differently.
-							 * 
-							 * UPDATE's targetlist must be evaluated again
-							 * after populating the scan-tuple and the
-							 * inner-tuple correctly. The ON condition itself
-							 * must have been re-evaluated by EvalPlanQual()
-							 * and if necessary, a new matching tuple from the
-							 * source relation might have been found.
+							 * We have a new tuple, so evaluation of MERGE WHEN
+							 * clauses could be completely different with this tuple,
+							 * so remember this tuple and return for another go.
 							 */
-
-							/*
-							 * Fetch the updated tuple..
-							 */
-							nexttuple.t_self = *tupleid;
-							if (!heap_fetch(resultRelationDesc, SnapshotAny, &nexttuple,
-									&buffer, true, NULL))
-							{
-								elog(ERROR, "Failed to fetch updated tuple");
-							}
-
-							/*
-							 * And store the target tuple in the scan slot.
-							 * That's where ExecProject expects to see.
-							 */
-							ExecStoreTuple(&nexttuple, mtstate->mt_existing, buffer, false);
-
-							/*
-							 * Also set the source tuple in the inner slot.
-							 * That's where ExecProject expects to see.
-							 */
+							epqstate->epqresult = EPQ_TUPLE_IS_NOT_NULL;
 							econtext->ecxt_innertuple = epqslot;
 
-							/*
-							 * Recheck WHEN conditions. If it fails, do
-							 * nothing.
-							 */
-							if (!ExecQual(actionState->whenqual, econtext))
-							{
-								ReleaseBuffer(buffer);
-								return NULL;
-							}
-
-							/*
-							 * Finally project using the new tuples and
-							 * materialise the tuple.
-							 */
-							slot = ExecProject(actionState->proj);
-							tuple = ExecMaterializeSlot(slot);
-							ReleaseBuffer(buffer);
+							return NULL;
 						}
-						goto lreplace;
 					}
 				}
+
+				/*
+				 * MERGE needs to know the result of any EvalPlanQual.
+				 */
+				epqstate->epqresult = EPQ_TUPLE_IS_NULL;
+
 				/* tuple already deleted; nothing to do */
 				return NULL;
 
@@ -1742,11 +1679,11 @@ fireBSTriggers(ModifyTableState *node)
 			ExecBSDeleteTriggers(node->ps.state, resultRelInfo);
 			break;
 		case CMD_MERGE:
-			if (node->mt_mergeSTriggers & ACL_INSERT)
+			if (node->mt_merge_subcommands & ACL_INSERT)
 				ExecBSInsertTriggers(node->ps.state, resultRelInfo);
-			if (node->mt_mergeSTriggers & ACL_UPDATE)
+			if (node->mt_merge_subcommands & ACL_UPDATE)
 				ExecBSUpdateTriggers(node->ps.state, resultRelInfo);
-			if (node->mt_mergeSTriggers & ACL_DELETE)
+			if (node->mt_merge_subcommands & ACL_DELETE)
 				ExecBSDeleteTriggers(node->ps.state, resultRelInfo);
 			break;
 		default:
@@ -1807,13 +1744,13 @@ fireASTriggers(ModifyTableState *node)
 								 node->mt_transition_capture);
 			break;
 		case CMD_MERGE:
-			if (node->mt_mergeSTriggers & ACL_DELETE)
+			if (node->mt_merge_subcommands & ACL_DELETE)
 				ExecASDeleteTriggers(node->ps.state, resultRelInfo,
 									 node->mt_transition_capture);
-			if (node->mt_mergeSTriggers & ACL_UPDATE)
+			if (node->mt_merge_subcommands & ACL_UPDATE)
 				ExecASUpdateTriggers(node->ps.state, resultRelInfo,
 									 node->mt_transition_capture);
-			if (node->mt_mergeSTriggers & ACL_INSERT)
+			if (node->mt_merge_subcommands & ACL_INSERT)
 				ExecASInsertTriggers(node->ps.state, resultRelInfo,
 									 node->mt_transition_capture);
 			break;
@@ -2245,6 +2182,7 @@ ExecModifyTable(PlanState *pstate)
 					ExprContext *econtext = node->ps.ps_ExprContext;
 					HeapTupleData	tuple;
 					Buffer		buffer = InvalidBuffer;
+					EPQState	*epqstate = &node->mt_epqstate;
 
 #ifdef MERGE_DEBUG
 					elog(NOTICE, "MERGE row: %s",
@@ -2259,6 +2197,14 @@ ExecModifyTable(PlanState *pstate)
 					econtext->ecxt_scantuple = node->mt_existing;
 					econtext->ecxt_innertuple = planSlot;
 					econtext->ecxt_outertuple = NULL;
+
+					/*
+					 * If we find a concurrently updated tuple, some cases require us
+					 * to re-evaluate all of the WHEN AND conditions for the new tuple,
+					 * so we loop back to here and reset our EvalPlanQual state.
+					 */
+lmerge:;
+					epqstate->epqresult = EPQ_UNUSED;
 
 					foreach(l, node->mt_mergeActionStateList)
 					{
@@ -2303,15 +2249,18 @@ ExecModifyTable(PlanState *pstate)
 							/*
 							 * UPDATE/DELETE is only invoked for matched rows.
 							 * And we must have found the tupleid of the target
-							 * row in that case.
+							 * row in that case. We fetch using SnapshotAny
+							 * because we might get called again after
+							 * EvalPlanQual returns us a new tuple. This tuple
+							 * may not be visible to our MVCC snapshot.
 							 */
 							Assert(matched);
 							Assert(tupleid != NULL);
 
 							tuple.t_self = *tupleid;
-							if (!heap_fetch(relation, estate->es_snapshot, &tuple,
+							if (!heap_fetch(relation, SnapshotAny, &tuple,
 									&buffer, true, NULL))
-								elog(ERROR, "Failed to fetch updated tuple");
+								elog(ERROR, "Failed to fetch the target tuple");
 
 							/* Store target's existing tuple in the state's dedicated slot */
 							ExecStoreTuple(&tuple, node->mt_existing, buffer, false);
@@ -2362,30 +2311,124 @@ ExecModifyTable(PlanState *pstate)
 								 * tasks prior to the ExecUpdate.
 								 */
 								ExecProject(action->proj);
+
 								/*
-								 * XXX We must not call ExecFilterJunk()
-								 * because the projected tuple using the UPDATE
-								 * action's targetlist doesn't really have any
-								 * junk attribute.
+								 * We don't call ExecFilterJunk() because the
+								 * projected tuple using the UPDATE action's
+								 * targetlist doesn't have a junk attribute.
 								 */
+
 								slot = ExecUpdate(node, tupleid, oldtuple,
 												  action->slot, planSlot, true,
-												  &node->mt_epqstate, estate,
+												  epqstate, estate,
 												  action,
 												  node->canSetTag);
-
-								Assert(BufferIsValid(buffer));
 								ReleaseBuffer(buffer);
+
+								/*
+								 * If we had to use EvalPlanQual to search for updated
+								 * tuples then special handling is required...
+								 * Note that this handling is identical for both
+								 * MERGE UPDATE and MERGE DELETE actions.
+								 */
+								if (epqstate->epqresult == EPQ_TUPLE_IS_NOT_NULL)
+								{
+									/*
+									 * If EvalPlanQual returns a tuple then we know that we
+									 * are still MATCHED, but we don't know which action we
+									 * would activate for the new row values in the case that
+									 * we have any WHEN MATCHED AND conditions, even if the
+									 * current action does not have such a condition.
+									 */
+									goto lmerge;
+								}
+								/*
+								 * If EvalPlanQual did not return a tuple, it means we
+								 * have seen a concurrent delete, or a concurrent update
+								 * where the row has moved to another partition.
+								 *
+								 * UPDATE ignores this case and continues.
+								 *
+								 * If MERGE has a WHEN NOT MATCHED clause we know that the
+								 * user would like to INSERT something in this case, yet
+								 * we can't see the delete with our snapshot, so take the
+								 * safe choice and throw an ERROR. If the user didn't care
+								 * about WHEN NOT MATCHED INSERT then neither do we.
+								 *
+								 * XXX We might consider setting matched = false and loop
+								 * back to lmerge though we'd need to do something like
+								 * EvalPlanQual, but not quite.
+								 */
+								else if (epqstate->epqresult == EPQ_TUPLE_IS_NULL &&
+										 node->mt_merge_subcommands & ACL_INSERT)
+								{
+									/*
+									 * We need to throw a retryable ERROR because of the
+									 * concurrent update which we can't handle.
+									 */
+									ereport(ERROR,
+											(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+											 errmsg("could not serialize access due to concurrent update")));
+								}
+
 								break;
 							case CMD_DELETE:
 								/* Nothing to Project for a DELETE action */
 								slot = ExecDelete(node, tupleid, oldtuple,
 												  planSlot, true,
-												  &node->mt_epqstate, estate,
+												  epqstate, estate,
 												  NULL, false, action,
 												  node->canSetTag);
+
 								Assert(BufferIsValid(buffer));
 								ReleaseBuffer(buffer);
+
+								/*
+								 * If we had to use EvalPlanQual to search for updated
+								 * tuples then special handling is required...
+								 * Note that this handling is identical for both
+								 * MERGE UPDATE and MERGE DELETE actions.
+								 */
+								if (epqstate->epqresult == EPQ_TUPLE_IS_NOT_NULL)
+								{
+									/*
+									 * If EvalPlanQual returns a tuple then we know that we
+									 * are still MATCHED, but we don't know which action we
+									 * would activate for the new row values in the case that
+									 * we have any WHEN MATCHED AND conditions, even if the
+									 * current action does not have such a condition.
+									 */
+									goto lmerge;
+								}
+								/*
+								 * If EvalPlanQual did not return a tuple, it means we
+								 * have seen a concurrent delete, or a concurrent update
+								 * where the row has moved to another partition.
+								 *
+								 * DELETE ignores this case and continues.
+								 *
+								 * If MERGE has a WHEN NOT MATCHED clause we know that the
+								 * user would like to INSERT something in this case, yet
+								 * we can't see the delete with our snapshot, so take the
+								 * safe choice and throw an ERROR. If the user didn't care
+								 * about WHEN NOT MATCHED INSERT then neither do we.
+								 *
+								 * XXX We might consider setting matched = false and loop
+								 * back to lmerge though we'd need to do something like
+								 * EvalPlanQual, but not quite.
+								 */
+								else if (epqstate->epqresult == EPQ_TUPLE_IS_NULL &&
+										 node->mt_merge_subcommands & ACL_INSERT)
+								{
+									/*
+									 * We need to throw a retryable ERROR because of the
+									 * concurrent update which we can't handle.
+									 */
+									ereport(ERROR,
+											(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+											 errmsg("could not serialize access due to concurrent update")));
+								}
+
 								break;
 							case CMD_NOTHING:
 								Assert(!BufferIsValid(buffer));
@@ -2762,7 +2805,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		/* merge may only have one plan, inheritance is not expanded */
 		Assert(nplans == 1);
 
-		mtstate->mt_mergeSTriggers = 0;
+		mtstate->mt_merge_subcommands = 0;
 
 		if (mtstate->ps.ps_ExprContext == NULL)
 			ExecAssignExprContext(estate, &mtstate->ps);
@@ -2810,13 +2853,13 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 			switch (action->commandType)
 			{
 				case CMD_INSERT:
-					mtstate->mt_mergeSTriggers |= ACL_INSERT;
+					mtstate->mt_merge_subcommands |= ACL_INSERT;
 					break;
 				case CMD_UPDATE:
-					mtstate->mt_mergeSTriggers |= ACL_UPDATE;
+					mtstate->mt_merge_subcommands |= ACL_UPDATE;
 					break;
 				case CMD_DELETE:
-					mtstate->mt_mergeSTriggers |= ACL_DELETE;
+					mtstate->mt_merge_subcommands |= ACL_DELETE;
 					break;
 				case CMD_NOTHING:
 					break;
