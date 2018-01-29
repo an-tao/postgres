@@ -696,20 +696,6 @@ SELECT * FROM wq_target;
    1 |     299
 (1 row)
 
--- check if we can access system columns in the conditions
-MERGE INTO wq_target t
-USING wq_source s ON t.tid = s.sid
-WHEN MATCHED AND t.xmin = t.xmax THEN
-	UPDATE SET balance = t.balance + s.balance;
-ERROR:  system column "xmin" reference in WHEN AND condition is invalid
-LINE 3: WHEN MATCHED AND t.xmin = t.xmax THEN
-                         ^
-SELECT * FROM wq_target;
- tid | balance 
------+---------
-   1 |     299
-(1 row)
-
 -- check if subqueries work in the conditions?
 MERGE INTO wq_target t
 USING wq_source s ON t.tid = s.sid
@@ -718,10 +704,29 @@ WHEN MATCHED AND t.balance > (SELECT max(balance) FROM target) THEN
 ERROR:  cannot use subquery in WHEN AND condition
 LINE 3: WHEN MATCHED AND t.balance > (SELECT max(balance) FROM targe...
                                      ^
+-- check if we can access system columns in the conditions
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN MATCHED AND t.xmin = t.xmax THEN
+	UPDATE SET balance = t.balance + s.balance;
+ERROR:  system column "xmin" reference in WHEN AND condition is invalid
+LINE 3: WHEN MATCHED AND t.xmin = t.xmax THEN
+                         ^
+ALTER TABLE wq_target SET WITH OIDS;
 SELECT * FROM wq_target;
  tid | balance 
 -----+---------
    1 |     299
+(1 row)
+
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN MATCHED AND t.oid >= 0 THEN
+	UPDATE SET balance = t.balance + s.balance;
+SELECT * FROM wq_target;
+ tid | balance 
+-----+---------
+   1 |     399
 (1 row)
 
 -- test preventing WHEN AND conditions from writing to the database
