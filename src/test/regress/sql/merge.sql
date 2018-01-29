@@ -475,17 +475,23 @@ WHEN MATCHED AND t.balance = 199 OR s.balance > 100 THEN
 	UPDATE SET balance = t.balance + s.balance;
 SELECT * FROM wq_target;
 
+-- check if subqueries work in the conditions?
+MERGE INTO wq_target t
+USING wq_source s ON t.tid = s.sid
+WHEN MATCHED AND t.balance > (SELECT max(balance) FROM target) THEN
+	UPDATE SET balance = t.balance + s.balance;
+
 -- check if we can access system columns in the conditions
 MERGE INTO wq_target t
 USING wq_source s ON t.tid = s.sid
 WHEN MATCHED AND t.xmin = t.xmax THEN
 	UPDATE SET balance = t.balance + s.balance;
-SELECT * FROM wq_target;
 
--- check if subqueries work in the conditions?
+ALTER TABLE wq_target SET WITH OIDS;
+SELECT * FROM wq_target;
 MERGE INTO wq_target t
 USING wq_source s ON t.tid = s.sid
-WHEN MATCHED AND t.balance > (SELECT max(balance) FROM target) THEN
+WHEN MATCHED AND t.oid >= 0 THEN
 	UPDATE SET balance = t.balance + s.balance;
 SELECT * FROM wq_target;
 

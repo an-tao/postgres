@@ -730,7 +730,8 @@ scanRTEForColumn(ParseState *pstate, RangeTblEntry *rte, const char *colname,
 
 		/* In MERGE when and condition, no system column is allowed */
 		if (pstate->p_expr_kind == EXPR_KIND_MERGE_WHEN_AND &&
-			attnum < InvalidAttrNumber)
+			attnum < InvalidAttrNumber &&
+			!(attnum == TableOidAttributeNumber || attnum == ObjectIdAttributeNumber))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
 					 errmsg("system column \"%s\" reference in WHEN AND condition is invalid",
