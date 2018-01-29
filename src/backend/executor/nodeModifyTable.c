@@ -2319,11 +2319,32 @@ lmerge:;
 						 * ExecQual() will return true if there are no
 						 * conditions to evaluate).
 						 */
-						if (!ExecQual(action->whenqual, econtext))
+						if (action->whenqual)
 						{
-							if (BufferIsValid(buffer))
-								ReleaseBuffer(buffer);
-							continue;
+							int64 startWAL = GetXactWALBytes();
+							bool	qual = ExecQual(action->whenqual, econtext);
+
+							/*
+							 * SQL Standard says that WHEN AND conditions must not
+							 * write to the database, so check we haven't written
+							 * any WAL during the test. Very sensible that is, since
+							 * we can end up evaluating some tests multiple times if
+							 * we have concurrent activity and complex WHEN clauses.
+							 *
+							 * XXX If we had some clear form of functional labelling
+							 * we could use that, if we trusted it.
+							 */
+							if (startWAL < GetXactWALBytes())
+								ereport(ERROR,
+										(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+										 errmsg("could not serialize access due to concurrent update")));
+
+							if (!qual)
+							{
+								if (BufferIsValid(buffer))
+									ReleaseBuffer(buffer);
+								continue;
+							}
 						}
 
 						/* Perform stated action */
