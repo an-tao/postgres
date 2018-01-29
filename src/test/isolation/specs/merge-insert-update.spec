@@ -1,11 +1,11 @@
 # MERGE INSERT UPDATE
 #
-# This test tries to expose problems between concurrent sessions
+# This looks at how we handle concurrent INSERTs, illustrating how the
+# behavior differs from INSERT ... ON CONFLICT
 
 setup
 {
   CREATE TABLE target (key int primary key, val text);
-  INSERT INTO target VALUES (1, 'setup');
 }
 
 teardown
@@ -41,14 +41,10 @@ step "a2" { ABORT; }
 permutation "merge1" "c1" "select2" "c2"
 permutation "merge1" "c1" "merge2" "select2" "c2"
 
-# check concurrent updates, unconditional
+# check concurrent inserts
+permutation "insert1" "merge2" "c1" "select2" "c2"
 permutation "merge1" "merge2" "c1" "select2" "c2"
 permutation "merge1" "merge2" "a1" "select2" "c2"
-
-# check how we handle when visible row has been concurrently deleted
-permutation "delete1" "c1" "merge2" "select2" "c2"
-permutation "delete1" "merge2" "c1" "select2" "c2"
-permutation "delete1" "merge2i" "c1" "select2" "c2"
 
 # check how we handle when visible row has been concurrently deleted, then same key re-inserted
 permutation "delete1" "insert1" "c1" "merge2" "select2" "c2"
