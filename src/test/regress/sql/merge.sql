@@ -608,6 +608,18 @@ ROLLBACK;
 
 --self-merge
 BEGIN;
+MERGE INTO target t1
+USING target t2
+ON t1.tid = t2.tid
+WHEN MATCHED THEN
+	UPDATE SET balance = t1.balance + t2.balance
+WHEN NOT MATCHED THEN
+	INSERT VALUES (t2.tid, t2.balance)
+;
+SELECT * FROM target ORDER BY tid;
+ROLLBACK;
+
+BEGIN;
 MERGE INTO target t
 USING (SELECT tid as sid, balance as delta FROM target WHERE balance > 0) AS s
 ON t.tid = s.sid

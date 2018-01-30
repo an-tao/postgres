@@ -926,6 +926,34 @@ SELECT * FROM target ORDER BY tid;
 ROLLBACK;
 --self-merge
 BEGIN;
+MERGE INTO target t1
+USING target t2
+ON t1.tid = t2.tid
+WHEN MATCHED THEN
+	UPDATE SET balance = t1.balance + t2.balance
+WHEN NOT MATCHED THEN
+	INSERT VALUES (t2.tid, t2.balance)
+;
+NOTICE:  BEFORE INSERT STATEMENT trigger
+NOTICE:  BEFORE UPDATE STATEMENT trigger
+NOTICE:  BEFORE UPDATE ROW trigger
+NOTICE:  BEFORE UPDATE ROW trigger
+NOTICE:  BEFORE UPDATE ROW trigger
+NOTICE:  AFTER UPDATE ROW trigger
+NOTICE:  AFTER UPDATE ROW trigger
+NOTICE:  AFTER UPDATE ROW trigger
+NOTICE:  AFTER UPDATE STATEMENT trigger
+NOTICE:  AFTER INSERT STATEMENT trigger
+SELECT * FROM target ORDER BY tid;
+ tid | balance 
+-----+---------
+   1 |      20
+   2 |      40
+   3 |      60
+(3 rows)
+
+ROLLBACK;
+BEGIN;
 MERGE INTO target t
 USING (SELECT tid as sid, balance as delta FROM target WHERE balance > 0) AS s
 ON t.tid = s.sid
