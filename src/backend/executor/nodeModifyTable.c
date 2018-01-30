@@ -2429,6 +2429,9 @@ lmerge:;
 											 errmsg("could not serialize access due to concurrent update")));
 								}
 
+								/* Count updates */
+								InstrCountFiltered1(&node->ps, 1);
+
 								break;
 							case CMD_DELETE:
 								/* Nothing to Project for a DELETE action */
@@ -2486,6 +2489,9 @@ lmerge:;
 											(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 											 errmsg("could not serialize access due to concurrent update")));
 								}
+
+								/* Count deletes */
+								InstrCountFiltered2(&node->ps, 1);
 
 								break;
 							case CMD_NOTHING:

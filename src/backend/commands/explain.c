@@ -3055,10 +3055,26 @@ show_modifytable_info(ModifyTableState *mtstate, List *ancestors,
 	}
 	else if (node->operation == CMD_MERGE)
 	{
-		/*
-		 * XXX Add more detailed instrumentation for MERGE changes
-		 * when running EXPLAIN ANALYZE?
-		 */
+		/* EXPLAIN ANALYZE display of actual outcome for each tuple proposed */
+		if (es->analyze && mtstate->ps.instrument)
+		{
+			double		total;
+			double		insert_path;
+			double		update_path;
+			double		delete_path;
+
+			InstrEndLoop(mtstate->mt_plans[0]->instrument);
+
+			/* count the number of source rows */
+			total = mtstate->mt_plans[0]->instrument->ntuples;
+			update_path = mtstate->ps.instrument->nfiltered1;
+			delete_path = mtstate->ps.instrument->nfiltered2;
+			insert_path = total - update_path - delete_path;
+
+			ExplainPropertyFloat("Tuples Inserted", insert_path, 0, es);
+			ExplainPropertyFloat("Tuples Updated", update_path, 0, es);
+			ExplainPropertyFloat("Tuples Deleted", delete_path, 0, es);
+		}
 	}
 
 	if (labeltargets)
