@@ -1095,8 +1095,6 @@ WHEN MATCHED AND tid < 2 THEN
 ERROR:  column reference "balance" is ambiguous
 LINE 5:     UPDATE SET balance = balance + delta
                                  ^
-SELECT * FROM sq_target;
-ERROR:  current transaction is aborted, commands ignored until end of transaction block
 ROLLBACK;
 BEGIN;
 INSERT INTO sq_source (sid, balance, delta) VALUES (-1, -1, -10);
@@ -1117,6 +1115,44 @@ SELECT * FROM sq_target;
   -1 |     -11
 (3 rows)
 
+ROLLBACK;
+-- CTEs
+BEGIN;
+INSERT INTO sq_source (sid, balance, delta) VALUES (-1, -1, -10);
+WITH targq AS (
+	SELECT * FROM v
+)
+MERGE INTO sq_target t
+USING v
+ON tid = sid
+WHEN MATCHED AND tid > 2 THEN
+    UPDATE SET balance = t.balance + delta
+WHEN NOT MATCHED THEN
+	INSERT (balance, tid) VALUES (balance + delta, sid)
+WHEN MATCHED AND tid < 2 THEN
+	DELETE
+;
+ERROR:  syntax error at or near "MERGE"
+LINE 4: MERGE INTO sq_target t
+        ^
+ROLLBACK;
+-- RETURNING
+BEGIN;
+INSERT INTO sq_source (sid, balance, delta) VALUES (-1, -1, -10);
+MERGE INTO sq_target t
+USING v
+ON tid = sid
+WHEN MATCHED AND tid > 2 THEN
+    UPDATE SET balance = t.balance + delta
+WHEN NOT MATCHED THEN
+	INSERT (balance, tid) VALUES (balance + delta, sid)
+WHEN MATCHED AND tid < 2 THEN
+	DELETE
+RETURNING *
+;
+ERROR:  syntax error at or near "RETURNING"
+LINE 10: RETURNING *
+         ^
 ROLLBACK;
 DROP TABLE sq_target, sq_source CASCADE;
 NOTICE:  drop cascades to view v
