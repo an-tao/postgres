@@ -670,8 +670,22 @@ SELECT * FROM target ORDER BY tid;
 ROLLBACK;
 
 -- PREPARE
+BEGIN;
 prepare foom as merge into target t using (select 1 as sid) s on (t.tid = s.sid) when matched then update set balance = 1;
 execute foom;
+SELECT * FROM target ORDER BY tid;
+ROLLBACK;
+
+BEGIN;
+PREPARE foom2 (integer, integer) AS
+MERGE INTO target t
+USING (SELECT $1) s
+ON t.tid = $1
+WHEN MATCHED THEN
+UPDATE SET balance = $2;
+execute foom2 (1, 1);
+SELECT * FROM target ORDER BY tid;
+ROLLBACK;
 
 -- subqueries in source relation
 
