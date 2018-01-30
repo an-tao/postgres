@@ -398,7 +398,7 @@ MERGE <replaceable class="parameter">total-count</replaceable>
  </refsect1>
 
  <refsect1>
-  <title>Notes</title>
+  <title>Execution</title>
 
   <para>
    The following steps take place during the execution of
@@ -469,13 +469,6 @@ MERGE <replaceable class="parameter">total-count</replaceable>
   </para>
 
   <para>
-   The order in which rows are generated from the data source is indeterminate
-   by default. A <replaceable class="parameter">source_query</replaceable>
-   can be used to specify a consistent ordering, if required, which might be
-   needed to avoid deadlocks between concurrent transactions.
-  </para>
-
-  <para>
    You should ensure that the join produces at most one candidate change row
    for each target row.  In other words, a target row shouldn't join to more
    than one data source row.  If it does, then only one of the candidate change
@@ -501,6 +494,17 @@ MERGE <replaceable class="parameter">total-count</replaceable>
    is raised if that occurs.
   </para>
 
+ </refsect1>
+ <refsect1>
+  <title>Notes</title>
+
+  <para>
+   The order in which rows are generated from the data source is indeterminate
+   by default. A <replaceable class="parameter">source_query</replaceable>
+   can be used to specify a consistent ordering, if required, which might be
+   needed to avoid deadlocks between concurrent transactions.
+  </para>
+
   <para>
    There is no <literal>RETURNING</literal> clause with <command>MERGE</command>.
    Actions of <command>INSERT</command>, <command>UPDATE</command> and <command>DELETE</command>
@@ -513,6 +517,14 @@ MERGE <replaceable class="parameter">total-count</replaceable>
    use a transition table as a source, but it cannot be used on a target table that has
    statement triggers that require a transition table.
    These restrictions may be lifted in later releases. 
+  </para>
+
+  <para>
+   You may also wish to consider using <command>INSERT ... ON CONFLICT</command> as an
+   alternative statement which offers the ability to run an <command>UPDATE</command>
+   if a concurrent <command>INSERT</command> occurs.  There are a variety of
+   differences and restrictions between the two statement types and they are not
+   interchangeable. See <xref linkend="sql-merge"/>.
   </para>
  </refsect1>
 
