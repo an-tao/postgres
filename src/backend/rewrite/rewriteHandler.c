@@ -1376,6 +1376,36 @@ rewriteTargetListUD(Query *parsetree, RangeTblEntry *target_rte,
 	}
 }
 
+void
+rewriteTargetListMerge(Query *parsetree, Relation target_relation)
+{
+	Var		   *var = NULL;
+	const char *attrname;
+	TargetEntry *tle;
+
+	if (target_relation->rd_rel->relkind == RELKIND_RELATION ||
+		target_relation->rd_rel->relkind == RELKIND_MATVIEW ||
+		target_relation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
+	{
+		/*
+		 * Emit CTID so that executor can find the row to update or delete.
+		 */
+		var = makeVar(parsetree->resultRelation,
+					  SelfItemPointerAttributeNumber,
+					  TIDOID,
+					  -1,
+					  InvalidOid,
+					  0);
+
+		attrname = "ctid";
+		tle = makeTargetEntry((Expr *) var,
+							  list_length(parsetree->targetList) + 1,
+							  pstrdup(attrname),
+							  true);
+
+		parsetree->targetList = lappend(parsetree->targetList, tle);
+	}
+}
 
 /*
  * matchLocks -

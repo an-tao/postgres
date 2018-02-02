@@ -106,9 +106,11 @@ preprocess_targetlist(PlannerInfo *root)
 	 * keep it that way to avoid changing APIs used by FDWs.
 	 */
 	if (command_type == CMD_UPDATE ||
-		command_type == CMD_DELETE ||
-		command_type == CMD_MERGE)
+		command_type == CMD_DELETE)
 		rewriteTargetListUD(parse, target_rte, target_relation);
+
+	if (command_type == CMD_MERGE)
+		rewriteTargetListMerge(parse, target_relation);
 
 	/*
 	 * for heap_form_tuple to work, the targetlist must match the exact order
