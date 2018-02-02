@@ -395,6 +395,10 @@ MERGE <replaceable class="parameter">total-count</replaceable>
    were changed in any way.
   </para>
 
+  <para>
+   The number of rows inserted, updated and deleted can be seen in the output of
+   <command>EXPLAIN ANALYZE</command>.
+  </para>
  </refsect1>
 
  <refsect1>
@@ -412,8 +416,11 @@ MERGE <replaceable class="parameter">total-count</replaceable>
      </listitem>
      <listitem>
       <para>
-       Perform left outer join from source to target table. Then for each
-       candidate change row
+       Perform left outer join from source to target table. If the <command>MERGE</command>
+       contains no <literal>INSERT</literal> actions that is optimized to be an inner join.
+       If the <literal>USING</literal> clause contains a scalar sub-query we avoid the
+       join completely. The resulting query will be optimized normally and will produce
+       a set of candidate change row. For each candidate change row
        <orderedlist>
         <listitem>
          <para>

@@ -1057,15 +1057,31 @@ ROLLBACK;
 BEGIN;
 PREPARE foom2 (integer, integer) AS
 MERGE INTO target t
-USING (SELECT $1) s
+USING (SELECT 1) s
 ON t.tid = $1
 WHEN MATCHED THEN
 UPDATE SET balance = $2;
+EXPLAIN (ANALYZE ON, COSTS OFF, SUMMARY OFF, TIMING OFF)
 execute foom2 (1, 1);
 NOTICE:  BEFORE UPDATE STATEMENT trigger
 NOTICE:  BEFORE UPDATE ROW trigger
 NOTICE:  AFTER UPDATE ROW trigger
 NOTICE:  AFTER UPDATE STATEMENT trigger
+                     QUERY PLAN                     
+----------------------------------------------------
+ Merge on target t (actual rows=0 loops=1)
+   Tuples Inserted: 0
+   Tuples Updated: 1
+   Tuples Deleted: 0
+   ->  Seq Scan on target t (actual rows=1 loops=1)
+         Filter: (tid = 1)
+         Rows Removed by Filter: 2
+ Trigger merge_aru: calls=1
+ Trigger merge_asu: calls=1
+ Trigger merge_bru: calls=1
+ Trigger merge_bsu: calls=1
+(11 rows)
+
 SELECT * FROM target ORDER BY tid;
  tid | balance 
 -----+---------
