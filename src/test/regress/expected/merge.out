@@ -1201,6 +1201,36 @@ ERROR:  syntax error at or near "RETURNING"
 LINE 10: RETURNING *
          ^
 ROLLBACK;
+-- Subqueries
+BEGIN;
+MERGE INTO sq_target t
+USING v
+ON tid = sid
+WHEN MATCHED THEN
+    UPDATE SET balance = (SELECT count(*) FROM sq_target)
+;
+ERROR:  unrecognized node type: 114
+ROLLBACK;
+BEGIN;
+MERGE INTO sq_target t
+USING v
+ON tid = sid
+WHEN MATCHED AND (SELECT count(*) > 0 FROM sq_target) THEN
+    UPDATE SET balance = 42
+;
+ERROR:  cannot use subquery in WHEN AND condition
+LINE 4: WHEN MATCHED AND (SELECT count(*) > 0 FROM sq_target) THEN
+                         ^
+ROLLBACK;
+BEGIN;
+MERGE INTO sq_target t
+USING v
+ON tid = sid AND (SELECT count(*) > 0 FROM sq_target)
+WHEN MATCHED THEN
+    UPDATE SET balance = 42
+;
+ERROR:  cannot handle unplanned sub-select
+ROLLBACK;
 DROP TABLE sq_target, sq_source CASCADE;
 NOTICE:  drop cascades to view v
 -- SERIALIZABLE test

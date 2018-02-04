@@ -778,6 +778,33 @@ RETURNING *
 ;
 ROLLBACK;
 
+-- Subqueries
+BEGIN;
+MERGE INTO sq_target t
+USING v
+ON tid = sid
+WHEN MATCHED THEN
+    UPDATE SET balance = (SELECT count(*) FROM sq_target)
+;
+ROLLBACK;
+
+BEGIN;
+MERGE INTO sq_target t
+USING v
+ON tid = sid
+WHEN MATCHED AND (SELECT count(*) > 0 FROM sq_target) THEN
+    UPDATE SET balance = 42
+;
+ROLLBACK;
+
+BEGIN;
+MERGE INTO sq_target t
+USING v
+ON tid = sid AND (SELECT count(*) > 0 FROM sq_target)
+WHEN MATCHED THEN
+    UPDATE SET balance = 42
+;
+ROLLBACK;
 
 DROP TABLE sq_target, sq_source CASCADE;
 
