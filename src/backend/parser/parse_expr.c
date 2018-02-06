@@ -1818,10 +1818,8 @@ transformSubLink(ParseState *pstate, SubLink *sublink)
 		case EXPR_KIND_RETURNING:
 		case EXPR_KIND_VALUES:
 		case EXPR_KIND_VALUES_SINGLE:
-			/* okay */
-			break;
 		case EXPR_KIND_MERGE_WHEN_AND:
-			err = _("cannot use subquery in WHEN AND condition");
+			/* okay */
 			break;
 		case EXPR_KIND_CHECK_CONSTRAINT:
 		case EXPR_KIND_DOMAIN_CHECK:

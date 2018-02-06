@@ -701,9 +701,6 @@ MERGE INTO wq_target t
 USING wq_source s ON t.tid = s.sid
 WHEN MATCHED AND t.balance > (SELECT max(balance) FROM target) THEN
 	UPDATE SET balance = t.balance + s.balance;
-ERROR:  cannot use subquery in WHEN AND condition
-LINE 3: WHEN MATCHED AND t.balance > (SELECT max(balance) FROM targe...
-                                     ^
 -- check if we can access system columns in the conditions
 MERGE INTO wq_target t
 USING wq_source s ON t.tid = s.sid
@@ -716,7 +713,7 @@ ALTER TABLE wq_target SET WITH OIDS;
 SELECT * FROM wq_target;
  tid | balance 
 -----+---------
-   1 |     299
+   1 |     399
 (1 row)
 
 MERGE INTO wq_target t
@@ -726,7 +723,7 @@ WHEN MATCHED AND t.oid >= 0 THEN
 SELECT * FROM wq_target;
  tid | balance 
 -----+---------
-   1 |     399
+   1 |     499
 (1 row)
 
 -- test preventing WHEN AND conditions from writing to the database
@@ -1209,7 +1206,6 @@ ON tid = sid
 WHEN MATCHED THEN
     UPDATE SET balance = (SELECT count(*) FROM sq_target)
 ;
-ERROR:  unrecognized node type: 114
 ROLLBACK;
 BEGIN;
 MERGE INTO sq_target t
@@ -1218,9 +1214,6 @@ ON tid = sid
 WHEN MATCHED AND (SELECT count(*) > 0 FROM sq_target) THEN
     UPDATE SET balance = 42
 ;
-ERROR:  cannot use subquery in WHEN AND condition
-LINE 4: WHEN MATCHED AND (SELECT count(*) > 0 FROM sq_target) THEN
-                         ^
 ROLLBACK;
 BEGIN;
 MERGE INTO sq_target t
@@ -1229,7 +1222,6 @@ ON tid = sid AND (SELECT count(*) > 0 FROM sq_target)
 WHEN MATCHED THEN
     UPDATE SET balance = 42
 ;
-ERROR:  cannot handle unplanned sub-select
 ROLLBACK;
 DROP TABLE sq_target, sq_source CASCADE;
 NOTICE:  drop cascades to view v
