@@ -270,6 +270,7 @@ _readQuery(void)
 	READ_NODE_FIELD(setOperations);
 	READ_NODE_FIELD(constraintDeps);
 	/* withCheckOptions intentionally omitted, see comment in parsenodes.h */
+	READ_INT_FIELD(mergeTarget_relation);
 	READ_NODE_FIELD(mergeSourceTargetList);
 	READ_NODE_FIELD(mergeActionList);
 	READ_LOCATION_FIELD(stmt_location);
@@ -1593,7 +1594,7 @@ _readModifyTable(void)
 	READ_UINT_FIELD(exclRelRTI);
 	READ_NODE_FIELD(exclRelTlist);
 	READ_NODE_FIELD(mergeSourceTargetList);
-	READ_NODE_FIELD(mergeActionList);
+	READ_NODE_FIELD(mergeActionLists);
 
 	READ_DONE();
 }

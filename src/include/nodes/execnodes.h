@@ -348,6 +348,7 @@ typedef struct JunkFilter
 	AttrNumber *jf_cleanMap;
 	TupleTableSlot *jf_resultSlot;
 	AttrNumber	jf_junkAttNo;
+	AttrNumber	jf_otherJunkAttNo;
 } JunkFilter;
 
 /*
@@ -1026,7 +1027,9 @@ typedef struct ModifyTableState
 	/* controls transition table population for INSERT...ON CONFLICT UPDATE */
 	TupleConversionMap **mt_per_subplan_tupconv_maps;
 	/* Per plan map for tuple conversion from child to root */
-	List		*mt_mergeActionStateList;	/* List of MERGE action states */
+	TupleTableSlot	**mt_merge_existing;	/* extra slot for each subplan to
+											   store existing tuple. */
+	List		*mt_mergeActionStateLists;	/* List of MERGE action states */
 	AclMode		mt_merge_subcommands;	/* Flags show which cmd types are present */
 } ModifyTableState;
 

@@ -169,6 +169,7 @@ typedef struct Query
 	List	   *withCheckOptions;	/* a list of WithCheckOption's, which are
 									 * only added during rewrite and therefore
 									 * are not written out as part of Query. */
+	int			mergeTarget_relation;
 	List	   *mergeSourceTargetList;
 	List	   *mergeActionList;	/* list of actions for MERGE (only) */
 

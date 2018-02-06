@@ -1690,7 +1690,7 @@ typedef struct ModifyTablePath
 	OnConflictExpr *onconflict; /* ON CONFLICT clause, or NULL */
 	int			epqParam;		/* ID of Param for EvalPlanQual re-eval */
 	List	   *mergeSourceTargetList;
-	List	   *mergeActionList; /* actions for MERGE */
+	List	   *mergeActionLists; /* actions for MERGE */
 } ModifyTablePath;
 
 /*

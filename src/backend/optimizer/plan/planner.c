@@ -1126,6 +1126,7 @@ inheritance_planner(PlannerInfo *root)
 	List	   *withCheckOptionLists = NIL;
 	List	   *returningLists = NIL;
 	List	   *rowMarks;
+	List	   *mergeActionLists = NIL;
 	RelOptInfo *final_rel;
 	ListCell   *lc;
 	Index		rti;
@@ -1491,6 +1492,9 @@ inheritance_planner(PlannerInfo *root)
 			returningLists = lappend(returningLists,
 									 subroot->parse->returningList);
 
+		if (parse->mergeActionList)
+			mergeActionLists = lappend(mergeActionLists,
+									   subroot->parse->mergeActionList);
 		Assert(!parse->onConflict);
 	}
 
@@ -1556,8 +1560,8 @@ inheritance_planner(PlannerInfo *root)
 									 returningLists,
 									 rowMarks,
 									 NULL,
-									 NULL,
-									 NULL,
+									 parse->mergeSourceTargetList,
+									 mergeActionLists,
 									 SS_assign_special_param(root)));
 }
 
@@ -2204,7 +2208,7 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 										rowMarks,
 										parse->onConflict,
 										parse->mergeSourceTargetList,
-										parse->mergeActionList,
+										list_make1(parse->mergeActionList),
 										SS_assign_special_param(root));
 		}
 

@@ -2341,6 +2341,9 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	bool		is_terminal[2];
 	JoinExpr	*joinexpr;
 
+	/* There can't be any outer WITH to worry about */
+	Assert(pstate->p_ctenamespace == NIL);
+
 	qry->commandType = CMD_MERGE;
 
 	/*
@@ -2411,7 +2414,8 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 
 	/*
 	 * Construct a query of the form
-	 *  SELECT relation.ctid 	--junk attribute
+	 *  SELECT relation.ctid	--junk attribute
+	 *  	  ,relation.tableoid	--junk attribute
 	 * 		  ,source_relation.<somecols>
 	 * 		  ,relation.<somecols>
 	 *  FROM relation RIGHT JOIN source_relation
@@ -2444,6 +2448,29 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	 * cannot reference the outermost Target table at all.
 	 */
 	qry->querySource = QSRC_PARSER;
+
+	/*
+	 * Setup the target table. We expand inheritance like in the case of
+	 * UPDATE/DELETE and unlike INSERT. This ensures that all the machinery
+	 * required for handling inheritance/partitioning is setup correctly. This
+	 * is useful in order to handle various MERGE actions as we need to
+	 * evaluate WHEN conditions and project tuples suitable for the target
+	 * relation.
+	 *
+	 * As a result, the final ModifyTable node which gets added at the top,
+	 * will have the result relations set up correctly, with the corresponding
+	 * subplans. But we don't follow the usual approach of executing these
+	 * subplans one by one. Instead we include the target table in the
+	 * underlying JOIN query as a separate RTE. The target table gets expanded
+	 * into an Append rel in case of partitioned table and thus the join
+	 * ensures that all required tuples are returned correctly. Hence executing
+	 * just one subplan gives us all the desired matching and non-matching
+	 * tuples.
+	 */
+	qry->resultRelation = setTargetTable(pstate, stmt->relation,
+										 stmt->relation->inh,
+										 true, targetPerms);
+	
 	joinexpr = makeNode(JoinExpr);
 	joinexpr->isNatural = false;
 	joinexpr->alias = NULL;
@@ -2488,12 +2515,12 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	 * later used by set_plan_refs() to fix the UPDATE/INSERT target lists to
 	 * so that they can correctly fetch the attributes from the source
 	 * relation.
+	 *
+	 * Track the RTE index of the target table used in the join query. This is
+	 * later used to add required junk attributes to the targetlist.
 	 */
-	qry->resultRelation = transformMergeJoinClause(pstate,
-													stmt->relation,
-													targetPerms,
-													(Node *) joinexpr,
-													&qry->mergeSourceTargetList);
+	qry->mergeTarget_relation = transformMergeJoinClause(pstate, (Node *) joinexpr,
+			&qry->mergeSourceTargetList);
 
 	/*
 	 * This query should just provide the source relation columns. Later, in
@@ -2511,12 +2538,14 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	 * XXX MERGE is unsupported in various cases
 	 */
 	if (!(pstate->p_target_relation->rd_rel->relkind == RELKIND_RELATION ||
-		  pstate->p_target_relation->rd_rel->relkind == RELKIND_MATVIEW))
+		  pstate->p_target_relation->rd_rel->relkind == RELKIND_MATVIEW ||
+		  pstate->p_target_relation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("MERGE is not supported for this relation type")));
 
-	if (pstate->p_target_relation->rd_rel->relhassubclass)
+	if (pstate->p_target_relation->rd_rel->relkind != RELKIND_PARTITIONED_TABLE &&
+		pstate->p_target_relation->rd_rel->relhassubclass)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("MERGE is not supported for relations with inheritance")));

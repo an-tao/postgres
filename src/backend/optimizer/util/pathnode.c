@@ -3296,7 +3296,7 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 						List *withCheckOptionLists, List *returningLists,
 						List *rowMarks, OnConflictExpr *onconflict,
 						List *mergeSourceTargetList,
-						List *mergeActionList, int epqParam)
+						List *mergeActionLists, int epqParam)
 {
 	ModifyTablePath *pathnode = makeNode(ModifyTablePath);
 	double		total_size;
@@ -3308,6 +3308,8 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 		   list_length(resultRelations) == list_length(withCheckOptionLists));
 	Assert(returningLists == NIL ||
 		   list_length(resultRelations) == list_length(returningLists));
+	Assert(mergeActionLists == NIL ||
+		   list_length(resultRelations) == list_length(mergeActionLists));
 
 	pathnode->path.pathtype = T_ModifyTable;
 	pathnode->path.parent = rel;
@@ -3369,7 +3371,7 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->onconflict = onconflict;
 	pathnode->epqParam = epqParam;
 	pathnode->mergeSourceTargetList = mergeSourceTargetList;
-	pathnode->mergeActionList = mergeActionList;
+	pathnode->mergeActionLists = mergeActionLists;
 
 	return pathnode;
 }

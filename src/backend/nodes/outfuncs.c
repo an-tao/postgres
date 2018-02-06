@@ -390,7 +390,7 @@ _outModifyTable(StringInfo str, const ModifyTable *node)
 	WRITE_UINT_FIELD(exclRelRTI);
 	WRITE_NODE_FIELD(exclRelTlist);
 	WRITE_NODE_FIELD(mergeSourceTargetList);
-	WRITE_NODE_FIELD(mergeActionList);
+	WRITE_NODE_FIELD(mergeActionLists);
 }
 
 static void
@@ -2136,7 +2136,7 @@ _outModifyTablePath(StringInfo str, const ModifyTablePath *node)
 	WRITE_NODE_FIELD(onconflict);
 	WRITE_INT_FIELD(epqParam);
 	WRITE_NODE_FIELD(mergeSourceTargetList);
-	WRITE_NODE_FIELD(mergeActionList);
+	WRITE_NODE_FIELD(mergeActionLists);
 }
 
 static void
@@ -2958,6 +2958,7 @@ _outQuery(StringInfo str, const Query *node)
 	WRITE_NODE_FIELD(setOperations);
 	WRITE_NODE_FIELD(constraintDeps);
 	/* withCheckOptions intentionally omitted, see comment in parsenodes.h */
+	WRITE_INT_FIELD(mergeTarget_relation);
 	WRITE_NODE_FIELD(mergeSourceTargetList);
 	WRITE_NODE_FIELD(mergeActionList);
 	WRITE_LOCATION_FIELD(stmt_location);

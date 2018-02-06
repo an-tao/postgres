@@ -2146,6 +2146,16 @@ expression_tree_walker(Node *node,
 					return true;
 			}
 			break;
+		case T_MergeAction:
+			{
+				MergeAction *action = (MergeAction *) node;
+
+				if (walker(action->targetList, context))
+					return true;
+				if (walker(action->qual, context))
+					return true;
+			}
+			break;
 		case T_JoinExpr:
 			{
 				JoinExpr   *join = (JoinExpr *) node;
@@ -2254,6 +2264,8 @@ query_tree_walker(Query *query,
 	if (walker((Node *) query->withCheckOptions, context))
 		return true;
 	if (walker((Node *) query->onConflict, context))
+		return true;
+	if (walker((Node *) query->mergeActionList, context))
 		return true;
 	if (walker((Node *) query->returningList, context))
 		return true;
@@ -2932,6 +2944,18 @@ expression_tree_mutator(Node *node,
 				return (Node *) newnode;
 			}
 			break;
+		case T_MergeAction:
+			{
+				MergeAction *action = (MergeAction *) node;
+				MergeAction *newnode;
+
+				FLATCOPY(newnode, action, MergeAction);
+				MUTATE(newnode->qual, action->qual, Node *);
+				MUTATE(newnode->targetList, action->targetList, List *);
+
+				return (Node *) newnode;
+			}
+			break;
 		case T_JoinExpr:
 			{
 				JoinExpr   *join = (JoinExpr *) node;
@@ -3083,6 +3107,7 @@ query_tree_mutator(Query *query,
 	MUTATE(query->targetList, query->targetList, List *);
 	MUTATE(query->withCheckOptions, query->withCheckOptions, List *);
 	MUTATE(query->onConflict, query->onConflict, OnConflictExpr *);
+	MUTATE(query->mergeActionList, query->mergeActionList, List *);
 	MUTATE(query->returningList, query->returningList, List *);
 	MUTATE(query->jointree, query->jointree, FromExpr *);
 	MUTATE(query->setOperations, query->setOperations, Node *);

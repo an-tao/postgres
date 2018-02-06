@@ -167,10 +167,6 @@ transformFromClause(ParseState *pstate, List *frmList)
  *	the query manually. This is similar to setTargetTable() followed
  * 	by transformFromClause() but with a few less steps.
  *
- *	We open the target relation and acquire a write lock on it.
- *	This must be done before processing the FROM list so that we grab
- *	the write lock before any read lock.
- *
  *	Process the FROM clause and add items to the query's range table,
  *	joinlist, and namespace.
  *
@@ -182,30 +178,17 @@ transformFromClause(ParseState *pstate, List *frmList)
  *	setup by transformMergeStmt, the left subtree has the target result
  *	relation and the right subtree has the source relation.
  *
- *	Finally, we mark the relation as requiring the permissions specified
- *	by requiredPerms.
- *
  *	Returns the rangetable index of the target relation.
  */
 int
-transformMergeJoinClause(ParseState *pstate, RangeVar *relation,
-							AclMode requiredPerms, Node *merge,
-							List **mergeTargetList)
+transformMergeJoinClause(ParseState *pstate, Node *merge,
+							List **mergeSourceTargetList)
 {
 	RangeTblEntry *rte, *rt_rte;
 	List	   *namespace;
 	int			rtindex, rt_rtindex;
 	Node		*n;
-
-	/*
-	 * Open target rel and grab suitable lock (which we will hold till end of
-	 * transaction).
-	 *
-	 * free_parsestate() will eventually do the corresponding heap_close(),
-	 * but *not* release the lock.
-	 */
-	pstate->p_target_relation = parserOpenTable(pstate, relation,
-												RowExclusiveLock);
+	int			mergeTarget_relation = list_length(pstate->p_rtable) + 1;
 
 	n = transformFromClauseItem(pstate, merge,
 									&rte,
@@ -226,43 +209,30 @@ transformMergeJoinClause(ParseState *pstate, RangeVar *relation,
 	 * source or the target relation. Hence we must not add the Join RTE to the
 	 * namespace.
 	 *
-	 * Truncate the last entry, which must be for the top-level Join RTE.
+	 * The last entry must be for the top-level Join RTE. The source (right
+	 * side of the join) RTE must have been placed just before that. Keep that
+	 * and discard everything else. More importantly, we want to discard the
+	 * RTE of the left side of the join since that contains the target
+	 * relation. References to the columns of the target relation must be
+	 * resolved from the result relation and not the one that is used in the
+	 * join.
 	 */
+	Assert(list_length(namespace) > 1);
 	namespace = list_truncate(namespace, list_length(namespace) - 1);
-
-	/* Now add everything else to the namespace.  */
-	pstate->p_namespace = list_concat(pstate->p_namespace, namespace);
+	pstate->p_namespace = lappend(pstate->p_namespace, llast(namespace));
 
 	/* XXX Do we need this? */
 	setNamespaceLateralState(pstate->p_namespace, false, true);
 
 	/*
-	 * Target relation gets added as first RTE because we set that as larg,
-	 * so our left outer join (if any) is specified as JOIN_RIGHT.
-	 */
-	rtindex = 1;
-	rte = rt_fetch(rtindex, pstate->p_rtable);
-
-	/*
-	 * Override addRangeTableEntry's default ACL_SELECT permissions check, and
-	 * instead mark target table as requiring exactly the specified
-	 * permissions.
-	 *
-	 * If we find an explicit reference to the rel later during parse
-	 * analysis, we will add the ACL_SELECT bit back again; see
-	 * markVarForSelectPriv and its callers.
-	 */
-	rte->requiredPerms = requiredPerms;
-	pstate->p_target_rangetblentry = rte;
-
-	/*
 	 * Expand the right relation and add its columns to the
-	 * mergeTargetList. Note that the right relation can either be a plain
-	 * relation or a subquery or anything that can have a RangeTableEntry.
+	 * mergeSourceTargetList. Note that the right relation can either be a
+	 * plain relation or a subquery or anything that can have a
+	 * RangeTableEntry.
 	 */
-	*mergeTargetList = expandRelAttrs(pstate, rt_rte, rt_rtindex, 0, -1);
+	*mergeSourceTargetList = expandRelAttrs(pstate, rt_rte, rt_rtindex, 0, -1);
 
-	return rtindex;
+	return mergeTarget_relation;
 }
 
 /*

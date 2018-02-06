@@ -861,8 +861,9 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				 * and the target relation attributes are available from the
 				 * scan tuple.
 				 */
-				if (splan->mergeActionList != NIL)
+				if (splan->mergeActionLists != NIL)
 				{
+					ListCell *l2, *l3;
 					indexed_tlist *itlist;
 
 					/*
@@ -882,23 +883,30 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 					 */
 					itlist = build_tlist_index(splan->mergeSourceTargetList);
 
-					foreach (l, splan->mergeActionList)
+					forboth(l2, splan->mergeActionLists, l3,
+							splan->resultRelations)
 					{
-						MergeAction *action = (MergeAction *) lfirst(l);
+						List		  *mergeActionList = (List *)lfirst(l2);
+						int			   resultRelIndex = lfirst_int(l3);
 
-						/* Fix targetList of each action. */
-						action->targetList = fix_join_expr(root,
-								action->targetList,
-								NULL, itlist,
-								linitial_int(splan->resultRelations),
-								rtoffset);
+						foreach (l, mergeActionList)
+						{
+							MergeAction *action = (MergeAction *) lfirst(l);
 
-						/* Fix quals too. */
-						action->qual = (Node *) fix_join_expr(root,
-								(List *) action->qual,
-								NULL, itlist,
-								linitial_int(splan->resultRelations),
-								rtoffset);
+							/* Fix targetList of each action. */
+							action->targetList = fix_join_expr(root,
+									action->targetList,
+									NULL, itlist,
+									resultRelIndex,
+									rtoffset);
+
+							/* Fix quals too. */
+							action->qual = (Node *) fix_join_expr(root,
+									(List *) action->qual,
+									NULL, itlist,
+									resultRelIndex,
+									rtoffset);
+						}
 					}
 				}
 

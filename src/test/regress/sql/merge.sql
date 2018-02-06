@@ -808,6 +808,115 @@ ROLLBACK;
 
 DROP TABLE sq_target, sq_source CASCADE;
 
+CREATE TABLE pa_target (tid integer, balance float, val text)
+	PARTITION BY LIST (tid);
+
+CREATE TABLE part1 PARTITION OF pa_target FOR VALUES IN (1,4);
+CREATE TABLE part2 PARTITION OF pa_target FOR VALUES IN (2,5,6);
+CREATE TABLE part3 PARTITION OF pa_target FOR VALUES IN (3,8,9);
+CREATE TABLE part4 PARTITION OF pa_target DEFAULT;
+
+CREATE TABLE pa_source (sid integer, delta float);
+-- insert many rows to the source table
+INSERT INTO pa_source SELECT id, id * 10  FROM generate_series(1,14) AS id;
+-- insert a few rows in the target table (odd numbered tid)
+INSERT INTO pa_target SELECT id, id * 100, 'initial' FROM generate_series(1,14,2) AS id; 
+
+-- try simple MERGE
+BEGIN;
+MERGE INTO pa_target t
+  USING pa_source s
+  ON t.tid = s.sid
+  WHEN MATCHED THEN
+    UPDATE SET balance = balance + delta, val = val || ' updated by merge'
+  WHEN NOT MATCHED THEN
+    INSERT VALUES (sid, delta, 'inserted by merge');
+SELECT * FROM pa_target ORDER BY tid;
+ROLLBACK;
+
+-- same with a constant qual
+BEGIN;
+MERGE INTO pa_target t
+  USING pa_source s
+  ON t.tid = s.sid AND tid = 1
+  WHEN MATCHED THEN
+    UPDATE SET balance = balance + delta, val = val || ' updated by merge'
+  WHEN NOT MATCHED THEN
+    INSERT VALUES (sid, delta, 'inserted by merge');
+SELECT * FROM pa_target ORDER BY tid;
+ROLLBACK;
+
+-- try updating the partition key column
+BEGIN;
+MERGE INTO pa_target t
+  USING pa_source s
+  ON t.tid = s.sid
+  WHEN MATCHED THEN
+    UPDATE SET tid = tid + 1, balance = balance + delta, val = val || ' updated by merge'
+  WHEN NOT MATCHED THEN
+    INSERT VALUES (sid, delta, 'inserted by merge');
+SELECT * FROM pa_target ORDER BY tid;
+ROLLBACK;
+
+DROP TABLE pa_target CASCADE;
+
+-- The target table is partitioned in the same way, but this time by attaching
+-- partitions which have columns in different order, dropped columns etc.
+CREATE TABLE pa_target (tid integer, balance float, val text)
+	PARTITION BY LIST (tid);
+CREATE TABLE part1 (tid integer, balance float, val text);
+CREATE TABLE part2 (balance float, tid integer, val text);
+CREATE TABLE part3 (tid integer, balance float, val text);
+CREATE TABLE part4 (extraid text, tid integer, balance float, val text);
+ALTER TABLE part4 DROP COLUMN extraid;
+
+ALTER TABLE pa_target ATTACH PARTITION part1 FOR VALUES IN (1,4);
+ALTER TABLE pa_target ATTACH PARTITION part2 FOR VALUES IN (2,5,6);
+ALTER TABLE pa_target ATTACH PARTITION part3 FOR VALUES IN (3,8,9);
+ALTER TABLE pa_target ATTACH PARTITION part4 DEFAULT;
+
+-- insert a few rows in the target table (odd numbered tid)
+INSERT INTO pa_target SELECT id, id * 100, 'initial' FROM generate_series(1,14,2) AS id; 
+
+-- try simple MERGE
+BEGIN;
+MERGE INTO pa_target t
+  USING pa_source s
+  ON t.tid = s.sid
+  WHEN MATCHED THEN
+    UPDATE SET balance = balance + delta, val = val || ' updated by merge'
+  WHEN NOT MATCHED THEN
+    INSERT VALUES (sid, delta, 'inserted by merge');
+SELECT * FROM pa_target ORDER BY tid;
+ROLLBACK;
+
+-- same with a constant qual
+BEGIN;
+MERGE INTO pa_target t
+  USING pa_source s
+  ON t.tid = s.sid AND tid = 1
+  WHEN MATCHED THEN
+    UPDATE SET balance = balance + delta, val = val || ' updated by merge'
+  WHEN NOT MATCHED THEN
+    INSERT VALUES (sid, delta, 'inserted by merge');
+SELECT * FROM pa_target ORDER BY tid;
+ROLLBACK;
+
+-- try updating the partition key column
+BEGIN;
+MERGE INTO pa_target t
+  USING pa_source s
+  ON t.tid = s.sid
+  WHEN MATCHED THEN
+    UPDATE SET tid = tid + 1, balance = balance + delta, val = val || ' updated by merge'
+  WHEN NOT MATCHED THEN
+    INSERT VALUES (sid, delta, 'inserted by merge');
+SELECT * FROM pa_target ORDER BY tid;
+ROLLBACK;
+
+DROP TABLE pa_source;
+DROP TABLE pa_target CASCADE;
+
 -- SERIALIZABLE test
 -- handled in isolation tests
 

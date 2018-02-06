@@ -1390,7 +1390,7 @@ rewriteTargetListMerge(Query *parsetree, Relation target_relation)
 		/*
 		 * Emit CTID so that executor can find the row to update or delete.
 		 */
-		var = makeVar(parsetree->resultRelation,
+		var = makeVar(parsetree->mergeTarget_relation,
 					  SelfItemPointerAttributeNumber,
 					  TIDOID,
 					  -1,
@@ -1398,6 +1398,24 @@ rewriteTargetListMerge(Query *parsetree, Relation target_relation)
 					  0);
 
 		attrname = "ctid";
+		tle = makeTargetEntry((Expr *) var,
+							  list_length(parsetree->targetList) + 1,
+							  pstrdup(attrname),
+							  true);
+
+		parsetree->targetList = lappend(parsetree->targetList, tle);
+
+		/*
+		 * Emit TABLEOID so that executor can find the row to update or delete.
+		 */
+		var = makeVar(parsetree->mergeTarget_relation,
+					  TableOidAttributeNumber,
+					  OIDOID,
+					  -1,
+					  InvalidOid,
+					  0);
+
+		attrname = "tableoid";
 		tle = makeTargetEntry((Expr *) var,
 							  list_length(parsetree->targetList) + 1,
 							  pstrdup(attrname),

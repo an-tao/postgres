@@ -238,7 +238,7 @@ typedef struct ModifyTable
 	Index		exclRelRTI;		/* RTI of the EXCLUDED pseudo relation */
 	List	   *exclRelTlist;	/* tlist of the EXCLUDED pseudo relation */
 	List	   *mergeSourceTargetList;
-	List	   *mergeActionList; /* actions for MERGE */
+	List	   *mergeActionLists; /* actions for MERGE */
 } ModifyTable;
 
 /* ----------------

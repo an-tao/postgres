@@ -2394,7 +2394,7 @@ create_modifytable_plan(PlannerInfo *root, ModifyTablePath *best_path)
 							best_path->rowMarks,
 							best_path->onconflict,
 							best_path->mergeSourceTargetList,
-							best_path->mergeActionList,
+							best_path->mergeActionLists,
 							best_path->epqParam);
 
 	copy_generic_path_info(&plan->plan, &best_path->path);
@@ -6465,7 +6465,7 @@ make_modifytable(PlannerInfo *root,
 				 List *withCheckOptionLists, List *returningLists,
 				 List *rowMarks, OnConflictExpr *onconflict,
 				 List *mergeSourceTargetList,
-				 List *mergeActionList, int epqParam)
+				 List *mergeActionLists, int epqParam)
 {
 	ModifyTable *node = makeNode(ModifyTable);
 	List	   *fdw_private_list;
@@ -6478,6 +6478,8 @@ make_modifytable(PlannerInfo *root,
 		   list_length(resultRelations) == list_length(withCheckOptionLists));
 	Assert(returningLists == NIL ||
 		   list_length(resultRelations) == list_length(returningLists));
+	Assert(mergeActionLists == NIL ||
+		   list_length(resultRelations) == list_length(mergeActionLists));
 
 	node->plan.lefttree = NULL;
 	node->plan.righttree = NULL;
@@ -6524,7 +6526,7 @@ make_modifytable(PlannerInfo *root,
 	node->returningLists = returningLists;
 	node->rowMarks = rowMarks;
 	node->mergeSourceTargetList = mergeSourceTargetList;
-	node->mergeActionList = mergeActionList;
+	node->mergeActionLists = mergeActionLists;
 	node->epqParam = epqParam;
 
 	/*
