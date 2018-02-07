@@ -222,6 +222,7 @@ typedef struct ModifyTable
 	List	   *partitioned_rels;
 	bool		partColsUpdated;	/* some part key in hierarchy updated */
 	List	   *resultRelations;	/* integer list of RT indexes */
+	List	   *mergeTargetRelations;	/* integer list of RT indexes */
 	int			resultRelIndex; /* index of first resultRel in plan's list */
 	int			rootResultRelIndex; /* index of the partitioned table root */
 	List	   *plans;			/* plan(s) producing source data */
@@ -237,7 +238,7 @@ typedef struct ModifyTable
 	Node	   *onConflictWhere;	/* WHERE for ON CONFLICT UPDATE */
 	Index		exclRelRTI;		/* RTI of the EXCLUDED pseudo relation */
 	List	   *exclRelTlist;	/* tlist of the EXCLUDED pseudo relation */
-	List	   *mergeSourceTargetList;
+	List	   *mergeSourceTargetLists;
 	List	   *mergeActionLists; /* actions for MERGE */
 } ModifyTable;
 

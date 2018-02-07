@@ -863,8 +863,7 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				 */
 				if (splan->mergeActionLists != NIL)
 				{
-					ListCell *l2, *l3;
-					indexed_tlist *itlist;
+					ListCell *l2, *l3, *l4;
 
 					/*
 					 * mergeSourceTargetList is already setup correctly to
@@ -881,13 +880,17 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 					 * ensure that ecxt_scantuple is setup correctly to refer
 					 * to the tuple from the target relation.
 					 */
-					itlist = build_tlist_index(splan->mergeSourceTargetList);
 
-					forboth(l2, splan->mergeActionLists, l3,
-							splan->resultRelations)
+					forthree(l2, splan->mergeActionLists,
+							 l3, splan->resultRelations,
+							 l4, splan->mergeSourceTargetLists)
 					{
-						List		  *mergeActionList = (List *)lfirst(l2);
-						int			   resultRelIndex = lfirst_int(l3);
+						List	*mergeActionList = (List *)lfirst(l2);
+						int		resultRelIndex = lfirst_int(l3);
+						List	*mergeSourceTargetList = (List *)lfirst(l4);
+						indexed_tlist *itlist;
+
+						itlist = build_tlist_index(mergeSourceTargetList);
 
 						foreach (l, mergeActionList)
 						{

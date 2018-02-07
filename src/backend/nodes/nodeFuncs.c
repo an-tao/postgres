@@ -2265,6 +2265,8 @@ query_tree_walker(Query *query,
 		return true;
 	if (walker((Node *) query->onConflict, context))
 		return true;
+	if (walker((Node *) query->mergeSourceTargetList, context))
+		return true;
 	if (walker((Node *) query->mergeActionList, context))
 		return true;
 	if (walker((Node *) query->returningList, context))
@@ -3107,6 +3109,7 @@ query_tree_mutator(Query *query,
 	MUTATE(query->targetList, query->targetList, List *);
 	MUTATE(query->withCheckOptions, query->withCheckOptions, List *);
 	MUTATE(query->onConflict, query->onConflict, OnConflictExpr *);
+	MUTATE(query->mergeSourceTargetList, query->mergeSourceTargetList, List *);
 	MUTATE(query->mergeActionList, query->mergeActionList, List *);
 	MUTATE(query->returningList, query->returningList, List *);
 	MUTATE(query->jointree, query->jointree, FromExpr *);

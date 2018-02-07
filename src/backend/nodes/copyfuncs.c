@@ -206,6 +206,7 @@ _copyModifyTable(const ModifyTable *from)
 	COPY_NODE_FIELD(partitioned_rels);
 	COPY_SCALAR_FIELD(partColsUpdated);
 	COPY_NODE_FIELD(resultRelations);
+	COPY_NODE_FIELD(mergeTargetRelations);
 	COPY_SCALAR_FIELD(resultRelIndex);
 	COPY_SCALAR_FIELD(rootResultRelIndex);
 	COPY_NODE_FIELD(plans);
@@ -221,7 +222,7 @@ _copyModifyTable(const ModifyTable *from)
 	COPY_NODE_FIELD(onConflictWhere);
 	COPY_SCALAR_FIELD(exclRelRTI);
 	COPY_NODE_FIELD(exclRelTlist);
-	COPY_NODE_FIELD(mergeSourceTargetList);
+	COPY_NODE_FIELD(mergeSourceTargetLists);
 	COPY_NODE_FIELD(mergeActionLists);
 
 	return newnode;

@@ -3075,11 +3075,14 @@ ltrmark:;
 				{
 					/* it was updated, so look at the updated version */
 					TupleTableSlot *epqslot;
+					Index rti = relinfo->ri_mergeTargetRTI > 0 ?
+									relinfo->ri_mergeTargetRTI :
+									relinfo->ri_RangeTableIndex;
 
 					epqslot = EvalPlanQual(estate,
 										   epqstate,
 										   relation,
-										   relinfo->ri_RangeTableIndex,
+										   rti,
 										   lockmode,
 										   &hufd.ctid,
 										   hufd.xmax);

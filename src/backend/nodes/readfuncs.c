@@ -1578,6 +1578,7 @@ _readModifyTable(void)
 	READ_NODE_FIELD(partitioned_rels);
 	READ_BOOL_FIELD(partColsUpdated);
 	READ_NODE_FIELD(resultRelations);
+	READ_NODE_FIELD(mergeTargetRelations);
 	READ_INT_FIELD(resultRelIndex);
 	READ_INT_FIELD(rootResultRelIndex);
 	READ_NODE_FIELD(plans);
@@ -1593,7 +1594,7 @@ _readModifyTable(void)
 	READ_NODE_FIELD(onConflictWhere);
 	READ_UINT_FIELD(exclRelRTI);
 	READ_NODE_FIELD(exclRelTlist);
-	READ_NODE_FIELD(mergeSourceTargetList);
+	READ_NODE_FIELD(mergeSourceTargetLists);
 	READ_NODE_FIELD(mergeActionLists);
 
 	READ_DONE();

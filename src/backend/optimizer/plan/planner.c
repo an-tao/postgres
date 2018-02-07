@@ -205,6 +205,7 @@ static void add_paths_to_partial_grouping_rel(PlannerInfo *root,
 								  bool can_hash);
 static bool can_parallel_agg(PlannerInfo *root, RelOptInfo *input_rel,
 				 RelOptInfo *grouped_rel, const AggClauseCosts *agg_costs);
+static Index find_mergetarget_for_rel(PlannerInfo *root, Index child_relid);
 
 
 /*****************************************************************************
@@ -1123,10 +1124,13 @@ inheritance_planner(PlannerInfo *root)
 	List	   *subpaths = NIL;
 	List	   *subroots = NIL;
 	List	   *resultRelations = NIL;
+	List	   *mergeTargetRelations = NIL;
+	Index		mergeTargetRelation;
 	List	   *withCheckOptionLists = NIL;
 	List	   *returningLists = NIL;
 	List	   *rowMarks;
 	List	   *mergeActionLists = NIL;
+	List	   *mergeSourceTargetLists = NIL;
 	RelOptInfo *final_rel;
 	ListCell   *lc;
 	Index		rti;
@@ -1484,6 +1488,16 @@ inheritance_planner(PlannerInfo *root)
 		/* Build list of target-relation RT indexes */
 		resultRelations = lappend_int(resultRelations, appinfo->child_relid);
 
+		/* Build list of merge target-relation RT indexes */
+		if (parse->commandType == CMD_MERGE)
+		{
+			mergeTargetRelation = find_mergetarget_for_rel(root,
+					appinfo->child_relid);
+			Assert(mergeTargetRelation > 0);
+			mergeTargetRelations = lappend_int(mergeTargetRelations,
+					mergeTargetRelation);
+		}
+
 		/* Build lists of per-relation WCO and RETURNING targetlists */
 		if (parse->withCheckOptions)
 			withCheckOptionLists = lappend(withCheckOptionLists,
@@ -1495,6 +1509,9 @@ inheritance_planner(PlannerInfo *root)
 		if (parse->mergeActionList)
 			mergeActionLists = lappend(mergeActionLists,
 									   subroot->parse->mergeActionList);
+		if (parse->mergeSourceTargetList)
+			mergeSourceTargetLists = lappend(mergeSourceTargetLists,
+									   subroot->parse->mergeSourceTargetList);
 		Assert(!parse->onConflict);
 	}
 
@@ -1554,13 +1571,14 @@ inheritance_planner(PlannerInfo *root)
 									 partitioned_rels,
 									 partColsUpdated,
 									 resultRelations,
+									 mergeTargetRelations,
 									 subpaths,
 									 subroots,
 									 withCheckOptionLists,
 									 returningLists,
 									 rowMarks,
 									 NULL,
-									 parse->mergeSourceTargetList,
+									 mergeSourceTargetLists,
 									 mergeActionLists,
 									 SS_assign_special_param(root)));
 }
@@ -2201,13 +2219,14 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 										NIL,
 										false,
 										list_make1_int(parse->resultRelation),
+										list_make1_int(parse->mergeTarget_relation),
 										list_make1(path),
 										list_make1(root),
 										withCheckOptionLists,
 										returningLists,
 										rowMarks,
 										parse->onConflict,
-										parse->mergeSourceTargetList,
+										list_make1(parse->mergeSourceTargetList),
 										list_make1(parse->mergeActionList),
 										SS_assign_special_param(root));
 		}
@@ -6474,3 +6493,29 @@ can_parallel_agg(PlannerInfo *root, RelOptInfo *input_rel,
 	/* Everything looks good. */
 	return true;
 }
+
+static Index
+find_mergetarget_for_rel(PlannerInfo *root, Index child_relid)
+{
+	Query			*parse = root->parse;
+	Index			mergeTarget_relation = parse->mergeTarget_relation; 
+	RangeTblEntry	*rte, *child_rte;
+	ListCell		*l;
+
+	rte = rt_fetch(child_relid, parse->rtable);
+
+	foreach (l, root->append_rel_list)
+	{
+		AppendRelInfo *appinfo = (AppendRelInfo *) lfirst(l);
+
+		if (appinfo->parent_relid != mergeTarget_relation)
+			continue;
+
+		child_rte = rt_fetch(appinfo->child_relid, parse->rtable);
+		if (child_rte->relid == rte->relid)
+			return appinfo->child_relid;
+	}
+
+	return 0;
+}
+

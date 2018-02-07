@@ -1682,6 +1682,7 @@ typedef struct ModifyTablePath
 	List	   *partitioned_rels;
 	bool		partColsUpdated;	/* some part key in hierarchy updated */
 	List	   *resultRelations;	/* integer list of RT indexes */
+	List	   *mergeTargetRelations;	/* integer list of RT indexes */
 	List	   *subpaths;		/* Path(s) producing source data */
 	List	   *subroots;		/* per-target-table PlannerInfos */
 	List	   *withCheckOptionLists;	/* per-target-table WCO lists */
@@ -1689,7 +1690,7 @@ typedef struct ModifyTablePath
 	List	   *rowMarks;		/* PlanRowMarks (non-locking only) */
 	OnConflictExpr *onconflict; /* ON CONFLICT clause, or NULL */
 	int			epqParam;		/* ID of Param for EvalPlanQual re-eval */
-	List	   *mergeSourceTargetList;
+	List	   *mergeSourceTargetLists;
 	List	   *mergeActionLists; /* actions for MERGE */
 } ModifyTablePath;
 

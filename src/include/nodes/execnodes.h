@@ -427,6 +427,9 @@ typedef struct ResultRelInfo
 
 	/* relation descriptor for root partitioned table */
 	Relation	ri_PartitionRoot;
+
+	/* RTI of the target relation for MERGE */
+	Index		ri_mergeTargetRTI;
 } ResultRelInfo;
 
 /* ----------------

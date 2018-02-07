@@ -875,21 +875,20 @@ ldelete:;
 				if (!ItemPointerEquals(tupleid, &hufd.ctid))
 				{
 					TupleTableSlot *epqslot;
+					Index rti = resultRelInfo->ri_mergeTargetRTI > 0 ?
+									resultRelInfo->ri_mergeTargetRTI :
+									resultRelInfo->ri_RangeTableIndex;
 
 					/*
-					 * MERGE FIXME:
-					 *
-					 * Since we generate a RIGHT OUTER JOIN query with a
-					 * target table RTE different than the result relation RTE,
-					 * it seems that we must pass in the RTI of the relation
-					 * used in the join query and not the one from result
-					 * relation. We should add a test case to validate this
-					 * problem and fix accordingly.
+					 * Since we generate a RIGHT OUTER JOIN query with a target
+					 * table RTE different than the result relation RTE, we
+					 * must pass in the RTI of the relation used in the join
+					 * query and not the one from result relation.
 					 */
 					epqslot = EvalPlanQual(estate,
 										   epqstate,
 										   resultRelationDesc,
-										   resultRelInfo->ri_RangeTableIndex,
+										   rti,
 										   LockTupleExclusive,
 										   &hufd.ctid,
 										   hufd.xmax);
@@ -1371,21 +1370,20 @@ lreplace:;
 				if (!ItemPointerEquals(tupleid, &hufd.ctid))
 				{
 					TupleTableSlot *epqslot;
+					Index rti = resultRelInfo->ri_mergeTargetRTI > 0 ?
+									resultRelInfo->ri_mergeTargetRTI :
+									resultRelInfo->ri_RangeTableIndex;
 
 					/*
-					 * MERGE FIXME:
-					 *
-					 * Since we generate a RIGHT OUTER JOIN query with a
-					 * target table RTE different than the result relation RTE,
-					 * it seems that we must pass in the RTI of the relation
-					 * used in the join query and not the one from result
-					 * relation. We should add a test case to validate this
-					 * problem and fix accordingly.
+					 * Since we generate a RIGHT OUTER JOIN query with a target
+					 * table RTE different than the result relation RTE, we
+					 * must pass in the RTI of the relation used in the join
+					 * query and not the one from result relation.
 					 */
 					epqslot = EvalPlanQual(estate,
 										   epqstate,
 										   resultRelationDesc,
-										   resultRelInfo->ri_RangeTableIndex,
+										   rti,
 										   lockmode,
 										   &hufd.ctid,
 										   hufd.xmax);
@@ -2791,6 +2789,14 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 															 eflags);
 		}
 
+		/*
+		 * Setup MERGE target table RTI, if needed.
+		 */
+		if (operation == CMD_MERGE)
+		{
+			resultRelInfo->ri_mergeTargetRTI =
+				list_nth_int(node->mergeTargetRelations, i);
+		}
 		resultRelInfo++;
 		i++;
 	}

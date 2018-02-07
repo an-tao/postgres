@@ -374,6 +374,7 @@ _outModifyTable(StringInfo str, const ModifyTable *node)
 	WRITE_NODE_FIELD(partitioned_rels);
 	WRITE_BOOL_FIELD(partColsUpdated);
 	WRITE_NODE_FIELD(resultRelations);
+	WRITE_NODE_FIELD(mergeTargetRelations);
 	WRITE_INT_FIELD(resultRelIndex);
 	WRITE_INT_FIELD(rootResultRelIndex);
 	WRITE_NODE_FIELD(plans);
@@ -389,7 +390,7 @@ _outModifyTable(StringInfo str, const ModifyTable *node)
 	WRITE_NODE_FIELD(onConflictWhere);
 	WRITE_UINT_FIELD(exclRelRTI);
 	WRITE_NODE_FIELD(exclRelTlist);
-	WRITE_NODE_FIELD(mergeSourceTargetList);
+	WRITE_NODE_FIELD(mergeSourceTargetLists);
 	WRITE_NODE_FIELD(mergeActionLists);
 }
 
@@ -2128,6 +2129,7 @@ _outModifyTablePath(StringInfo str, const ModifyTablePath *node)
 	WRITE_NODE_FIELD(partitioned_rels);
 	WRITE_BOOL_FIELD(partColsUpdated);
 	WRITE_NODE_FIELD(resultRelations);
+	WRITE_NODE_FIELD(mergeTargetRelations);
 	WRITE_NODE_FIELD(subpaths);
 	WRITE_NODE_FIELD(subroots);
 	WRITE_NODE_FIELD(withCheckOptionLists);
@@ -2135,7 +2137,7 @@ _outModifyTablePath(StringInfo str, const ModifyTablePath *node)
 	WRITE_NODE_FIELD(rowMarks);
 	WRITE_NODE_FIELD(onconflict);
 	WRITE_INT_FIELD(epqParam);
-	WRITE_NODE_FIELD(mergeSourceTargetList);
+	WRITE_NODE_FIELD(mergeSourceTargetLists);
 	WRITE_NODE_FIELD(mergeActionLists);
 }
 
