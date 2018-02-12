@@ -189,6 +189,8 @@ transformMergeJoinClause(ParseState *pstate, Node *merge,
 	int			rtindex, rt_rtindex;
 	Node		*n;
 	int			mergeTarget_relation = list_length(pstate->p_rtable) + 1;
+	Var			*var;
+	TargetEntry	*te;
 
 	n = transformFromClauseItem(pstate, merge,
 									&rte,
@@ -231,6 +233,14 @@ transformMergeJoinClause(ParseState *pstate, Node *merge,
 	 * RangeTableEntry.
 	 */
 	*mergeSourceTargetList = expandRelAttrs(pstate, rt_rte, rt_rtindex, 0, -1);
+
+	/*
+	 * Add a whole-row-Var entry to support references to "source.*".
+	 */
+	var = makeWholeRowVar(rt_rte, rt_rtindex, 0, false);
+	te = makeTargetEntry((Expr *) var, list_length(*mergeSourceTargetList) + 1,
+						 NULL, true);
+	*mergeSourceTargetList = lappend(*mergeSourceTargetList, te);
 
 	return mergeTarget_relation;
 }
