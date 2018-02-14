@@ -261,6 +261,7 @@ ExecInsert(ModifyTableState *mtstate,
 		   List *arbiterIndexes,
 		   OnConflictAction onconflict,
 		   EState *estate,
+		   MergeActionState *actionState,
 		   bool canSetTag)
 {
 	HeapTuple	tuple;
@@ -480,9 +481,17 @@ ExecInsert(ModifyTableState *mtstate,
 		 * partition, we should instead check UPDATE policies, because we are
 		 * executing policies defined on the target table, and not those
 		 * defined on the child partitions.
+		 *
+		 * If we're running MERGE, we refer to the action that we're executing
+		 * to know if we're doing an INSERT or UPDATE to a partition table.
 		 */
-		wco_kind = (mtstate->operation == CMD_UPDATE) ?
-			WCO_RLS_UPDATE_CHECK : WCO_RLS_INSERT_CHECK;
+		if (mtstate->operation == CMD_UPDATE)
+			wco_kind = WCO_RLS_UPDATE_CHECK;
+		else if (mtstate->operation == CMD_INSERT)
+			wco_kind = WCO_RLS_INSERT_CHECK;
+		else if (mtstate->operation == CMD_MERGE)
+			wco_kind = (actionState->commandType == CMD_UPDATE) ?
+				WCO_RLS_UPDATE_CHECK : WCO_RLS_INSERT_CHECK;
 
 		/*
 		 * ExecWithCheckOptions() will skip any WCOs which are not of the kind
@@ -1271,7 +1280,8 @@ lreplace:;
 			estate->es_result_relation_info = mtstate->rootResultRelInfo;
 
 			ret_slot = ExecInsert(mtstate, slot, planSlot, NULL,
-								  ONCONFLICT_NONE, estate, canSetTag);
+								  ONCONFLICT_NONE, estate, actionState,
+								  canSetTag);
 
 			/*
 			 * Revert back the active result relation and the active
@@ -2228,6 +2238,33 @@ lmerge:;
 			   }
 		   }
 
+		   /*
+			* Check if the existing target tuple meet the USING checks of
+			* UPDATE/DELETE RLS policies. If those checks fail, we throw an
+			* error.
+			*
+			* The way things are structured right now, in case of
+			* concurrent updates, if we decide to retry the update/delete
+			* on the updated version of the tuple, we shall jump back to
+			* lmerge and recheck the updated tuple with the USING quals
+			* again.
+			*
+			* The WITH CHECK quals are applied in ExecUpdate() and hence we
+			* need not do anything special to handle them.
+			*
+			* NOTE: We must do this after WHEN quals are evaluated so that we
+			* check policies only when they matter.
+			*/
+		   if ((action->commandType == CMD_UPDATE ||
+				action->commandType == CMD_DELETE) && resultRelInfo->ri_WithCheckOptions)
+		   {
+			   ExecWithCheckOptions(action->commandType == CMD_UPDATE ?
+					   WCO_RLS_MERGE_UPDATE_CHECK : WCO_RLS_MERGE_DELETE_CHECK,
+					   resultRelInfo,
+					   mtstate->mt_merge_existing[ud_target],
+					   mtstate->ps.state);
+		   }
+
 		   /* Perform stated action */
 		   switch (action->commandType)
 		   {
@@ -2240,7 +2277,8 @@ lmerge:;
 				   ExecProject(action->proj);
 
 				   slot = ExecInsert(mtstate, action->slot, slot,
-						   NULL, ONCONFLICT_NONE, estate, mtstate->canSetTag);
+						   NULL, ONCONFLICT_NONE, estate, action,
+						   mtstate->canSetTag);
 				   Assert(!BufferIsValid(buffer));
 				   break;
 			   case CMD_UPDATE:
@@ -2629,7 +2667,7 @@ ExecModifyTable(PlanState *pstate)
 			case CMD_INSERT:
 				slot = ExecInsert(node, slot, planSlot,
 								  node->mt_arbiterindexes, node->mt_onconflict,
-								  estate, node->canSetTag);
+								  estate, NULL, node->canSetTag);
 				break;
 			case CMD_UPDATE:
 				slot = ExecUpdate(node, tupleid, oldtuple, slot, planSlot, false,

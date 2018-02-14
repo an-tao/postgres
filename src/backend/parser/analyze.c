@@ -2550,11 +2550,6 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("MERGE is not supported for relations with inheritance")));
 
-	if (pstate->p_target_relation->rd_rel->relrowsecurity)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("MERGE is not supported for relations with row security")));
-
 	/*
 	 * We now have a good query shape, so now look at the when conditions
 	 * and action targetlists.
