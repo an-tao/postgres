@@ -2201,7 +2201,7 @@ USING (SELECT 3 as sdid) s
 ON did = s.sdid
 WHEN MATCHED THEN
 	UPDATE SET dnotes = dnotes || ' notes added by merge ';
-ERROR:  new row violates row-level security policy (USING expression) for table "document"
+ERROR:  target row violates row-level security policy (USING expression) for table "document"
 -- The same thing with DELETE action, but fails again because no permissions
 -- to delete items in 'science fiction' category that did 3 belongs to.
 MERGE INTO document d
@@ -2209,7 +2209,7 @@ USING (SELECT 3 as sdid) s
 ON did = s.sdid
 WHEN MATCHED THEN
 	DELETE;
-ERROR:  new row violates row-level security policy (USING expression) for table "document"
+ERROR:  target row violates row-level security policy (USING expression) for table "document"
 -- Document with did 4 belongs to 'manga' category which is allowed for
 -- deletion. But this fails because the UPDATE action is matched first and
 -- UPDATE policy does not allow updation in the category.
@@ -2220,7 +2220,7 @@ WHEN MATCHED AND dnotes = '' THEN
 	UPDATE SET dnotes = dnotes || ' notes added by merge '
 WHEN MATCHED THEN
 	DELETE;
-ERROR:  new row violates row-level security policy (USING expression) for table "document"
+ERROR:  target row violates row-level security policy (USING expression) for table "document"
 -- UPDATE action is not matched this time because of the WHEN AND qual.
 -- DELETE still fails because role regress_rls_bob does not have SELECT
 -- privileges on 'manga' category row in the category table.
@@ -2231,7 +2231,7 @@ WHEN MATCHED AND dnotes <> '' THEN
 	UPDATE SET dnotes = dnotes || ' notes added by merge '
 WHEN MATCHED THEN
 	DELETE;
-ERROR:  new row violates row-level security policy (USING expression) for table "document"
+ERROR:  target row violates row-level security policy (USING expression) for table "document"
 SELECT * FROM document WHERE did = 4;
  did | cid | dlevel |     dauthor     |     dtitle     | dnotes 
 -----+-----+--------+-----------------+----------------+--------

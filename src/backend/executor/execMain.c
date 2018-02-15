@@ -2196,9 +2196,20 @@ ExecWithCheckOptions(WCOKind kind, ResultRelInfo *resultRelInfo,
 								 errmsg("new row violates row-level security policy for table \"%s\"",
 										wco->relname)));
 					break;
-				case WCO_RLS_CONFLICT_CHECK:
 				case WCO_RLS_MERGE_UPDATE_CHECK:
 				case WCO_RLS_MERGE_DELETE_CHECK:
+					if (wco->polname != NULL)
+						ereport(ERROR,
+								(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+								 errmsg("target row violates row-level security policy \"%s\" (USING expression) for table \"%s\"",
+										wco->polname, wco->relname)));
+					else
+						ereport(ERROR,
+								(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+								 errmsg("target row violates row-level security policy (USING expression) for table \"%s\"",
+										wco->relname)));
+					break;
+				case WCO_RLS_CONFLICT_CHECK:
 					if (wco->polname != NULL)
 						ereport(ERROR,
 								(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
