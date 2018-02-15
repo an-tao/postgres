@@ -11211,12 +11211,12 @@ merge_insert:
 
 					$$ = (Node *)n;
 				}
-			| INSERT OVERRIDING override_kind values_clause
+			| INSERT OVERRIDING override_kind VALUE_P values_clause
 				{
 					InsertStmt *n = makeNode(InsertStmt);
 					n->cols = NIL;
 					n->override = $3;
-					n->selectStmt = $4;
+					n->selectStmt = $5;
 
 					$$ = (Node *)n;
 				}
@@ -11228,12 +11228,12 @@ merge_insert:
 
 					$$ = (Node *)n;
 				}
-			| INSERT '(' insert_column_list ')' OVERRIDING override_kind values_clause
+			| INSERT '(' insert_column_list ')' OVERRIDING override_kind VALUE_P values_clause
 				{
 					InsertStmt *n = makeNode(InsertStmt);
 					n->cols = $3;
 					n->override = $6;
-					n->selectStmt = $7;
+					n->selectStmt = $8;
 
 					$$ = (Node *)n;
 				}

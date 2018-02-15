@@ -3404,23 +3404,24 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 						break;
 					case CMD_UPDATE:
 						action->targetList =
-									rewriteTargetListIU(action->targetList,
-														action->commandType,
-														parsetree->override,
-														rt_entry_relation,
-														parsetree->resultRelation,
-														NULL);
+							rewriteTargetListIU(action->targetList,
+									action->commandType,
+									parsetree->override,
+									rt_entry_relation,
+									parsetree->resultRelation,
+									NULL);
 						break;
 					case CMD_INSERT:
-			/*			InsertStmt *istmt = (InsertStmt *) action->stmt; */
-
-						action->targetList =
-									rewriteTargetListIU(action->targetList,
-														action->commandType,
-														parsetree->override, /* istmt->override, */
-														rt_entry_relation,
-														parsetree->resultRelation,
-														NULL);
+						{
+							InsertStmt *istmt = (InsertStmt *) action->stmt;
+							action->targetList =
+								rewriteTargetListIU(action->targetList,
+										action->commandType,
+										istmt->override,
+										rt_entry_relation,
+										parsetree->resultRelation,
+										NULL);
+						}
 						break;
 					default:
 						elog(ERROR, "unrecognized commandType: %d", action->commandType);
