@@ -917,6 +917,57 @@ ROLLBACK;
 DROP TABLE pa_source;
 DROP TABLE pa_target CASCADE;
 
+-- some complex joins on the source side
+
+CREATE TABLE cj_target (tid integer, balance float, val text);
+CREATE TABLE cj_source1 (sid1 integer, scat integer, delta integer);
+CREATE TABLE cj_source2 (sid2 integer, sval text);
+INSERT INTO cj_source1 VALUES (1, 10, 100);
+INSERT INTO cj_source1 VALUES (1, 20, 200);
+INSERT INTO cj_source1 VALUES (2, 20, 300);
+INSERT INTO cj_source1 VALUES (3, 10, 400);
+INSERT INTO cj_source2 VALUES (1, 'initial source2');
+INSERT INTO cj_source2 VALUES (2, 'initial source2');
+INSERT INTO cj_source2 VALUES (3, 'initial source2');
+
+-- source relation is an unalised join
+MERGE INTO cj_target t
+USING cj_source1 s1
+	INNER JOIN cj_source2 s2 ON sid1 = sid2
+ON t.tid = sid1
+WHEN NOT MATCHED THEN
+	INSERT VALUES (sid1, delta, sval);
+
+-- try accessing columns from either side of the source join
+MERGE INTO cj_target t
+USING cj_source2 s2
+	INNER JOIN cj_source1 s1 ON sid1 = sid2 AND scat = 20
+ON t.tid = sid1
+WHEN NOT MATCHED THEN
+	INSERT VALUES (sid2, delta, sval)
+WHEN MATCHED THEN
+	DELETE;
+
+-- some simple expressions in INSERT targetlist
+MERGE INTO cj_target t
+USING cj_source2 s2
+	INNER JOIN cj_source1 s1 ON sid1 = sid2
+ON t.tid = sid1
+WHEN NOT MATCHED THEN
+	INSERT VALUES (sid2, delta + scat, sval)
+WHEN MATCHED THEN
+	UPDATE SET val = val || ' updated by merge';
+
+MERGE INTO cj_target t
+USING cj_source2 s2
+	INNER JOIN cj_source1 s1 ON sid1 = sid2 AND scat = 20
+ON t.tid = sid1
+WHEN MATCHED THEN
+	UPDATE SET val = val || ' ' || delta::text;
+
+SELECT * FROM cj_target;
+DROP TABLE cj_source2, cj_source1, cj_target;
+
 -- SERIALIZABLE test
 -- handled in isolation tests
 
