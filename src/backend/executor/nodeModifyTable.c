@@ -3064,9 +3064,9 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 			int		whichplan = resultRelInfo - mtstate->resultRelInfo;
 
 			/* initialize slot for the existing tuple */
-			mtstate->mt_merge_existing[whichplan] = ExecInitExtraTupleSlot(mtstate->ps.state);
-			ExecSetSlotDescriptor(mtstate->mt_merge_existing[whichplan],
-								  resultRelInfo->ri_RelationDesc->rd_att);
+			mtstate->mt_merge_existing[whichplan] =
+				ExecInitExtraTupleSlot(mtstate->ps.state,
+						resultRelInfo->ri_RelationDesc->rd_att);
 
 			foreach (l2, mergeActionList)
 			{
@@ -3082,8 +3082,8 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 				/* create target slot for this action's projection */
 				tupDesc = ExecTypeFromTL((List *) action->targetList,
 									 resultRelInfo->ri_RelationDesc->rd_rel->relhasoids);
-				action_state->slot = ExecInitExtraTupleSlot(mtstate->ps.state);
-				ExecSetSlotDescriptor(action_state->slot, tupDesc);
+				action_state->slot = ExecInitExtraTupleSlot(mtstate->ps.state,
+										tupDesc);
 
 				/* build action projection state */
 				action_state->proj =
