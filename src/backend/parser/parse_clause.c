@@ -211,17 +211,21 @@ transformMergeJoinClause(ParseState *pstate, Node *merge,
 	 * source or the target relation. Hence we must not add the Join RTE to the
 	 * namespace.
 	 *
-	 * The last entry must be for the top-level Join RTE. The source (right
-	 * side of the join) RTE must have been placed just before that. Keep that
-	 * and discard everything else. More importantly, we want to discard the
-	 * RTE of the left side of the join since that contains the target
-	 * relation. References to the columns of the target relation must be
-	 * resolved from the result relation and not the one that is used in the
-	 * join.
+	 * The last entry must be for the top-level Join RTE. We don't want to
+	 * resolve any references to the Join RTE. So discard that.
+	 *
+	 * We also do not want to resolve any references from the leftside of the
+	 * Join since that corresponds to the target relation. References to the
+	 * columns of the target relation must be resolved from the result relation
+	 * and not the one that is used in the join. So the mergeTarget_relation is
+	 * marked invisible to both qualified as well as unqualified references.
 	 */
 	Assert(list_length(namespace) > 1);
 	namespace = list_truncate(namespace, list_length(namespace) - 1);
-	pstate->p_namespace = lappend(pstate->p_namespace, llast(namespace));
+	pstate->p_namespace = list_concat(pstate->p_namespace, namespace);
+
+	setNamespaceVisibilityForRTE(pstate->p_namespace,
+			rt_fetch(mergeTarget_relation, pstate->p_rtable), false, false);
 
 	/* XXX Do we need this? */
 	setNamespaceLateralState(pstate->p_namespace, false, true);

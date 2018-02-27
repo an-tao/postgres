@@ -205,7 +205,9 @@ static void add_paths_to_partial_grouping_rel(PlannerInfo *root,
 								  bool can_hash);
 static bool can_parallel_agg(PlannerInfo *root, RelOptInfo *input_rel,
 				 RelOptInfo *grouped_rel, const AggClauseCosts *agg_costs);
-static Index find_mergetarget_for_rel(PlannerInfo *root, Index child_relid);
+static Index find_mergetarget_for_rel(PlannerInfo *root, Index child_relid,
+		Bitmapset *parent_relids);
+static Bitmapset *find_mergetarget_parents(PlannerInfo *root);
 
 
 /*****************************************************************************
@@ -1145,6 +1147,7 @@ inheritance_planner(PlannerInfo *root)
 	Bitmapset  *parent_relids = bms_make_singleton(top_parentRTindex);
 	PlannerInfo **parent_roots = NULL;
 	bool		partColsUpdated = false;
+	Bitmapset  *mergeTarget_parent_relids;
 
 	Assert(parse->commandType != CMD_INSERT);
 
@@ -1234,6 +1237,11 @@ inheritance_planner(PlannerInfo *root)
 	parent_roots = (PlannerInfo **) palloc0((list_length(parse->rtable) + 1) *
 											sizeof(PlannerInfo *));
 	parent_roots[top_parentRTindex] = root;
+
+	/*
+	 * Get all parent partitions for the merge target relation.
+	 */
+	mergeTarget_parent_relids = find_mergetarget_parents(root);
 
 	/*
 	 * And now we can get on with generating a plan for each child table.
@@ -1496,7 +1504,7 @@ inheritance_planner(PlannerInfo *root)
 		if (parse->commandType == CMD_MERGE)
 		{
 			mergeTargetRelation = find_mergetarget_for_rel(root,
-					appinfo->child_relid);
+					appinfo->child_relid, mergeTarget_parent_relids);
 			Assert(mergeTargetRelation > 0);
 			mergeTargetRelations = lappend_int(mergeTargetRelations,
 					mergeTargetRelation);
@@ -6498,11 +6506,35 @@ can_parallel_agg(PlannerInfo *root, RelOptInfo *input_rel,
 	return true;
 }
 
+static Bitmapset *
+find_mergetarget_parents(PlannerInfo *root)
+{
+	Index		mergeTargetRelation = root->parse->mergeTarget_relation;
+	ListCell	*l;
+	Bitmapset	*parent_relids = bms_make_singleton(mergeTargetRelation);
+
+	foreach (l, root->append_rel_list)
+	{
+		AppendRelInfo *appinfo = (AppendRelInfo *) lfirst(l);
+		RangeTblEntry *child_rte;
+
+		if (!bms_is_member(appinfo->parent_relid, parent_relids))
+			continue;
+
+		child_rte = rt_fetch(appinfo->child_relid, root->parse->rtable);
+		if (child_rte->inh)
+			parent_relids =
+				bms_add_member(parent_relids, appinfo->child_relid);
+	}
+
+	return parent_relids;
+}
+
 static Index
-find_mergetarget_for_rel(PlannerInfo *root, Index child_relid)
+find_mergetarget_for_rel(PlannerInfo *root, Index child_relid,
+		Bitmapset *parent_relids)
 {
 	Query			*parse = root->parse;
-	Index			mergeTarget_relation = parse->mergeTarget_relation; 
 	RangeTblEntry	*rte, *child_rte;
 	ListCell		*l;
 
@@ -6512,7 +6544,7 @@ find_mergetarget_for_rel(PlannerInfo *root, Index child_relid)
 	{
 		AppendRelInfo *appinfo = (AppendRelInfo *) lfirst(l);
 
-		if (appinfo->parent_relid != mergeTarget_relation)
+		if (!bms_is_member(appinfo->parent_relid, parent_relids))
 			continue;
 
 		child_rte = rt_fetch(appinfo->child_relid, parse->rtable);

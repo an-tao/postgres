@@ -1440,6 +1440,55 @@ SELECT * FROM pa_target ORDER BY tid;
 ROLLBACK;
 DROP TABLE pa_source;
 DROP TABLE pa_target CASCADE;
+-- Sub-partitionin
+CREATE TABLE pa_target (logts timestamp, tid integer, balance float, val text)
+	PARTITION BY RANGE (logts);
+CREATE TABLE part_m01 PARTITION OF pa_target 
+	FOR VALUES FROM ('2017-01-01') TO ('2017-02-01')
+	PARTITION BY LIST (tid);
+CREATE TABLE part_m01_odd PARTITION OF part_m01
+	FOR VALUES IN (1,3,5,7,9);
+CREATE TABLE part_m01_even PARTITION OF part_m01
+	FOR VALUES IN (2,4,6,8);
+CREATE TABLE part_m02 PARTITION OF pa_target 
+	FOR VALUES FROM ('2017-02-01') TO ('2017-03-01')
+	PARTITION BY LIST (tid);
+CREATE TABLE part_m02_odd PARTITION OF part_m02
+	FOR VALUES IN (1,3,5,7,9);
+CREATE TABLE part_m02_even PARTITION OF part_m02
+	FOR VALUES IN (2,4,6,8);
+CREATE TABLE pa_source (sid integer, delta float);
+-- insert many rows to the source table
+INSERT INTO pa_source SELECT id, id * 10  FROM generate_series(1,14) AS id;
+-- insert a few rows in the target table (odd numbered tid)
+INSERT INTO pa_target SELECT '2017-01-31', id, id * 100, 'initial' FROM generate_series(1,9,3) AS id; 
+INSERT INTO pa_target SELECT '2017-02-28', id, id * 100, 'initial' FROM generate_series(2,9,3) AS id; 
+-- try simple MERGE
+BEGIN;
+MERGE INTO pa_target t
+  USING (SELECT '2017-01-15' AS slogts, * FROM pa_source WHERE sid < 10) s
+  ON t.tid = s.sid
+  WHEN MATCHED THEN
+    UPDATE SET balance = balance + delta, val = val || ' updated by merge'
+  WHEN NOT MATCHED THEN
+    INSERT VALUES (slogts::timestamp, sid, delta, 'inserted by merge');
+SELECT * FROM pa_target ORDER BY tid;
+          logts           | tid | balance |           val            
+--------------------------+-----+---------+--------------------------
+ Tue Jan 31 00:00:00 2017 |   1 |     110 | initial updated by merge
+ Tue Feb 28 00:00:00 2017 |   2 |     220 | initial updated by merge
+ Sun Jan 15 00:00:00 2017 |   3 |      30 | inserted by merge
+ Tue Jan 31 00:00:00 2017 |   4 |     440 | initial updated by merge
+ Tue Feb 28 00:00:00 2017 |   5 |     550 | initial updated by merge
+ Sun Jan 15 00:00:00 2017 |   6 |      60 | inserted by merge
+ Tue Jan 31 00:00:00 2017 |   7 |     770 | initial updated by merge
+ Tue Feb 28 00:00:00 2017 |   8 |     880 | initial updated by merge
+ Sun Jan 15 00:00:00 2017 |   9 |      90 | inserted by merge
+(9 rows)
+
+ROLLBACK;
+DROP TABLE pa_source;
+DROP TABLE pa_target CASCADE;
 -- some complex joins on the source side
 CREATE TABLE cj_target (tid integer, balance float, val text);
 CREATE TABLE cj_source1 (sid1 integer, scat integer, delta integer);
@@ -1491,7 +1540,39 @@ SELECT * FROM cj_target;
    2 |     320 | initial source2 300
 (4 rows)
 
+ALTER TABLE cj_source1 RENAME COLUMN sid1 TO sid;
+ALTER TABLE cj_source2 RENAME COLUMN sid2 TO sid;
+TRUNCATE cj_target;
+MERGE INTO cj_target t
+USING cj_source1 s1
+	INNER JOIN cj_source2 s2 ON s1.sid = s2.sid
+ON t.tid = s1.sid
+WHEN NOT MATCHED THEN
+	INSERT VALUES (s2.sid, delta, sval);
 DROP TABLE cj_source2, cj_source1, cj_target;
+-- Function scans
+CREATE TABLE fs_target (a int, b int, c text);
+MERGE INTO fs_target t
+USING generate_series(1,100,1) AS id
+ON t.a = id
+WHEN MATCHED THEN
+	UPDATE SET b = b + id
+WHEN NOT MATCHED THEN
+	INSERT VALUES (id, -1);
+MERGE INTO fs_target t
+USING generate_series(1,100,2) AS id
+ON t.a = id
+WHEN MATCHED THEN
+	UPDATE SET b = b + id, c = 'updated '|| id.*::text
+WHEN NOT MATCHED THEN
+	INSERT VALUES (id, -1, 'inserted ' || id.*::text);
+SELECT count(*) FROM fs_target;
+ count 
+-------
+   100
+(1 row)
+
+DROP TABLE fs_target;
 -- SERIALIZABLE test
 -- handled in isolation tests
 -- prepare
