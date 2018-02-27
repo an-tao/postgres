@@ -2528,7 +2528,7 @@ ExecModifyTable(PlanState *pstate)
 			 * If we are executing MERGE, we only need to execute the first
 			 * subplan since it's guranteed to return all the required tuples.
 			 * In fact, running remaining subplans would be a problem since we
-			 * will end up fethcing the same tuples N times.
+			 * will end up fetching the same tuples N times.
 			 */
 			if (node->mt_whichplan < node->mt_nplans && (operation != CMD_MERGE))
 			{
