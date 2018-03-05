@@ -433,17 +433,36 @@ COMMIT;
 
     Current behavior of patch:
 
-The SQl Standard says "The extent to which an SQL-implementation may disallow independent changes that are not significant is implementation-defined.", SQL-2016 Foundation, p.1178, 4) "not significant" is undefined. The following concurrency rules are included within v14.
+    The SQl Standard says "The extent to which an SQL-implementation may
+    disallow independent changes that are not significant is
+    implementation-defined.", SQL-2016 Foundation, p.1178, 4) "not significant" is
+    undefined. The following concurrency rules are included within v14.
 
-If MERGE attempts an UPDATE or DELETE and the row is concurrently updated, then MERGE will behave the same as the UPDATE or DELETE commands and perform its action on the latest version of the row, using standard EvalPlanQual. MERGE actions can be conditional, so conditions must be re-evaluated on the latest row.
+    If MERGE attempts an UPDATE or DELETE and the row is concurrently updated
+    but the join condition still passes for the current target and the current
+    source tuple, then MERGE will behave the same as the UPDATE or DELETE commands
+    and perform its action on the latest version of the row, using standard
+    EvalPlanQual. MERGE actions can be conditional, so conditions must be
+    re-evaluated on the latest row.
 
-If MERGE attempts an UPDATE or DELETE and the row is concurrently deleted we currently throw an ERROR. We now agree it is possible and desirable to attempt an INSERT in this case, but haven't yet worked out how.
+    On the other hand, if the row is concurrently updated or deleted so that
+    the join condition fails, then MERGE will execute a NOT MATCHED action, if it
+    exists and the AND WHEN qual evaluates to true.
 
-If MERGE attempts an INSERT and a unique index is present and the new row is a duplicate then a uniqueness violation is raised. MERGE does not attempt to avoid the ERROR by attempting an UPDATE. It woud be possible to avoid the errors by using speculative inserts but that has been argued against by some.
+    If MERGE attempts an INSERT and a unique index is present and the new row is a
+    duplicate then a uniqueness violation is raised. MERGE does not attempt to
+    avoid the ERROR by attempting an UPDATE. It woud be possible to avoid the
+    errors by using speculative inserts but that has been argued against by some.
 
-The full guarantee of always either insert or update that is available with INSERT ON CONFLICT UPDATE is not always possible because of the conditional rules of the MERGE statement, so we would be able to make only one attempt at UPDATE if INSERT fails or INSERT if UPDATE fails. This is to ensure consistent behavior of the command.
+    The full guarantee of always either insert or update that is available with
+    INSERT ON CONFLICT UPDATE is not always possible because of the conditional
+    rules of the MERGE statement, so we would be able to make only one attempt at
+    UPDATE if INSERT fails or INSERT if UPDATE fails. This is to ensure consistent
+    behavior of the command.
 
-It is understood that other DBMS throw errors in these case (fact check needed). Some DBMS cope with this by routing such errors to an Error Table that is created on first error.
+    It is understood that other DBMS throw errors in these case (fact check
+    needed). Some DBMS cope with this by routing such errors to an Error Table that
+    is created on first error.
    </para>
 
    <para>
