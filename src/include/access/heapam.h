@@ -67,6 +67,7 @@ typedef enum LockTupleMode
  */
 typedef struct HeapUpdateFailureData
 {
+	HTSU_Result	result;
 	ItemPointerData ctid;
 	TransactionId xmax;
 	CommandId	cmax;

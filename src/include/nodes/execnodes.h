@@ -929,13 +929,6 @@ typedef struct PlanState
 			((PlanState *)(node))->instrument->nfiltered2 += (delta); \
 	} while(0)
 
-typedef enum EPQResult
-{
-	EPQ_UNUSED,
-	EPQ_TUPLE_IS_NULL,
-	EPQ_TUPLE_IS_NOT_NULL
-} EPQResult;
-
 /*
  * EPQState is state for executing an EvalPlanQual recheck on a candidate
  * tuple in ModifyTable or LockRows.  The estate and planstate fields are
@@ -949,7 +942,6 @@ typedef struct EPQState
 	Plan	   *plan;			/* plan tree to be executed */
 	List	   *arowMarks;		/* ExecAuxRowMarks (non-locking only) */
 	int			epqParam;		/* ID of Param to force scan node re-eval */
-	EPQResult	epqresult;		/* Result code used by MERGE */
 } EPQState;
 
 
@@ -992,7 +984,6 @@ typedef struct MergeActionState
 	bool        matched;        /* MATCHED or NOT MATCHED */
 	ExprState	*whenqual;  	/* WHEN quals */
 	CmdType     commandType;    /* type of action */
-	Node       *stmt;           /* T_UpdateStmt etc */
 	TupleTableSlot *slot;		/* instead of ResultRelInfo */
 	ProjectionInfo *proj;		/* instead of ResultRelInfo */
 } MergeActionState;
@@ -1032,7 +1023,10 @@ typedef struct ModifyTableState
 	/* Per plan map for tuple conversion from child to root */
 	TupleTableSlot	**mt_merge_existing;	/* extra slot for each subplan to
 											   store existing tuple. */
-	List		*mt_mergeActionStateLists;	/* List of MERGE action states */
+	/* List of MERGE MATCHED action states */
+	List		*mt_mergeMatchedActionStateLists;
+	/* List of MERGE NOT MATCHED action states */
+	List		*mt_mergeNotMatchedActionStateLists;
 	AclMode		mt_merge_subcommands;	/* Flags show which cmd types are present */
 } ModifyTableState;
 

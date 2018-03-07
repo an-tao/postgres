@@ -2834,7 +2834,6 @@ EvalPlanQualInit(EPQState *epqstate, EState *estate,
 	epqstate->plan = subplan;
 	epqstate->arowMarks = auxrowmarks;
 	epqstate->epqParam = epqParam;
-	epqstate->epqresult = EPQ_UNUSED;
 }
 
 /*

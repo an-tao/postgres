@@ -3241,6 +3241,7 @@ l1:
 			   result == HeapTupleUpdated ||
 			   result == HeapTupleBeingUpdated);
 		Assert(!(tp.t_data->t_infomask & HEAP_XMAX_INVALID));
+		hufd->result = result;
 		hufd->ctid = tp.t_data->t_ctid;
 		hufd->xmax = HeapTupleHeaderGetUpdateXid(tp.t_data);
 		if (result == HeapTupleSelfUpdated)
@@ -3882,6 +3883,7 @@ l2:
 			   result == HeapTupleUpdated ||
 			   result == HeapTupleBeingUpdated);
 		Assert(!(oldtup.t_data->t_infomask & HEAP_XMAX_INVALID));
+		hufd->result = result;
 		hufd->ctid = oldtup.t_data->t_ctid;
 		hufd->xmax = HeapTupleHeaderGetUpdateXid(oldtup.t_data);
 		if (result == HeapTupleSelfUpdated)
@@ -5086,6 +5088,7 @@ failed:
 		Assert(result == HeapTupleSelfUpdated || result == HeapTupleUpdated ||
 			   result == HeapTupleWouldBlock);
 		Assert(!(tuple->t_data->t_infomask & HEAP_XMAX_INVALID));
+		hufd->result = result;
 		hufd->ctid = tuple->t_data->t_ctid;
 		hufd->xmax = HeapTupleHeaderGetUpdateXid(tuple->t_data);
 		if (result == HeapTupleSelfUpdated)

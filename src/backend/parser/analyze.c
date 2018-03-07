@@ -2279,7 +2279,7 @@ transformUpdateStmt(ParseState *pstate, UpdateStmt *stmt)
  * with). On the other hand, UPDATE and DELETE actions can see both source and
  * target relations.
  *
- * Also, since the internal MergeJoin node can hide the source and target
+ * Also, since the internal Join node can hide the source and target
  * relations, we must explicitly make the respective relation as visible so
  * that columns can be referenced unqualified from these relations.
  */

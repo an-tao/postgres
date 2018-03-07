@@ -504,10 +504,13 @@ BEGIN
 	RETURN TRUE;
 END;
 $$;
+
+BEGIN;
 MERGE INTO wq_target t
 USING wq_source s ON t.tid = s.sid
 WHEN MATCHED AND (merge_when_and_write()) THEN
 	UPDATE SET balance = t.balance + s.balance;
+ROLLBACK;
 drop function merge_when_and_write();
 
 DROP TABLE wq_target, wq_source;
