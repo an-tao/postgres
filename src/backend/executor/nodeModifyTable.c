@@ -3129,7 +3129,8 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		econtext = mtstate->ps.ps_ExprContext;
 
 		/*
-		 * Create a MergeActionState for each action on the mergeActionList
+		 * Create a MergeActionState for each action on the mergeActionList and
+		 * add it to either a list of matched actions or not-matched actions.
 		 */
 		foreach(l, node->mergeActionLists)
 		{
@@ -3167,6 +3168,11 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 											action_state->slot, &mtstate->ps,
 											resultRelInfo->ri_RelationDesc->rd_att);
 
+				/*
+				 * We create two lists - one for WHEN MATCHED actions and one
+				 * for WHEN NOT MATCHED actions - and stick the
+				 * MergeActionState into the appropriate list.
+				 */
 				if (action_state->matched)
 					mergeMatchedActionStateList =
 						lappend(mergeMatchedActionStateList, action_state);
