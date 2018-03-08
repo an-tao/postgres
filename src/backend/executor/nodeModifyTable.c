@@ -855,10 +855,11 @@ ldelete:;
 				/*
 				 * The target tuple was already updated or deleted by the
 				 * current command, or by a later command in the current
-				 * transaction.
-				 */
-
-				/*
+				 * transaction.  The former case is possible in a join DELETE
+				 * where multiple tuples join to the same target tuple. This
+				 * is somewhat questionable, but Postgres has always allowed
+				 * it: we just ignore additional deletion attempts.
+				 *
 				 * The latter case arises if the tuple is modified by a
 				 * command in a BEFORE trigger, or perhaps by a command in a
 				 * volatile function used in the query.  In such situations we
@@ -1361,10 +1362,12 @@ lreplace:;
 				/*
 				 * The target tuple was already updated or deleted by the
 				 * current command, or by a later command in the current
-				 * transaction.
-				 */
-
-				/*
+				 * transaction.  The former case is possible in a join UPDATE
+				 * where multiple tuples join to the same target tuple. This
+				 * is pretty questionable, but Postgres has always allowed it:
+				 * we just execute the first update action and ignore
+				 * additional update attempts.
+				 *
 				 * The latter case arises if the tuple is modified by a
 				 * command in a BEFORE trigger, or perhaps by a command in a
 				 * volatile function used in the query.  In such situations we
