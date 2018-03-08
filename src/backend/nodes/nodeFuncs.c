@@ -3436,7 +3436,7 @@ raw_expression_tree_walker(Node *node,
 			break;
 		case T_MergeStmt:
 			{
-				MergeStmt *stmt = (MergeStmt *) node;
+				MergeStmt  *stmt = (MergeStmt *) node;
 
 				if (walker(stmt->relation, context))
 					return true;

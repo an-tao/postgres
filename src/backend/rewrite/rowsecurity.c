@@ -380,15 +380,15 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 	}
 
 	/*
-	 * FOR MERGE, we fetch policies for UPDATE, DELETE and INSERT (and ALL) and
-	 * set them up so that we can enforce the appropriate policy depending on
-	 * the final action we take.
+	 * FOR MERGE, we fetch policies for UPDATE, DELETE and INSERT (and ALL)
+	 * and set them up so that we can enforce the appropriate policy depending
+	 * on the final action we take.
 	 *
 	 * We don't fetch the SELECT policies since they are correctly applied to
 	 * the root->mergeTarget_relation. The target rows are selected after
 	 * joining the mergeTarget_relation and the source relation and hence it's
 	 * enough to apply SELECT policies to the mergeTarget_relation.
-	 * 
+	 *
 	 * We don't push the UPDATE/DELETE USING quals to the RTE because we don't
 	 * really want to apply them while scanning the relation since we don't
 	 * know whether we will be doing a UPDATE or a DELETE at the end. We apply
@@ -407,8 +407,8 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 		List	   *merge_restrictive_policies;
 
 		/*
-		 * Fetch the UPDATE policies and set them up to execute on the existing
-		 * target row before doing UPDATE.
+		 * Fetch the UPDATE policies and set them up to execute on the
+		 * existing target row before doing UPDATE.
 		 */
 		get_policies_for_relation(rel, CMD_UPDATE, user_id,
 								  &merge_permissive_policies,
@@ -528,6 +528,7 @@ get_policies_for_relation(Relation relation, CmdType cmd, Oid user_id,
 						cmd_matches = true;
 					break;
 				case CMD_MERGE:
+
 					/*
 					 * We do not support a separate policy for MERGE command.
 					 * Instead it derives from the policies defined for other

@@ -863,16 +863,18 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				 */
 				if (splan->mergeActionLists != NIL)
 				{
-					ListCell *l2, *l3, *l4;
+					ListCell   *l2,
+							   *l3,
+							   *l4;
 
 					/*
 					 * mergeSourceTargetList is already setup correctly to
 					 * include all Vars coming from the source relation. So we
 					 * fix the targetList of individual action nodes by
-					 * ensuring that the source relation Vars are referenced as
-					 * INNER_VAR. Note that for this to work correctly, during
-					 * execution, the ecxt_innertuple must be set to the tuple
-					 * obtained from the source relation.
+					 * ensuring that the source relation Vars are referenced
+					 * as INNER_VAR. Note that for this to work correctly,
+					 * during execution, the ecxt_innertuple must be set to
+					 * the tuple obtained from the source relation.
 					 *
 					 * We leave the Vars from the result relation (i.e. the
 					 * target relation) unchanged i.e. those Vars would be
@@ -885,30 +887,30 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 							 l3, splan->resultRelations,
 							 l4, splan->mergeSourceTargetLists)
 					{
-						List	*mergeActionList = (List *)lfirst(l2);
-						int		resultRelIndex = lfirst_int(l3);
-						List	*mergeSourceTargetList = (List *)lfirst(l4);
+						List	   *mergeActionList = (List *) lfirst(l2);
+						int			resultRelIndex = lfirst_int(l3);
+						List	   *mergeSourceTargetList = (List *) lfirst(l4);
 						indexed_tlist *itlist;
 
 						itlist = build_tlist_index(mergeSourceTargetList);
 
-						foreach (l, mergeActionList)
+						foreach(l, mergeActionList)
 						{
 							MergeAction *action = (MergeAction *) lfirst(l);
 
 							/* Fix targetList of each action. */
 							action->targetList = fix_join_expr(root,
-									action->targetList,
-									NULL, itlist,
-									resultRelIndex,
-									rtoffset);
+															   action->targetList,
+															   NULL, itlist,
+															   resultRelIndex,
+															   rtoffset);
 
 							/* Fix quals too. */
 							action->qual = (Node *) fix_join_expr(root,
-									(List *) action->qual,
-									NULL, itlist,
-									resultRelIndex,
-									rtoffset);
+																  (List *) action->qual,
+																  NULL, itlist,
+																  resultRelIndex,
+																  rtoffset);
 						}
 					}
 				}

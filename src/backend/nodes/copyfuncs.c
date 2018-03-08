@@ -3048,7 +3048,7 @@ _copyUpdateStmt(const UpdateStmt *from)
 static MergeStmt *
 _copyMergeStmt(const MergeStmt *from)
 {
-	MergeStmt *newnode = makeNode(MergeStmt);
+	MergeStmt  *newnode = makeNode(MergeStmt);
 
 	COPY_NODE_FIELD(relation);
 	COPY_NODE_FIELD(source_relation);

@@ -980,10 +980,10 @@ typedef struct ProjectSetState
  */
 typedef struct MergeActionState
 {
-	NodeTag     type;
-	bool        matched;        /* MATCHED or NOT MATCHED */
-	ExprState	*whenqual;  	/* WHEN quals */
-	CmdType     commandType;    /* type of action */
+	NodeTag		type;
+	bool		matched;		/* MATCHED or NOT MATCHED */
+	ExprState  *whenqual;		/* WHEN quals */
+	CmdType		commandType;	/* type of action */
 	TupleTableSlot *slot;		/* instead of ResultRelInfo */
 	ProjectionInfo *proj;		/* instead of ResultRelInfo */
 } MergeActionState;
@@ -1021,13 +1021,14 @@ typedef struct ModifyTableState
 	/* controls transition table population for INSERT...ON CONFLICT UPDATE */
 	TupleConversionMap **mt_per_subplan_tupconv_maps;
 	/* Per plan map for tuple conversion from child to root */
-	TupleTableSlot	**mt_merge_existing;	/* extra slot for each subplan to
-											   store existing tuple. */
+	TupleTableSlot **mt_merge_existing; /* extra slot for each subplan to
+										 * store existing tuple. */
 	/* List of MERGE MATCHED action states */
-	List		*mt_mergeMatchedActionStateLists;
+	List	   *mt_mergeMatchedActionStateLists;
 	/* List of MERGE NOT MATCHED action states */
-	List		*mt_mergeNotMatchedActionStateLists;
-	AclMode		mt_merge_subcommands;	/* Flags show which cmd types are present */
+	List	   *mt_mergeNotMatchedActionStateLists;
+	AclMode		mt_merge_subcommands;	/* Flags show which cmd types are
+										 * present */
 } ModifyTableState;
 
 /* ----------------

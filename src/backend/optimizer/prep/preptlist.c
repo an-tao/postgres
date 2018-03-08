@@ -129,19 +129,19 @@ preprocess_targetlist(PlannerInfo *root)
 	 */
 	if (command_type == CMD_MERGE)
 	{
-		ListCell *l;
+		ListCell   *l;
 
 		foreach(l, parse->mergeActionList)
 		{
-			MergeAction     *action = (MergeAction *) lfirst(l);
+			MergeAction *action = (MergeAction *) lfirst(l);
 
 			switch (action->commandType)
 			{
 				case CMD_INSERT:
 				case CMD_UPDATE:
 					action->targetList = expand_targetlist(action->targetList,
-							action->commandType,
-							result_relation, target_relation);
+														   action->commandType,
+														   result_relation, target_relation);
 					break;
 				case CMD_DELETE:
 					break;

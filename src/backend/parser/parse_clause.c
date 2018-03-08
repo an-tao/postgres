@@ -182,50 +182,53 @@ transformFromClause(ParseState *pstate, List *frmList)
  */
 int
 transformMergeJoinClause(ParseState *pstate, Node *merge,
-							List **mergeSourceTargetList)
+						 List **mergeSourceTargetList)
 {
-	RangeTblEntry *rte, *rt_rte;
+	RangeTblEntry *rte,
+			   *rt_rte;
 	List	   *namespace;
-	int			rtindex, rt_rtindex;
-	Node		*n;
+	int			rtindex,
+				rt_rtindex;
+	Node	   *n;
 	int			mergeTarget_relation = list_length(pstate->p_rtable) + 1;
-	Var			*var;
-	TargetEntry	*te;
+	Var		   *var;
+	TargetEntry *te;
 
 	n = transformFromClauseItem(pstate, merge,
-									&rte,
-									&rtindex,
-									&rt_rte,
-									&rt_rtindex,
-									&namespace);
+								&rte,
+								&rtindex,
+								&rt_rte,
+								&rt_rtindex,
+								&namespace);
 
 	pstate->p_joinlist = list_make1(n);
 
 	/*
 	 * We created an internal join between the target and the source relation
 	 * to carry out the MERGE actions. Normally such an unaliased join hides
-	 * the joining relations, unless the column references are qualified. Also,
-	 * any unqualified column refernces are resolved to the Join RTE, if there
-	 * is a matching entry in the targetlist. But the way MERGE execution is
-	 * later setup, we expect all column references to resolve to either the
-	 * source or the target relation. Hence we must not add the Join RTE to the
-	 * namespace.
+	 * the joining relations, unless the column references are qualified.
+	 * Also, any unqualified column refernces are resolved to the Join RTE, if
+	 * there is a matching entry in the targetlist. But the way MERGE
+	 * execution is later setup, we expect all column references to resolve to
+	 * either the source or the target relation. Hence we must not add the
+	 * Join RTE to the namespace.
 	 *
 	 * The last entry must be for the top-level Join RTE. We don't want to
 	 * resolve any references to the Join RTE. So discard that.
 	 *
 	 * We also do not want to resolve any references from the leftside of the
 	 * Join since that corresponds to the target relation. References to the
-	 * columns of the target relation must be resolved from the result relation
-	 * and not the one that is used in the join. So the mergeTarget_relation is
-	 * marked invisible to both qualified as well as unqualified references.
+	 * columns of the target relation must be resolved from the result
+	 * relation and not the one that is used in the join. So the
+	 * mergeTarget_relation is marked invisible to both qualified as well as
+	 * unqualified references.
 	 */
 	Assert(list_length(namespace) > 1);
 	namespace = list_truncate(namespace, list_length(namespace) - 1);
 	pstate->p_namespace = list_concat(pstate->p_namespace, namespace);
 
 	setNamespaceVisibilityForRTE(pstate->p_namespace,
-			rt_fetch(mergeTarget_relation, pstate->p_rtable), false, false);
+								 rt_fetch(mergeTarget_relation, pstate->p_rtable), false, false);
 
 	/* XXX Do we need this? */
 	setNamespaceLateralState(pstate->p_namespace, false, true);
@@ -1793,8 +1796,8 @@ setNamespaceColumnVisibility(List *namespace, bool cols_visible)
 
 void
 setNamespaceVisibilityForRTE(List *namespace, RangeTblEntry *rte,
-		bool rel_visible,
-		bool cols_visible)
+							 bool rel_visible,
+							 bool cols_visible)
 {
 	ListCell   *lc;
 

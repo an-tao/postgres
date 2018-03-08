@@ -1991,7 +1991,7 @@ adjust_appendrel_attrs(PlannerInfo *root, Node *node, int nappinfos,
 				if (newnode->commandType == CMD_UPDATE)
 					newnode->targetList =
 						adjust_inherited_tlist(newnode->targetList,
-								appinfo);
+											   appinfo);
 
 				/*
 				 * Fix resnos in the MergeAction's tlist, if the action is an
@@ -1999,14 +1999,16 @@ adjust_appendrel_attrs(PlannerInfo *root, Node *node, int nappinfos,
 				 */
 				if (newnode->commandType == CMD_MERGE)
 				{
-					ListCell *l;
-					foreach (l, newnode->mergeActionList)
+					ListCell   *l;
+
+					foreach(l, newnode->mergeActionList)
 					{
 						MergeAction *action = (MergeAction *) lfirst(l);
+
 						if (action->commandType == CMD_UPDATE)
 							action->targetList =
 								adjust_inherited_tlist(action->targetList,
-										appinfo);
+													   appinfo);
 					}
 				}
 				break;

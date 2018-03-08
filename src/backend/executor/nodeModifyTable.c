@@ -758,6 +758,7 @@ ExecDelete(ModifyTableState *mtstate,
 	 */
 	if (hufdp)
 		hufdp->result = HeapTupleMayBeUpdated;
+
 	/*
 	 * get information on the (current) result relation
 	 */
@@ -840,9 +841,9 @@ ldelete:;
 							 &hufd);
 
 		/*
-		 * Copy the necessary information, if the caller has asked for
-		 * it. We must do this irrespective of whether the tuple was
-		 * updated or deleted.
+		 * Copy the necessary information, if the caller has asked for it. We
+		 * must do this irrespective of whether the tuple was updated or
+		 * deleted.
 		 */
 		if (hufdp)
 			*hufdp = hufd;
@@ -850,6 +851,7 @@ ldelete:;
 		switch (result)
 		{
 			case HeapTupleSelfUpdated:
+
 				/*
 				 * The target tuple was already updated or deleted by the
 				 * current command, or by a later command in the current
@@ -881,7 +883,8 @@ ldelete:;
 
 				/*
 				 * Else, already deleted by self; nothing to do but inform
-				 * MERGE about it anyways so that it can take necessary action.
+				 * MERGE about it anyways so that it can take necessary
+				 * action.
 				 */
 				return NULL;
 
@@ -923,8 +926,8 @@ ldelete:;
 
 				/*
 				 * tuple already deleted; nothing to do. But MERGE might want
-				 * to handle it differently. We've already filled-in hufdp with
-				 * sufficient information for MERGE to look at.
+				 * to handle it differently. We've already filled-in hufdp
+				 * with sufficient information for MERGE to look at.
 				 */
 				return NULL;
 
@@ -1344,9 +1347,9 @@ lreplace:;
 							 &hufd, &lockmode);
 
 		/*
-		 * Copy the necessary information, if the caller has asked for
-		 * it. We must do this irrespective of whether the tuple was
-		 * updated or deleted.
+		 * Copy the necessary information, if the caller has asked for it. We
+		 * must do this irrespective of whether the tuple was updated or
+		 * deleted.
 		 */
 		if (hufdp)
 			*hufdp = hufd;
@@ -1354,6 +1357,7 @@ lreplace:;
 		switch (result)
 		{
 			case HeapTupleSelfUpdated:
+
 				/*
 				 * The target tuple was already updated or deleted by the
 				 * current command, or by a later command in the current
@@ -1425,8 +1429,8 @@ lreplace:;
 
 				/*
 				 * tuple already deleted; nothing to do. But MERGE might want
-				 * to handle it differently. We've already filled-in hufdp with
-				 * sufficient information for MERGE to look at.
+				 * to handle it differently. We've already filled-in hufdp
+				 * with sufficient information for MERGE to look at.
 				 */
 				return NULL;
 
@@ -1553,9 +1557,9 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 			 * there's no historical behavior to break.
 			 *
 			 * It is the user's responsibility to prevent this situation from
-			 * occurring.  These problems are why SQL Standard similarly specifies
-			 * that for SQL MERGE, an exception must be raised in the event of
-			 * an attempt to update the same row twice.
+			 * occurring.  These problems are why SQL Standard similarly
+			 * specifies that for SQL MERGE, an exception must be raised in
+			 * the event of an attempt to update the same row twice.
 			 */
 			if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(tuple.t_data)))
 				ereport(ERROR,
@@ -1989,29 +1993,30 @@ tupconv_map_for_subplan(ModifyTableState *mtstate, int whichplan)
  */
 static bool
 ExecMergeMatched(ModifyTableState *mtstate, EState *estate,
-		TupleTableSlot *slot, JunkFilter *junkfilter,
-		ItemPointer tupleid)
+				 TupleTableSlot *slot, JunkFilter *junkfilter,
+				 ItemPointer tupleid)
 {
 	ExprContext *econtext = mtstate->ps.ps_ExprContext;
 	int			ud_target;
 	bool		isNull;
 	Datum		datum;
 	Oid			tableoid = InvalidOid;
-	List		*mergeMatchedActionStateList = NIL;
-	HeapUpdateFailureData	hufd;
-	bool		tuple_updated, tuple_deleted;
+	List	   *mergeMatchedActionStateList = NIL;
+	HeapUpdateFailureData hufd;
+	bool		tuple_updated,
+				tuple_deleted;
 	Buffer		buffer;
-	HeapTupleData	tuple;
-	EPQState	*epqstate = &mtstate->mt_epqstate;
-	ResultRelInfo	*saved_resultRelInfo;
-	ResultRelInfo	*resultRelInfo;
+	HeapTupleData tuple;
+	EPQState   *epqstate = &mtstate->mt_epqstate;
+	ResultRelInfo *saved_resultRelInfo;
+	ResultRelInfo *resultRelInfo;
 	ListCell   *l;
-	TupleTableSlot	*saved_slot = slot;
+	TupleTableSlot *saved_slot = slot;
 
 	/*
 	 * We always fetch the tableoid while performing MATCHED MERGE action.
-	 * This is strictly not required if the target table is not a
-	 * partitioned table. But we are not yet optimising for that case.
+	 * This is strictly not required if the target table is not a partitioned
+	 * table. But we are not yet optimising for that case.
 	 */
 	datum = ExecGetJunkAttribute(slot, junkfilter->jf_otherJunkAttNo,
 								 &isNull);
@@ -2019,16 +2024,17 @@ ExecMergeMatched(ModifyTableState *mtstate, EState *estate,
 	tableoid = DatumGetObjectId(datum);
 
 	/*
-	 * If we're dealing with a MATCHED tuple, then tableoid must have been
-	 * set correctly. In case of partitioned table, we must now fetch the
-	 * correct result relation corresponding to the child table emitting
-	 * the matching target row. For normal table, there is just one result
-	 * relation and it must be the one emitting the matching row.
+	 * If we're dealing with a MATCHED tuple, then tableoid must have been set
+	 * correctly. In case of partitioned table, we must now fetch the correct
+	 * result relation corresponding to the child table emitting the matching
+	 * target row. For normal table, there is just one result relation and it
+	 * must be the one emitting the matching row.
 	 */
 	for (ud_target = 0; ud_target < mtstate->mt_nplans; ud_target++)
 	{
 		ResultRelInfo *currRelInfo = mtstate->resultRelInfo + ud_target;
-		Oid relid = RelationGetRelid(currRelInfo->ri_RelationDesc);
+		Oid			relid = RelationGetRelid(currRelInfo->ri_RelationDesc);
+
 		if (tableoid == relid)
 			break;
 	}
@@ -2038,8 +2044,7 @@ ExecMergeMatched(ModifyTableState *mtstate, EState *estate,
 	resultRelInfo = mtstate->resultRelInfo + ud_target;
 
 	/*
-	 * Save the current information and work with the correct result
-	 * relation.
+	 * Save the current information and work with the correct result relation.
 	 */
 	saved_resultRelInfo = estate->es_result_relation_info;
 	estate->es_result_relation_info = resultRelInfo;
@@ -2052,9 +2057,9 @@ ExecMergeMatched(ModifyTableState *mtstate, EState *estate,
 
 	/*
 	 * Make tuple and any needed join variables available to ExecQual and
-	 * ExecProject. The target's existing tuple is installed in the
-	 * scantuple. Again, this target relation's slot is required only in
-	 * the case of a MATCHED tuple and UPDATE/DELETE actions.
+	 * ExecProject. The target's existing tuple is installed in the scantuple.
+	 * Again, this target relation's slot is required only in the case of a
+	 * MATCHED tuple and UPDATE/DELETE actions.
 	 */
 	econtext->ecxt_scantuple = mtstate->mt_merge_existing[ud_target];
 	econtext->ecxt_innertuple = slot;
@@ -2069,9 +2074,8 @@ lmerge_matched:;
 		MergeActionState *action = (MergeActionState *) lfirst(l);
 
 		/*
-		 * For UPDATE/DELETE actions, ensure that the target
-		 * tuple is set before we evaluate conditions or
-		 * project the resultant tuple.
+		 * For UPDATE/DELETE actions, ensure that the target tuple is set
+		 * before we evaluate conditions or project the resultant tuple.
 		 */
 		if (action->commandType == CMD_UPDATE ||
 			action->commandType == CMD_DELETE)
@@ -2079,18 +2083,17 @@ lmerge_matched:;
 			Relation	relation = resultRelInfo->ri_RelationDesc;
 
 			/*
-			 * UPDATE/DELETE is only invoked for matched rows.
-			 * And we must have found the tupleid of the target
-			 * row in that case. We fetch using SnapshotAny
-			 * because we might get called again after
-			 * EvalPlanQual returns us a new tuple. This tuple
-			 * may not be visible to our MVCC snapshot.
+			 * UPDATE/DELETE is only invoked for matched rows. And we must
+			 * have found the tupleid of the target row in that case. We fetch
+			 * using SnapshotAny because we might get called again after
+			 * EvalPlanQual returns us a new tuple. This tuple may not be
+			 * visible to our MVCC snapshot.
 			 */
 			Assert(tupleid != NULL);
 
 			tuple.t_self = *tupleid;
 			if (!heap_fetch(relation, SnapshotAny, &tuple,
-						&buffer, true, NULL))
+							&buffer, true, NULL))
 				elog(ERROR, "Failed to fetch the target tuple");
 
 			/* Store target's existing tuple in the state's dedicated slot */
@@ -2100,14 +2103,13 @@ lmerge_matched:;
 		/*
 		 * Test condition, if any
 		 *
-		 * In the absence of a condition we perform the action
-		 * unconditionally (no need to check separately since
-		 * ExecQual() will return true if there are no
-		 * conditions to evaluate).
+		 * In the absence of a condition we perform the action unconditionally
+		 * (no need to check separately since ExecQual() will return true if
+		 * there are no conditions to evaluate).
 		 */
 		if (action->whenqual)
 		{
-			bool	qual = ExecQual(action->whenqual, econtext);
+			bool		qual = ExecQual(action->whenqual, econtext);
 
 			if (!qual)
 			{
@@ -2122,8 +2124,8 @@ lmerge_matched:;
 		 * UPDATE/DELETE RLS policies. If those checks fail, we throw an
 		 * error.
 		 *
-		 * The WITH CHECK quals are applied in ExecUpdate() and hence we
-		 * need not do anything special to handle them.
+		 * The WITH CHECK quals are applied in ExecUpdate() and hence we need
+		 * not do anything special to handle them.
 		 *
 		 * NOTE: We must do this after WHEN quals are evaluated so that we
 		 * check policies only when they matter.
@@ -2133,42 +2135,43 @@ lmerge_matched:;
 			resultRelInfo->ri_WithCheckOptions)
 		{
 			ExecWithCheckOptions(action->commandType == CMD_UPDATE ?
-					WCO_RLS_MERGE_UPDATE_CHECK : WCO_RLS_MERGE_DELETE_CHECK,
-					resultRelInfo,
-					mtstate->mt_merge_existing[ud_target],
-					mtstate->ps.state);
+								 WCO_RLS_MERGE_UPDATE_CHECK : WCO_RLS_MERGE_DELETE_CHECK,
+								 resultRelInfo,
+								 mtstate->mt_merge_existing[ud_target],
+								 mtstate->ps.state);
 		}
 
 		/* Perform stated action */
 		switch (action->commandType)
 		{
 			case CMD_UPDATE:
+
 				/*
-				 * We set up the projection earlier, so all we
-				 * do here is Project, no need for any other
-				 * tasks prior to the ExecUpdate.
+				 * We set up the projection earlier, so all we do here is
+				 * Project, no need for any other tasks prior to the
+				 * ExecUpdate.
 				 */
 				ExecProject(action->proj);
 
 				/*
-				 * We don't call ExecFilterJunk() because the
-				 * projected tuple using the UPDATE action's
-				 * targetlist doesn't have a junk attribute.
+				 * We don't call ExecFilterJunk() because the projected tuple
+				 * using the UPDATE action's targetlist doesn't have a junk
+				 * attribute.
 				 */
 
 				slot = ExecUpdate(mtstate, tupleid, NULL,
-						action->slot, slot, epqstate, estate,
-						&tuple_updated, &hufd,
-						action, mtstate->canSetTag);
+								  action->slot, slot, epqstate, estate,
+								  &tuple_updated, &hufd,
+								  action, mtstate->canSetTag);
 				ReleaseBuffer(buffer);
 				break;
 
 			case CMD_DELETE:
 				/* Nothing to Project for a DELETE action */
 				slot = ExecDelete(mtstate, tupleid, NULL,
-						slot, epqstate, estate,
-						&tuple_deleted, false, &hufd, action,
-						mtstate->canSetTag);
+								  slot, epqstate, estate,
+								  &tuple_deleted, false, &hufd, action,
+								  mtstate->canSetTag);
 
 				ReleaseBuffer(buffer);
 				break;
@@ -2196,6 +2199,7 @@ lmerge_matched:;
 				case HeapTupleMayBeUpdated:
 					break;
 				case HeapTupleSelfUpdated:
+
 					/*
 					 * The target tuple was already updated or deleted by the
 					 * current command, or by a later command in the current
@@ -2203,13 +2207,12 @@ lmerge_matched:;
 					 */
 
 					/*
-					 * The former case is possible in a join UPDATE
-					 * where multiple tuples join to the same target
-					 * tuple. This is pretty questionable, but Postgres
-					 * has always allowed it: we just execute the first
-					 * update action and ignore additional update
-					 * attempts.  SQLStandard disallows this for MERGE,
-					 * so allow the caller to select how to handle
+					 * The former case is possible in a join UPDATE where
+					 * multiple tuples join to the same target tuple. This is
+					 * pretty questionable, but Postgres has always allowed
+					 * it: we just execute the first update action and ignore
+					 * additional update attempts.  SQLStandard disallows this
+					 * for MERGE, so allow the caller to select how to handle
 					 * this.
 					 */
 					ereport(ERROR,
@@ -2232,9 +2235,9 @@ lmerge_matched:;
 					 * tuple. If EvalPlanQual() does not return a tuple (can
 					 * that happen?), then again we switch to NOT MATCHED
 					 * action. If it does return a tuple and the join qual is
-					 * still satified, then we just need to recheck the MATCHED
-					 * actions, starting from the top, and execute the first
-					 * qualifying action.
+					 * still satified, then we just need to recheck the
+					 * MATCHED actions, starting from the top, and execute the
+					 * first qualifying action.
 					 *
 					 * We start with matched = false, for simplicity of the
 					 * following code.
@@ -2250,18 +2253,18 @@ lmerge_matched:;
 						 * query and not the one from result relation.
 						 */
 						epqslot = EvalPlanQual(estate,
-								epqstate,
-								resultRelInfo->ri_RelationDesc,
-								resultRelInfo->ri_mergeTargetRTI,
-								LockTupleExclusive,
-								&hufd.ctid,
-								hufd.xmax);
+											   epqstate,
+											   resultRelInfo->ri_RelationDesc,
+											   resultRelInfo->ri_mergeTargetRTI,
+											   LockTupleExclusive,
+											   &hufd.ctid,
+											   hufd.xmax);
 
 						if (!TupIsNull(epqslot))
 						{
 							(void) ExecGetJunkAttribute(epqslot,
-									resultRelInfo->ri_junkFilter->jf_junkAttNo,
-									&isNull);
+														resultRelInfo->ri_junkFilter->jf_junkAttNo,
+														&isNull);
 
 							/*
 							 * A valid ctid means that we are still dealing
@@ -2274,15 +2277,15 @@ lmerge_matched:;
 							 * EvalPlanQual because we anyways re-install the
 							 * new target tuple in econtext->ecxt_scantuple
 							 * before re-evaluating WHEN AND conditions and
-							 * re-projecting the update targetlists. The source
-							 * side tuple does not change and hence we can
-							 * safely continue to use the old slot.
+							 * re-projecting the update targetlists. The
+							 * source side tuple does not change and hence we
+							 * can safely continue to use the old slot.
 							 */
 							if (!isNull)
 							{
 								/*
-								 * Must update *tupleid to the TID of the newer
-								 * tuple found in the update chain.
+								 * Must update *tupleid to the TID of the
+								 * newer tuple found in the update chain.
 								 */
 								*tupleid = hufd.ctid;
 								goto lmerge_matched;
@@ -2310,8 +2313,8 @@ lmerge_matched:;
 			InstrCountFiltered2(&mtstate->ps, 1);
 
 		/*
-		 * We've activated one of the WHEN clauses, so we don't search further.
-		 * This is required behaviour, not an optimisation.
+		 * We've activated one of the WHEN clauses, so we don't search
+		 * further. This is required behaviour, not an optimisation.
 		 */
 		estate->es_result_relation_info = saved_resultRelInfo;
 		break;
@@ -2328,18 +2331,18 @@ lmerge_matched:;
  */
 static void
 ExecMergeNotMatched(ModifyTableState *mtstate, EState *estate,
-		TupleTableSlot *slot)
+					TupleTableSlot *slot)
 {
 	ExprContext *econtext = mtstate->ps.ps_ExprContext;
-	List		*mergeNotMatchedActionStateList = NIL;
-	ResultRelInfo	*saved_resultRelInfo;
-	ResultRelInfo	*resultRelInfo;
+	List	   *mergeNotMatchedActionStateList = NIL;
+	ResultRelInfo *saved_resultRelInfo;
+	ResultRelInfo *resultRelInfo;
 	ListCell   *l;
 
 	/*
-	 * We are dealing with NOT MATCHED tuple. For partitioned table, work
-	 * with the root partition. For regular tables, just use the currently
-	 * active result relation.
+	 * We are dealing with NOT MATCHED tuple. For partitioned table, work with
+	 * the root partition. For regular tables, just use the currently active
+	 * result relation.
 	 */
 	resultRelInfo = getTargetResultRelInfo(mtstate);
 	saved_resultRelInfo = estate->es_result_relation_info;
@@ -2348,17 +2351,17 @@ ExecMergeNotMatched(ModifyTableState *mtstate, EState *estate,
 	/*
 	 * For INSERT actions, any subplan's merge action is OK since the the
 	 * INSERT's targetlist and the WHEN conditions can only refer to the
-	 * source relation and hence it does not matter which result relation
-	 * we work with. So we just choose the first one.
+	 * source relation and hence it does not matter which result relation we
+	 * work with. So we just choose the first one.
 	 */
 	mergeNotMatchedActionStateList = (List *)
 		list_nth(mtstate->mt_mergeNotMatchedActionStateLists, 0);
 
 	/*
 	 * Make tuple and any needed join variables available to ExecQual and
-	 * ExecProject. The target's existing tuple is installed in the
-	 * scantuple. Again, this target relation's slot is required only in
-	 * the case of a MATCHED tuple and UPDATE/DELETE actions.
+	 * ExecProject. The target's existing tuple is installed in the scantuple.
+	 * Again, this target relation's slot is required only in the case of a
+	 * MATCHED tuple and UPDATE/DELETE actions.
 	 */
 	econtext->ecxt_scantuple = mtstate->mt_merge_existing[0];
 	econtext->ecxt_innertuple = slot;
@@ -2371,10 +2374,9 @@ ExecMergeNotMatched(ModifyTableState *mtstate, EState *estate,
 		/*
 		 * Test condition, if any
 		 *
-		 * In the absence of a condition we perform the action
-		 * unconditionally (no need to check separately since
-		 * ExecQual() will return true if there are no
-		 * conditions to evaluate).
+		 * In the absence of a condition we perform the action unconditionally
+		 * (no need to check separately since ExecQual() will return true if
+		 * there are no conditions to evaluate).
 		 */
 		if (action->whenqual && !ExecQual(action->whenqual, econtext))
 			continue;
@@ -2383,16 +2385,17 @@ ExecMergeNotMatched(ModifyTableState *mtstate, EState *estate,
 		switch (action->commandType)
 		{
 			case CMD_INSERT:
+
 				/*
-				 * We set up the projection earlier, so all we
-				 * do here is Project, no need for any other
-				 * tasks prior to the ExecInsert.
+				 * We set up the projection earlier, so all we do here is
+				 * Project, no need for any other tasks prior to the
+				 * ExecInsert.
 				 */
 				ExecProject(action->proj);
 
 				slot = ExecInsert(mtstate, action->slot, slot,
-						NULL, ONCONFLICT_NONE, estate, action,
-						mtstate->canSetTag);
+								  NULL, ONCONFLICT_NONE, estate, action,
+								  mtstate->canSetTag);
 				break;
 			case CMD_NOTHING:
 				/* Do Nothing */
@@ -2402,8 +2405,8 @@ ExecMergeNotMatched(ModifyTableState *mtstate, EState *estate,
 		}
 
 		/*
-		 * We've activated one of the WHEN clauses, so we don't search further.
-		 * This is required behaviour, not an optimisation.
+		 * We've activated one of the WHEN clauses, so we don't search
+		 * further. This is required behaviour, not an optimisation.
 		 */
 		estate->es_result_relation_info = saved_resultRelInfo;
 		break;
@@ -2412,10 +2415,10 @@ ExecMergeNotMatched(ModifyTableState *mtstate, EState *estate,
 
 /*
  * Perform MERGE.
- */ 
+ */
 static void
 ExecMerge(ModifyTableState *mtstate, EState *estate, TupleTableSlot *slot,
-		JunkFilter *junkfilter, ResultRelInfo *resultRelInfo)
+		  JunkFilter *junkfilter, ResultRelInfo *resultRelInfo)
 {
 	ItemPointer tupleid;
 	ItemPointerData tuple_ctid;
@@ -2424,7 +2427,7 @@ ExecMerge(ModifyTableState *mtstate, EState *estate, TupleTableSlot *slot,
 	Datum		datum;
 	bool		isNull;
 
-	Assert (junkfilter != NULL);
+	Assert(junkfilter != NULL);
 
 	relkind = resultRelInfo->ri_RelationDesc->rd_rel->relkind;
 	Assert(relkind == RELKIND_RELATION ||
@@ -2438,7 +2441,7 @@ ExecMerge(ModifyTableState *mtstate, EState *estate, TupleTableSlot *slot,
 	 * source tuple. This case triggers the WHEN MATCHED clause of the MERGE.
 	 * Whereas a NULL in the target relation's ctid column indicates a NOT
 	 * MATCHED case.
-	 */ 
+	 */
 	datum = ExecGetJunkAttribute(slot, junkfilter->jf_junkAttNo, &isNull);
 
 	if (!isNull)
@@ -2451,7 +2454,7 @@ ExecMerge(ModifyTableState *mtstate, EState *estate, TupleTableSlot *slot,
 	else
 	{
 		matched = false;
-		tupleid = NULL; /* we don't need it for INSERT actions */
+		tupleid = NULL;			/* we don't need it for INSERT actions */
 	}
 
 	/*
@@ -2464,20 +2467,20 @@ ExecMerge(ModifyTableState *mtstate, EState *estate, TupleTableSlot *slot,
 	 * given WHEN NOT MATCHED actions in an ordr and execute the first
 	 * qualifying action.
 	 *
-	 * Things get interesting in case of concurrent update/delete of the target
-	 * tuple. Such concurrent update/delete is detected while we are executing
-	 * a WHEN MATCHED action.
+	 * Things get interesting in case of concurrent update/delete of the
+	 * target tuple. Such concurrent update/delete is detected while we are
+	 * executing a WHEN MATCHED action.
 	 *
 	 * A concurrent update for example can:
 	 *
-	 * 1. modify the target tuple so that it no longer satisfies the additional
-	 * quals attached to the current WHEN MATCHED action OR
-	 * 2. modify the target tuple so that the join quals no longer pass and
-	 * hence the source tuple no longer has a match.
-	 * 
-	 * In the first case, we are still dealing with a WHEN MATCHED case, but we
-	 * should recheck the list of WHEN MATCHED actions and choose the first one
-	 * that satisfies the new target tuple. In the second case, since the
+	 * 1. modify the target tuple so that it no longer satisfies the
+	 * additional quals attached to the current WHEN MATCHED action OR 2.
+	 * modify the target tuple so that the join quals no longer pass and hence
+	 * the source tuple no longer has a match.
+	 *
+	 * In the first case, we are still dealing with a WHEN MATCHED case, but
+	 * we should recheck the list of WHEN MATCHED actions and choose the first
+	 * one that satisfies the new target tuple. In the second case, since the
 	 * source tuple no longer matches the target tuple, we now instead find a
 	 * qualifying WHEN NOT MATCHED action and execute that.
 	 *
@@ -2485,8 +2488,8 @@ ExecMerge(ModifyTableState *mtstate, EState *estate, TupleTableSlot *slot,
 	 *
 	 * ExecMergeMatched takes care of following the update chain and
 	 * re-finding the qualifying WHEN MATCHED action, as long as the updated
-	 * target tuple still satisfies the join quals i.e. it still remains a WHEN
-	 * MATCHED case. If the tuple gets deleted or the join quals fail, it
+	 * target tuple still satisfies the join quals i.e. it still remains a
+	 * WHEN MATCHED case. If the tuple gets deleted or the join quals fail, it
 	 * returns and we try ExecMergeNotMatched. Given that ExecMergeMatched
 	 * always make progress by following the update chain and we never switch
 	 * from ExecMergeNotMatched to ExecMergeMatched, there is no risk of a
@@ -2496,6 +2499,7 @@ ExecMerge(ModifyTableState *mtstate, EState *estate, TupleTableSlot *slot,
 		!ExecMergeMatched(mtstate, estate, slot, junkfilter, tupleid))
 		ExecMergeNotMatched(mtstate, estate, slot);
 }
+
 /* ----------------------------------------------------------------
  *	   ExecModifyTable
  *
@@ -2810,7 +2814,7 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	mtstate->resultRelInfo = estate->es_result_relations + node->resultRelIndex;
 
 	mtstate->mt_merge_existing = (TupleTableSlot **)
-		palloc0(sizeof (TupleTableSlot *) * nplans);
+		palloc0(sizeof(TupleTableSlot *) * nplans);
 
 	/* If modifying a partitioned table, initialize the root table info */
 	if (node->rootResultRelIndex >= 0)
@@ -3126,18 +3130,18 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 		 */
 		foreach(l, node->mergeActionLists)
 		{
-			List	*mergeActionList = (List *) lfirst(l);
-			List	*mergeMatchedActionStateList = NIL;
-			List	*mergeNotMatchedActionStateList = NIL;
-			ListCell *l2;
-			int		whichplan = resultRelInfo - mtstate->resultRelInfo;
+			List	   *mergeActionList = (List *) lfirst(l);
+			List	   *mergeMatchedActionStateList = NIL;
+			List	   *mergeNotMatchedActionStateList = NIL;
+			ListCell   *l2;
+			int			whichplan = resultRelInfo - mtstate->resultRelInfo;
 
 			/* initialize slot for the existing tuple */
 			mtstate->mt_merge_existing[whichplan] =
 				ExecInitExtraTupleSlot(mtstate->ps.state,
-						resultRelInfo->ri_RelationDesc->rd_att);
+									   resultRelInfo->ri_RelationDesc->rd_att);
 
-			foreach (l2, mergeActionList)
+			foreach(l2, mergeActionList)
 			{
 				MergeAction *action = (MergeAction *) lfirst(l2);
 				MergeActionState *action_state = makeNode(MergeActionState);
@@ -3146,13 +3150,13 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 				action_state->matched = action->matched;
 				action_state->commandType = action->commandType;
 				action_state->whenqual = ExecInitQual((List *) action->qual,
-														&mtstate->ps);
+													  &mtstate->ps);
 
 				/* create target slot for this action's projection */
 				tupDesc = ExecTypeFromTL((List *) action->targetList,
-									 resultRelInfo->ri_RelationDesc->rd_rel->relhasoids);
+										 resultRelInfo->ri_RelationDesc->rd_rel->relhasoids);
 				action_state->slot = ExecInitExtraTupleSlot(mtstate->ps.state,
-										tupDesc);
+															tupDesc);
 
 				/* build action projection state */
 				action_state->proj =
@@ -3168,8 +3172,8 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 						lappend(mergeNotMatchedActionStateList, action_state);
 
 				/*
-				 * XXX if we support transition tables this would need to move earlier
-				 * before ExecSetupTransitionCaptureState()
+				 * XXX if we support transition tables this would need to move
+				 * earlier before ExecSetupTransitionCaptureState()
 				 */
 				switch (action->commandType)
 				{
@@ -3258,7 +3262,11 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 				JunkFilter *j;
 
 				subplan = mtstate->mt_plans[i]->plan;
-				/* XXX we probably need to check plan output for CMD_MERGE also */
+
+				/*
+				 * XXX we probably need to check plan output for CMD_MERGE
+				 * also
+				 */
 				if (operation == CMD_INSERT || operation == CMD_UPDATE)
 					ExecCheckPlanOutput(resultRelInfo->ri_RelationDesc,
 										subplan->targetlist);

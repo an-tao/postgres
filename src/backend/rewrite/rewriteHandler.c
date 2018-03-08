@@ -1406,7 +1406,8 @@ rewriteTargetListMerge(Query *parsetree, Relation target_relation)
 		parsetree->targetList = lappend(parsetree->targetList, tle);
 
 		/*
-		 * Emit TABLEOID so that executor can find the row to update or delete.
+		 * Emit TABLEOID so that executor can find the row to update or
+		 * delete.
 		 */
 		var = makeVar(parsetree->mergeTarget_relation,
 					  TableOidAttributeNumber,
@@ -3380,7 +3381,7 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 		{
 			Assert(parsetree->override == OVERRIDING_NOT_SET);
 			parsetree->targetList =
-					rewriteTargetListIU(parsetree->targetList,
+				rewriteTargetListIU(parsetree->targetList,
 									parsetree->commandType,
 									parsetree->override,
 									rt_entry_relation,
@@ -3395,32 +3396,33 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 			 */
 			foreach(lc1, parsetree->mergeActionList)
 			{
-				MergeAction     *action = (MergeAction *) lfirst(lc1);
+				MergeAction *action = (MergeAction *) lfirst(lc1);
 
 				switch (action->commandType)
 				{
 					case CMD_NOTHING:
-					case CMD_DELETE: /* Nothing to do here */
+					case CMD_DELETE:	/* Nothing to do here */
 						break;
 					case CMD_UPDATE:
 						action->targetList =
 							rewriteTargetListIU(action->targetList,
-									action->commandType,
-									parsetree->override,
-									rt_entry_relation,
-									parsetree->resultRelation,
-									NULL);
+												action->commandType,
+												parsetree->override,
+												rt_entry_relation,
+												parsetree->resultRelation,
+												NULL);
 						break;
 					case CMD_INSERT:
 						{
 							InsertStmt *istmt = (InsertStmt *) action->stmt;
+
 							action->targetList =
 								rewriteTargetListIU(action->targetList,
-										action->commandType,
-										istmt->override,
-										rt_entry_relation,
-										parsetree->resultRelation,
-										NULL);
+													action->commandType,
+													istmt->override,
+													rt_entry_relation,
+													parsetree->resultRelation,
+													NULL);
 						}
 						break;
 					default:
@@ -3449,12 +3451,12 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 			product_queries = NIL;
 		else
 			product_queries = fireRules(parsetree,
-									result_relation,
-									event,
-									locks,
-									&instead,
-									&returning,
-									&qual_product);
+										result_relation,
+										event,
+										locks,
+										&instead,
+										&returning,
+										&qual_product);
 
 		/*
 		 * If there were no INSTEAD rules, and the target relation is a view

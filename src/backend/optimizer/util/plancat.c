@@ -1835,7 +1835,7 @@ has_row_triggers(PlannerInfo *root, Index rti, CmdType event)
 				 trigDesc->trig_delete_before_row))
 				result = true;
 			break;
-		/* There is no separate event for MERGE, only INSERT/UPDATE/DELETE */
+			/* There is no separate event for MERGE, only INSERT/UPDATE/DELETE */
 		case CMD_MERGE:
 			result = false;
 			break;

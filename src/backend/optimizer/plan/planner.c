@@ -206,7 +206,7 @@ static void add_paths_to_partial_grouping_rel(PlannerInfo *root,
 static bool can_parallel_agg(PlannerInfo *root, RelOptInfo *input_rel,
 				 RelOptInfo *grouped_rel, const AggClauseCosts *agg_costs);
 static Index find_mergetarget_for_rel(PlannerInfo *root, Index child_relid,
-		Bitmapset *parent_relids);
+						 Bitmapset *parent_relids);
 static Bitmapset *find_mergetarget_parents(PlannerInfo *root);
 
 
@@ -740,7 +740,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 		/* exclRelTlist contains only Vars, so no preprocessing needed */
 	}
 
-	foreach (l, parse->mergeActionList)
+	foreach(l, parse->mergeActionList)
 	{
 		MergeAction *action = (MergeAction *) lfirst(l);
 
@@ -756,7 +756,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 
 	parse->mergeSourceTargetList = (List *)
 		preprocess_expression(root, (Node *) parse->mergeSourceTargetList,
-				EXPRKIND_TARGET);
+							  EXPRKIND_TARGET);
 
 	root->append_rel_list = (List *)
 		preprocess_expression(root, (Node *) root->append_rel_list,
@@ -1504,10 +1504,10 @@ inheritance_planner(PlannerInfo *root)
 		if (parse->commandType == CMD_MERGE)
 		{
 			mergeTargetRelation = find_mergetarget_for_rel(root,
-					appinfo->child_relid, mergeTarget_parent_relids);
+														   appinfo->child_relid, mergeTarget_parent_relids);
 			Assert(mergeTargetRelation > 0);
 			mergeTargetRelations = lappend_int(mergeTargetRelations,
-					mergeTargetRelation);
+											   mergeTargetRelation);
 		}
 
 		/* Build lists of per-relation WCO and RETURNING targetlists */
@@ -1523,7 +1523,7 @@ inheritance_planner(PlannerInfo *root)
 									   subroot->parse->mergeActionList);
 		if (parse->mergeSourceTargetList)
 			mergeSourceTargetLists = lappend(mergeSourceTargetLists,
-									   subroot->parse->mergeSourceTargetList);
+											 subroot->parse->mergeSourceTargetList);
 		Assert(!parse->onConflict);
 	}
 
@@ -2190,8 +2190,8 @@ grouping_planner(PlannerInfo *root, bool inheritance_update,
 		}
 
 		/*
-		 * If this is an INSERT/UPDATE/DELETE/MERGE, and we're not being called
-		 * from inheritance_planner, add the ModifyTable node.
+		 * If this is an INSERT/UPDATE/DELETE/MERGE, and we're not being
+		 * called from inheritance_planner, add the ModifyTable node.
 		 */
 		if (parse->commandType != CMD_SELECT && !inheritance_update)
 		{
@@ -6510,10 +6510,10 @@ static Bitmapset *
 find_mergetarget_parents(PlannerInfo *root)
 {
 	Index		mergeTargetRelation = root->parse->mergeTarget_relation;
-	ListCell	*l;
-	Bitmapset	*parent_relids = bms_make_singleton(mergeTargetRelation);
+	ListCell   *l;
+	Bitmapset  *parent_relids = bms_make_singleton(mergeTargetRelation);
 
-	foreach (l, root->append_rel_list)
+	foreach(l, root->append_rel_list)
 	{
 		AppendRelInfo *appinfo = (AppendRelInfo *) lfirst(l);
 		RangeTblEntry *child_rte;
@@ -6532,15 +6532,16 @@ find_mergetarget_parents(PlannerInfo *root)
 
 static Index
 find_mergetarget_for_rel(PlannerInfo *root, Index child_relid,
-		Bitmapset *parent_relids)
+						 Bitmapset *parent_relids)
 {
-	Query			*parse = root->parse;
-	RangeTblEntry	*rte, *child_rte;
-	ListCell		*l;
+	Query	   *parse = root->parse;
+	RangeTblEntry *rte,
+			   *child_rte;
+	ListCell   *l;
 
 	rte = rt_fetch(child_relid, parse->rtable);
 
-	foreach (l, root->append_rel_list)
+	foreach(l, root->append_rel_list)
 	{
 		AppendRelInfo *appinfo = (AppendRelInfo *) lfirst(l);
 
@@ -6554,4 +6555,3 @@ find_mergetarget_for_rel(PlannerInfo *root, Index child_relid,
 
 	return 0;
 }
-

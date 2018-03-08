@@ -1132,7 +1132,7 @@ typedef enum WCOKind
 	WCO_RLS_INSERT_CHECK,		/* RLS INSERT WITH CHECK policy */
 	WCO_RLS_UPDATE_CHECK,		/* RLS UPDATE WITH CHECK policy */
 	WCO_RLS_CONFLICT_CHECK,		/* RLS ON CONFLICT DO UPDATE USING policy */
-	WCO_RLS_MERGE_UPDATE_CHECK,	/* RLS MERGE UPDATE USING policy */
+	WCO_RLS_MERGE_UPDATE_CHECK, /* RLS MERGE UPDATE USING policy */
 	WCO_RLS_MERGE_DELETE_CHECK	/* RLS MERGE DELETE USING policy */
 } WCOKind;
 
@@ -1516,9 +1516,9 @@ typedef struct MergeStmt
 {
 	NodeTag		type;
 	RangeVar   *relation;		/* target relation to merge */
-	Node	   *source_relation;/* source relation */
-	Node	   *join_condition;	/* join condition between source and target */
-	List	   *mergeActionList;/* list of MergeAction(s) */
+	Node	   *source_relation;	/* source relation */
+	Node	   *join_condition; /* join condition between source and target */
+	List	   *mergeActionList;	/* list of MergeAction(s) */
 } MergeStmt;
 
 typedef struct MergeAction
