@@ -3176,10 +3176,6 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 					mergeNotMatchedActionStateList =
 						lappend(mergeNotMatchedActionStateList, action_state);
 
-				/*
-				 * XXX if we support transition tables this would need to move
-				 * earlier before ExecSetupTransitionCaptureState()
-				 */
 				switch (action->commandType)
 				{
 					case CMD_INSERT:
