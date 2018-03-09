@@ -31,7 +31,6 @@
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "nodes/print.h"
 #include "optimizer/tlist.h"
 #include "optimizer/var.h"
 #include "parser/analyze.h"
@@ -169,9 +168,6 @@ transformFromClause(ParseState *pstate, List *frmList)
  *
  *	Process the FROM clause and add items to the query's range table,
  *	joinlist, and namespace.
- *
- *	Note: we assume that the pstate's p_rtable, p_joinlist, and p_namespace
- *	lists were initialized to NIL when the pstate was created.
  *
  *	A special targetlist comprising of the columns from the right-subtree of
  *	the join is populated and returned. Note that when the JoinExpr is

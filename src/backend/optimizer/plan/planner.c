@@ -1503,6 +1503,10 @@ inheritance_planner(PlannerInfo *root)
 		/* Build list of merge target-relation RT indexes */
 		if (parse->commandType == CMD_MERGE)
 		{
+			/*
+			 * Find the correct mapping for this resultRelation in the
+			 * mergeTargetRelation tree.
+			 */
 			mergeTargetRelation = find_mergetarget_for_rel(root,
 														   appinfo->child_relid, mergeTarget_parent_relids);
 			Assert(mergeTargetRelation > 0);
@@ -6506,6 +6510,13 @@ can_parallel_agg(PlannerInfo *root, RelOptInfo *input_rel,
 	return true;
 }
 
+/*
+ * Find all parents in the inheritance tree rooted at mergeTargetRelation.
+ * Returns a bitmap of all such relids.
+ *
+ * Start from the mergeTargetRelation and add all child tables that themselves
+ * are parents of other child tables.
+ */
 static Bitmapset *
 find_mergetarget_parents(PlannerInfo *root)
 {
@@ -6530,6 +6541,17 @@ find_mergetarget_parents(PlannerInfo *root)
 	return parent_relids;
 }
 
+/*
+ * Basically, there are two inheritance trees - one that gets expanded for the
+ * resultRelation and the other that gets expanded for the mergeTargetRelation,
+ * used in the underlying join. This routine finds the correct match for the
+ * given relid from the resultRelation tree, by looking up the
+ * mergeTargetRelation tree.
+ *
+ * The caller should have already computed the information about all parents in
+ * the inheritance tree rooted at mergeTargetRelation. That information is
+ * passed to us as parent_relids.
+ */
 static Index
 find_mergetarget_for_rel(PlannerInfo *root, Index child_relid,
 						 Bitmapset *parent_relids)
@@ -6549,6 +6571,13 @@ find_mergetarget_for_rel(PlannerInfo *root, Index child_relid,
 			continue;
 
 		child_rte = rt_fetch(appinfo->child_relid, parse->rtable);
+
+		/*
+		 * Note: relid field in the RangeTblEntry is actually the table OID.
+		 * So we are actually comparing OIDs and not the Indexes. This is a
+		 * bit confusing because child_relid/parent_relid etc are Indexes and
+		 * not OIDs.
+		 */
 		if (child_rte->relid == rte->relid)
 			return appinfo->child_relid;
 	}

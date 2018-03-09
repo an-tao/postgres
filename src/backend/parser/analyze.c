@@ -2516,7 +2516,8 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	 * relation.
 	 *
 	 * Track the RTE index of the target table used in the join query. This is
-	 * later used to add required junk attributes to the targetlist.
+	 * used by rewriteTargetListMerge to add required junk attributes to the
+	 * targetlist.
 	 */
 	qry->mergeTarget_relation = transformMergeJoinClause(pstate, (Node *) joinexpr,
 														 &qry->mergeSourceTargetList);
@@ -2570,29 +2571,15 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 		/*
 		 * Set namespace for the specific action. This must be done before
 		 * analysing the WHEN quals and the action targetlisst.
-		 *
-		 * XXX Do we need to restore the old values back?
 		 */
 		setNamespaceForMergeAction(pstate, action);
 
 		/*
 		 * Transform the when condition.
 		 *
-		 * We don't have a separate plan for each action, so the when
-		 * condition must be executed as a per-row check, making it very
-		 * similar to a CHECK constraint and so we adopt the same semantics
-		 * for that.
-		 *
-		 * SQL Standard says we should not allow anything that possibly
-		 * modifies SQL-data. We enforce that with an executor check that we
-		 * have not written any WAL.
-		 *
-		 * XXX Perhaps we require Parallel Safety since that is a superset of
-		 * the restriction and enforcing that makes it easier to consider
-		 * running MERGE plans in parallel in future.
-		 *
-		 * Note that we don't add this to the MERGE Query's quals because
-		 * that's not the logic MERGE uses.
+		 * Note that these quals are NOT added to the join quals; instead they
+		 * are evaluated sepaartely during execution to decide which of the
+		 * WHEN MATCHED or WHEN NOT MATCHED actions to execute.
 		 */
 		action->qual = transformWhereClause(pstate, action->condition,
 											EXPR_KIND_MERGE_WHEN_AND, "WHEN");
@@ -2621,8 +2608,6 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 
 					/*
 					 * Handle INSERT much like in transformInsertStmt
-					 *
-					 * XXX currently ignore stmt->override, if present
 					 */
 					if (selectStmt == NULL)
 					{

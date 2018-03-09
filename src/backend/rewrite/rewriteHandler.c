@@ -1383,47 +1383,45 @@ rewriteTargetListMerge(Query *parsetree, Relation target_relation)
 	const char *attrname;
 	TargetEntry *tle;
 
-	if (target_relation->rd_rel->relkind == RELKIND_RELATION ||
-		target_relation->rd_rel->relkind == RELKIND_MATVIEW ||
-		target_relation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-	{
-		/*
-		 * Emit CTID so that executor can find the row to update or delete.
-		 */
-		var = makeVar(parsetree->mergeTarget_relation,
-					  SelfItemPointerAttributeNumber,
-					  TIDOID,
-					  -1,
-					  InvalidOid,
-					  0);
+	Assert(target_relation->rd_rel->relkind == RELKIND_RELATION ||
+		   target_relation->rd_rel->relkind == RELKIND_MATVIEW ||
+		   target_relation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE);
 
-		attrname = "ctid";
-		tle = makeTargetEntry((Expr *) var,
-							  list_length(parsetree->targetList) + 1,
-							  pstrdup(attrname),
-							  true);
+	/*
+	 * Emit CTID so that executor can find the row to update or delete.
+	 */
+	var = makeVar(parsetree->mergeTarget_relation,
+				  SelfItemPointerAttributeNumber,
+				  TIDOID,
+				  -1,
+				  InvalidOid,
+				  0);
 
-		parsetree->targetList = lappend(parsetree->targetList, tle);
+	attrname = "ctid";
+	tle = makeTargetEntry((Expr *) var,
+						  list_length(parsetree->targetList) + 1,
+						  pstrdup(attrname),
+						  true);
 
-		/*
-		 * Emit TABLEOID so that executor can find the row to update or
-		 * delete.
-		 */
-		var = makeVar(parsetree->mergeTarget_relation,
-					  TableOidAttributeNumber,
-					  OIDOID,
-					  -1,
-					  InvalidOid,
-					  0);
+	parsetree->targetList = lappend(parsetree->targetList, tle);
 
-		attrname = "tableoid";
-		tle = makeTargetEntry((Expr *) var,
-							  list_length(parsetree->targetList) + 1,
-							  pstrdup(attrname),
-							  true);
+	/*
+	 * Emit TABLEOID so that executor can find the row to update or delete.
+	 */
+	var = makeVar(parsetree->mergeTarget_relation,
+				  TableOidAttributeNumber,
+				  OIDOID,
+				  -1,
+				  InvalidOid,
+				  0);
 
-		parsetree->targetList = lappend(parsetree->targetList, tle);
-	}
+	attrname = "tableoid";
+	tle = makeTargetEntry((Expr *) var,
+						  list_length(parsetree->targetList) + 1,
+						  pstrdup(attrname),
+						  true);
+
+	parsetree->targetList = lappend(parsetree->targetList, tle);
 }
 
 /*
@@ -3445,7 +3443,7 @@ RewriteQuery(Query *parsetree, List *rewrite_events)
 						   result_relation, parsetree, &hasUpdate);
 
 		/*
-		 * First rule of MERGE club is we don't talk about rules
+		 * MERGE doesn't support rules as it's unclear how that could work.
 		 */
 		if (event == CMD_MERGE)
 			product_queries = NIL;

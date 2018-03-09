@@ -68,7 +68,7 @@ DELETE
   </para>
 
   <para>
-   First, the <command>MERGE</command> command performs a left outer join
+   First, the <command>MERGE</command> command performs a join
    from <replaceable class="parameter">data_source</replaceable> to
    <replaceable class="parameter">target_table_name</replaceable>
    producing zero or more candidate change rows.  For each candidate change
@@ -416,10 +416,8 @@ MERGE <replaceable class="parameter">total-count</replaceable>
      </listitem>
      <listitem>
       <para>
-       Perform left outer join from source to target table. If the <command>MERGE</command>
-       contains no <literal>INSERT</literal> actions that is optimized to be an inner join.
-       If the <literal>USING</literal> clause contains a scalar sub-query we avoid the
-       join completely. The resulting query will be optimized normally and will produce
+       Perform a join from source to target table.
+       The resulting query will be optimized normally and will produce
        a set of candidate change row. For each candidate change row
        <orderedlist>
         <listitem>

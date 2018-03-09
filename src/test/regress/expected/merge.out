@@ -370,6 +370,7 @@ WHEN MATCHED THEN
 	UPDATE SET balance = 0
 ;
 ERROR:  MERGE command cannot affect row a second time
+HINT:  Ensure that not more than one source rows match any one target row
 ROLLBACK;
 BEGIN;
 MERGE INTO target t
@@ -379,6 +380,7 @@ WHEN MATCHED THEN
 	DELETE
 ;
 ERROR:  MERGE command cannot affect row a second time
+HINT:  Ensure that not more than one source rows match any one target row
 ROLLBACK;
 -- correct source data
 DELETE FROM source WHERE sid = 2;
