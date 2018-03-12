@@ -23,6 +23,7 @@
 #include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "storage/smgr.h"
 #include "utils/tqual.h"
 
 
@@ -85,7 +86,6 @@ static bool _bt_isequal(TupleDesc itupdesc, Page page, OffsetNumber offnum,
 			int keysz, ScanKey scankey);
 static void _bt_vacuum_one_page(Relation rel, Buffer buffer, Relation heapRel);
 
-
 /*
  *	_bt_doinsert() -- Handle insertion of a single index tuple in the tree.
  *
@@ -117,6 +117,78 @@ _bt_doinsert(Relation rel, IndexTuple itup,
 
 	/* we need an insertion scan key to do our search, so build one */
 	itup_scankey = _bt_mkscankey(rel, itup);
+
+	/*
+	 * It's very common to have an index on an auto-incremented or
+	 * monotonically increasing value. In such cases, every insertion happens
+	 * to the end of the index. We try to optimise that case by caching the
+	 * right-most block of the index and check if the new scankey falls beyond
+	 * the last key in the index. Furthermore we also check if the rightmost
+	 * page has enough free space to accommodate the new entry. If all these
+	 * conditions are satisfied then we can straight away insert the new key
+	 * and done with it.
+	 */
+	if (RelationGetTargetBlock(rel) != InvalidBlockNumber)
+	{
+		Size 			itemsz;
+		Page			page;
+		BTPageOpaque	lpageop;
+
+		buf = ReadBuffer(rel, RelationGetTargetBlock(rel));
+
+		/*
+		 * Acquire exclusive lock on the buffer before doing any checks. This
+		 * ensures that the index state cannot change, as far as the rightmost
+		 * part of the index is concerned.
+		 */
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buf);
+		lpageop = (BTPageOpaque) PageGetSpecialPointer(page);
+		itemsz = IndexTupleDSize(*itup);
+		itemsz = MAXALIGN(itemsz);	/* be safe, PageAddItem will do this but we
+									 * need to be consistent */
+
+		/*
+		 * Check if the page is still the rightmost leaf page, has enough free
+		 * space to accommodate the new tuple, no split is in progress and the
+		 * scankey is greater than the last key on the page.
+		 */
+		if (P_ISLEAF(lpageop) && P_RIGHTMOST(lpageop) &&
+			!P_INCOMPLETE_SPLIT(lpageop) &&
+			!P_IGNORE(lpageop) &&
+			(PageGetFreeSpace(page) > itemsz) &&
+			_bt_compare(rel, natts, itup_scankey, page, PageGetMaxOffsetNumber(page)) > 0)
+		{
+			offset = OffsetNumberNext(PageGetMaxOffsetNumber(page));
+
+			/*
+			 * No need to search within the page since we've already confirmed
+			 * that the scankey is greater than the last key in this rightmost
+			 * page. But we do this additional check in assert-enabled build.
+			 */
+			Assert(offset == _bt_binsrch(rel, buf, natts, itup_scankey, true));
+
+			/* Ok to insert */
+			_bt_insertonpg(rel, buf, InvalidBuffer, NULL, itup, offset, false);
+			_bt_freeskey(itup_scankey);
+
+			/*
+			 * Since the scankey is greater than the last key on this rightmost
+			 * page and we're continuously holding exclusive lock on the page,
+			 * we can guarantee that it must be a unique key.
+			 */
+			return true;
+		}
+
+		UnlockReleaseBuffer(buf);
+
+		/*
+		 * Something did not workout. Just forget about the cached block and
+		 * follow the normal path. It might be set again if the conditions are
+		 * favourble.
+		 */
+		RelationSetTargetBlock(rel, InvalidBlockNumber);
+	}
 
 top:
 	/* find the first page containing this key */
@@ -879,7 +951,16 @@ _bt_insertonpg(Relation rel,
 			XLogRegisterData((char *) &xlrec, SizeOfBtreeInsert);
 
 			if (P_ISLEAF(lpageop))
+			{
 				xlinfo = XLOG_BTREE_INSERT_LEAF;
+
+				/*
+				 * Cache the block information if we just inserted into the
+				 * rightmost leaf page of the index.
+				 */
+				if (P_RIGHTMOST(lpageop))
+					RelationSetTargetBlock(rel, BufferGetBlockNumber(buf));
+			}
 			else
 			{
 				/*
