@@ -111,9 +111,10 @@ _bt_doinsert(Relation rel, IndexTuple itup,
 	bool		is_unique = false;
 	int			natts = rel->rd_rel->relnatts;
 	ScanKey		itup_scankey;
-	BTStack		stack;
+	BTStack		stack = NULL;
 	Buffer		buf;
 	OffsetNumber offset;
+	bool		fastpath;
 
 	/* we need an insertion scan key to do our search, so build one */
 	itup_scankey = _bt_mkscankey(rel, itup);
@@ -128,23 +129,24 @@ _bt_doinsert(Relation rel, IndexTuple itup,
 	 * conditions are satisfied then we can straight away insert the new key
 	 * and done with it.
 	 */
+top:
+	fastpath = false;
 	if (RelationGetTargetBlock(rel) != InvalidBlockNumber)
 	{
 		Size 			itemsz;
 		Page			page;
 		BTPageOpaque	lpageop;
 
-		buf = ReadBuffer(rel, RelationGetTargetBlock(rel));
-
 		/*
 		 * Acquire exclusive lock on the buffer before doing any checks. This
 		 * ensures that the index state cannot change, as far as the rightmost
 		 * part of the index is concerned.
 		 */
-		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		buf = _bt_getbuf(rel, RelationGetTargetBlock(rel), BT_WRITE);
 		page = BufferGetPage(buf);
+
 		lpageop = (BTPageOpaque) PageGetSpecialPointer(page);
-		itemsz = IndexTupleDSize(*itup);
+		itemsz = IndexTupleSize(itup);
 		itemsz = MAXALIGN(itemsz);	/* be safe, PageAddItem will do this but we
 									 * need to be consistent */
 
@@ -157,58 +159,46 @@ _bt_doinsert(Relation rel, IndexTuple itup,
 			!P_INCOMPLETE_SPLIT(lpageop) &&
 			!P_IGNORE(lpageop) &&
 			(PageGetFreeSpace(page) > itemsz) &&
-			_bt_compare(rel, natts, itup_scankey, page, PageGetMaxOffsetNumber(page)) > 0)
+			_bt_compare(rel, natts, itup_scankey, page, P_FIRSTDATAKEY(lpageop)) > 0)
 		{
-			offset = OffsetNumberNext(PageGetMaxOffsetNumber(page));
-
-			/*
-			 * No need to search within the page since we've already confirmed
-			 * that the scankey is greater than the last key in this rightmost
-			 * page. But we do this additional check in assert-enabled build.
-			 */
-			Assert(offset == _bt_binsrch(rel, buf, natts, itup_scankey, true));
-
-			/* Ok to insert */
-			_bt_insertonpg(rel, buf, InvalidBuffer, NULL, itup, offset, false);
-			_bt_freeskey(itup_scankey);
-
-			/*
-			 * Since the scankey is greater than the last key on this rightmost
-			 * page and we're continuously holding exclusive lock on the page,
-			 * we can guarantee that it must be a unique key.
-			 */
-			return true;
+			offset = InvalidOffsetNumber;
+			fastpath = true;
 		}
+		else
+		{
+			_bt_relbuf(rel, buf);
 
-		UnlockReleaseBuffer(buf);
+			/*
+			 * Something did not workout. Just forget about the cached block
+			 * and follow the normal path. It might be set again if the
+			 * conditions are favourble.
+			 */
+			RelationSetTargetBlock(rel, InvalidBlockNumber);
+		}
+	}
+	
+	if (!fastpath)
+	{
+		/* find the first page containing this key */
+		stack = _bt_search(rel, natts, itup_scankey, false, &buf, BT_WRITE,
+						   NULL);
+
+		offset = InvalidOffsetNumber;
+
+		/* trade in our read lock for a write lock */
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		LockBuffer(buf, BT_WRITE);
 
 		/*
-		 * Something did not workout. Just forget about the cached block and
-		 * follow the normal path. It might be set again if the conditions are
-		 * favourble.
+		 * If the page was split between the time that we surrendered our read
+		 * lock and acquired our write lock, then this page may no longer be
+		 * the right place for the key we want to insert.  In this case, we
+		 * need to move right in the tree.  See Lehman and Yao for an
+		 * excruciatingly precise description.
 		 */
-		RelationSetTargetBlock(rel, InvalidBlockNumber);
+		buf = _bt_moveright(rel, buf, natts, itup_scankey, false,
+							true, stack, BT_WRITE, NULL);
 	}
-
-top:
-	/* find the first page containing this key */
-	stack = _bt_search(rel, natts, itup_scankey, false, &buf, BT_WRITE, NULL);
-
-	offset = InvalidOffsetNumber;
-
-	/* trade in our read lock for a write lock */
-	LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-	LockBuffer(buf, BT_WRITE);
-
-	/*
-	 * If the page was split between the time that we surrendered our read
-	 * lock and acquired our write lock, then this page may no longer be the
-	 * right place for the key we want to insert.  In this case, we need to
-	 * move right in the tree.  See Lehman and Yao for an excruciatingly
-	 * precise description.
-	 */
-	buf = _bt_moveright(rel, buf, natts, itup_scankey, false,
-						true, stack, BT_WRITE, NULL);
 
 	/*
 	 * If we're not allowing duplicates, make sure the key isn't already in
@@ -256,7 +246,8 @@ top:
 				XactLockTableWait(xwait, rel, &itup->t_tid, XLTW_InsertIndex);
 
 			/* start over... */
-			_bt_freestack(stack);
+			if (stack)
+				_bt_freestack(stack);
 			goto top;
 		}
 	}
@@ -283,7 +274,8 @@ top:
 	}
 
 	/* be tidy */
-	_bt_freestack(stack);
+	if (stack)
+		_bt_freestack(stack);
 	_bt_freeskey(itup_scankey);
 
 	return is_unique;

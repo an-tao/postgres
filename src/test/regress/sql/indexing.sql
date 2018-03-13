@@ -551,6 +551,87 @@ insert into idxpart values (857142, 'six');
 select tableoid::regclass, * from idxpart order by a;
 drop table idxpart;
 
+-- test fastpath mechanism for index insertion
+create table fastpath (a int, b text, c numeric);
+create unique index fpindex1 on fastpath(a);
+
+insert into fastpath values (1, 'b1', 100.00);
+insert into fastpath values (1, 'b1', 100.00); -- unique key check
+
+truncate fastpath;
+insert into fastpath select generate_series(1,10000), 'b', 100;
+
+vacuum fastpath;
+
+set enable_seqscan to false;
+set enable_bitmapscan to false;
+
+explain select sum(a) from fastpath where a = 6456;
+explain select sum(a) from fastpath where a >= 5000 and a < 5700;
+select sum(a) from fastpath where a = 6456;
+select sum(a) from fastpath where a >= 5000 and a < 5700;
+
+drop index fpindex1;
+create index fpindex2 on fastpath(a, b);
+truncate fastpath;
+insert into fastpath select y.x, 'b' || (y.x/10)::text, 100 from (select generate_series(1,10000) as x) y;;
+vacuum fastpath;
+
+explain select md5(string_agg(a::text, b order by a, b asc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+select md5(string_agg(a::text, b order by a, b asc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+explain select md5(string_agg(a::text, b order by a, b desc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+select md5(string_agg(a::text, b order by a, b desc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+explain select md5(string_agg(a::text, b order by a desc, b asc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+select md5(string_agg(a::text, b order by a desc, b asc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+explain select md5(string_agg(a::text, b order by a desc, b desc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+select md5(string_agg(a::text, b order by a desc, b desc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+
+drop index fpindex2;
+create index fpindex3 on fastpath(a desc, b asc);
+explain select md5(string_agg(a::text, b order by a, b asc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+select md5(string_agg(a::text, b order by a, b asc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+explain select md5(string_agg(a::text, b order by a, b desc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+select md5(string_agg(a::text, b order by a, b desc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+explain select md5(string_agg(a::text, b order by a desc, b asc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+select md5(string_agg(a::text, b order by a desc, b asc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+explain select md5(string_agg(a::text, b order by a desc, b desc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+
+drop index fpindex3;
+create index fpindex4 on fastpath(a asc, b desc);
+explain select md5(string_agg(a::text, b order by a, b asc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+select md5(string_agg(a::text, b order by a, b asc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+explain select md5(string_agg(a::text, b order by a, b desc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+select md5(string_agg(a::text, b order by a, b desc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+explain select md5(string_agg(a::text, b order by a desc, b asc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+select md5(string_agg(a::text, b order by a desc, b asc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+explain select md5(string_agg(a::text, b order by a desc, b desc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+select md5(string_agg(a::text, b order by a desc, b desc)) from fastpath
+	where a >= 1000 and a < 2000 and b > 'b1' and b < 'b3';
+
+drop table fastpath;
+
 -- intentionally leave some objects around
 create table idxpart (a int) partition by range (a);
 create table idxpart1 partition of idxpart for values from (0) to (100);
