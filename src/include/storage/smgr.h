@@ -16,6 +16,7 @@
 
 #include "fmgr.h"
 #include "storage/block.h"
+#include "storage/off.h"
 #include "storage/relfilenode.h"
 
 
@@ -53,6 +54,7 @@ typedef struct SMgrRelationData
 	 * happens.  In all three cases, InvalidBlockNumber means "unknown".
 	 */
 	BlockNumber smgr_targblock; /* current insertion target block */
+	OffsetNumber	smgr_lastoffnum;	/* last insertion offset */
 	BlockNumber smgr_fsm_nblocks;	/* last known size of fsm fork */
 	BlockNumber smgr_vm_nblocks;	/* last known size of vm fork */
 

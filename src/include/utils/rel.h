@@ -507,6 +507,16 @@ typedef struct ViewOptions
 		(relation)->rd_smgr->smgr_targblock = (targblock); \
 	} while (0)
 
+#define RelationGetLastOffset(relation) \
+	( (relation)->rd_smgr != NULL ? (relation)->rd_smgr->smgr_lastoffnum : InvalidOffsetNumber)
+
+#define RelationSetLastOffset(relation, offnum) \
+	do { \
+		RelationOpenSmgr(relation); \
+		(relation)->rd_smgr->smgr_lastoffnum = (offnum); \
+	} while (0)
+
+
 /*
  * RelationNeedsWAL
  *		True if relation needs WAL.

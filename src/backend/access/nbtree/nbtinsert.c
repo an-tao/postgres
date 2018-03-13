@@ -160,7 +160,7 @@ top:
 			!P_IGNORE(lpageop) &&
 			(PageGetFreeSpace(page) > itemsz) &&
 			_bt_compare(rel, natts, itup_scankey, page,
-						P_FIRSTDATAKEY(lpageop)) >= 0)
+						RelationGetLastOffset(rel)) >= 0)
 		{
 			offset = InvalidOffsetNumber;
 			fastpath = true;
@@ -952,7 +952,10 @@ _bt_insertonpg(Relation rel,
 				 * rightmost leaf page of the index.
 				 */
 				if (P_RIGHTMOST(lpageop))
+				{
 					RelationSetTargetBlock(rel, BufferGetBlockNumber(buf));
+					RelationSetLastOffset(rel, itup_off);
+				}
 			}
 			else
 			{
