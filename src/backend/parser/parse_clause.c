@@ -76,10 +76,6 @@ static RangeTblEntry *transformRangeTableFunc(ParseState *pstate,
 						RangeTableFunc *t);
 static TableSampleClause *transformRangeTableSample(ParseState *pstate,
 						  RangeTableSample *rts);
-static Node *transformFromClauseItem(ParseState *pstate, Node *n,
-						RangeTblEntry **top_rte, int *top_rti,
-						RangeTblEntry **right_rte, int *right_rti,
-						List **namespace);
 static Node *buildMergedJoinVar(ParseState *pstate, JoinType jointype,
 				   Var *l_colvar, Var *r_colvar);
 static ParseNamespaceItem *makeNamespaceItem(RangeTblEntry *rte,
@@ -159,93 +155,6 @@ transformFromClause(ParseState *pstate, List *frmList)
 	 * but those should have been that way already.
 	 */
 	setNamespaceLateralState(pstate->p_namespace, false, true);
-}
-
-/*
- *	Special handling for MERGE statement is required because we assemble
- *	the query manually. This is similar to setTargetTable() followed
- * 	by transformFromClause() but with a few less steps.
- *
- *	Process the FROM clause and add items to the query's range table,
- *	joinlist, and namespace.
- *
- *	A special targetlist comprising of the columns from the right-subtree of
- *	the join is populated and returned. Note that when the JoinExpr is
- *	setup by transformMergeStmt, the left subtree has the target result
- *	relation and the right subtree has the source relation.
- *
- *	Returns the rangetable index of the target relation.
- */
-int
-transformMergeJoinClause(ParseState *pstate, Node *merge,
-						 List **mergeSourceTargetList)
-{
-	RangeTblEntry *rte,
-			   *rt_rte;
-	List	   *namespace;
-	int			rtindex,
-				rt_rtindex;
-	Node	   *n;
-	int			mergeTarget_relation = list_length(pstate->p_rtable) + 1;
-	Var		   *var;
-	TargetEntry *te;
-
-	n = transformFromClauseItem(pstate, merge,
-								&rte,
-								&rtindex,
-								&rt_rte,
-								&rt_rtindex,
-								&namespace);
-
-	pstate->p_joinlist = list_make1(n);
-
-	/*
-	 * We created an internal join between the target and the source relation
-	 * to carry out the MERGE actions. Normally such an unaliased join hides
-	 * the joining relations, unless the column references are qualified.
-	 * Also, any unqualified column refernces are resolved to the Join RTE, if
-	 * there is a matching entry in the targetlist. But the way MERGE
-	 * execution is later setup, we expect all column references to resolve to
-	 * either the source or the target relation. Hence we must not add the
-	 * Join RTE to the namespace.
-	 *
-	 * The last entry must be for the top-level Join RTE. We don't want to
-	 * resolve any references to the Join RTE. So discard that.
-	 *
-	 * We also do not want to resolve any references from the leftside of the
-	 * Join since that corresponds to the target relation. References to the
-	 * columns of the target relation must be resolved from the result
-	 * relation and not the one that is used in the join. So the
-	 * mergeTarget_relation is marked invisible to both qualified as well as
-	 * unqualified references.
-	 */
-	Assert(list_length(namespace) > 1);
-	namespace = list_truncate(namespace, list_length(namespace) - 1);
-	pstate->p_namespace = list_concat(pstate->p_namespace, namespace);
-
-	setNamespaceVisibilityForRTE(pstate->p_namespace,
-								 rt_fetch(mergeTarget_relation, pstate->p_rtable), false, false);
-
-	/* XXX Do we need this? */
-	setNamespaceLateralState(pstate->p_namespace, false, true);
-
-	/*
-	 * Expand the right relation and add its columns to the
-	 * mergeSourceTargetList. Note that the right relation can either be a
-	 * plain relation or a subquery or anything that can have a
-	 * RangeTableEntry.
-	 */
-	*mergeSourceTargetList = expandRelAttrs(pstate, rt_rte, rt_rtindex, 0, -1);
-
-	/*
-	 * Add a whole-row-Var entry to support references to "source.*".
-	 */
-	var = makeWholeRowVar(rt_rte, rt_rtindex, 0, false);
-	te = makeTargetEntry((Expr *) var, list_length(*mergeSourceTargetList) + 1,
-						 NULL, true);
-	*mergeSourceTargetList = lappend(*mergeSourceTargetList, te);
-
-	return mergeTarget_relation;
 }
 
 /*
@@ -1189,7 +1098,7 @@ getRTEForSpecialRelationTypes(ParseState *pstate, RangeVar *rv)
  * as table/column names by this item.  (The lateral_only flags in these items
  * are indeterminate and should be explicitly set by the caller before use.)
  */
-static Node *
+Node *
 transformFromClauseItem(ParseState *pstate, Node *n,
 						RangeTblEntry **top_rte, int *top_rti,
 						RangeTblEntry **right_rte, int *right_rti,
@@ -1788,27 +1697,6 @@ setNamespaceColumnVisibility(List *namespace, bool cols_visible)
 
 		nsitem->p_cols_visible = cols_visible;
 	}
-}
-
-void
-setNamespaceVisibilityForRTE(List *namespace, RangeTblEntry *rte,
-							 bool rel_visible,
-							 bool cols_visible)
-{
-	ListCell   *lc;
-
-	foreach(lc, namespace)
-	{
-		ParseNamespaceItem *nsitem = (ParseNamespaceItem *) lfirst(lc);
-
-		if (nsitem->p_rte == rte)
-		{
-			nsitem->p_rel_visible = rel_visible;
-			nsitem->p_cols_visible = cols_visible;
-			break;
-		}
-	}
-
 }
 
 /*
