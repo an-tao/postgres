@@ -123,11 +123,11 @@ _bt_doinsert(Relation rel, IndexTuple itup,
 	 * It's very common to have an index on an auto-incremented or
 	 * monotonically increasing value. In such cases, every insertion happens
 	 * to the end of the index. We try to optimise that case by caching the
-	 * right-most block of the index and check if the new scankey falls beyond
-	 * the last key in the index. Furthermore we also check if the rightmost
-	 * page has enough free space to accommodate the new entry. If all these
-	 * conditions are satisfied then we can straight away insert the new key
-	 * and done with it.
+	 * right-most block of the index. If our cached block is still the
+	 * rightmost block, has enough free space to accommodate a new entry and
+	 * the insertion key is greater or equal to the first key in this page,
+	 * then we can simply insert the new insertion key in the cached block. We
+	 * call it a fastpath.
 	 */
 top:
 	fastpath = false;
@@ -153,13 +153,14 @@ top:
 		/*
 		 * Check if the page is still the rightmost leaf page, has enough free
 		 * space to accommodate the new tuple, no split is in progress and the
-		 * scankey is greater than the last key on the page.
+		 * scankey is greater than or equal to the first key on the page.
 		 */
 		if (P_ISLEAF(lpageop) && P_RIGHTMOST(lpageop) &&
 			!P_INCOMPLETE_SPLIT(lpageop) &&
 			!P_IGNORE(lpageop) &&
 			(PageGetFreeSpace(page) > itemsz) &&
-			_bt_compare(rel, natts, itup_scankey, page, P_FIRSTDATAKEY(lpageop)) > 0)
+			_bt_compare(rel, natts, itup_scankey, page,
+						P_FIRSTDATAKEY(lpageop)) >= 0)
 		{
 			offset = InvalidOffsetNumber;
 			fastpath = true;
@@ -176,7 +177,7 @@ top:
 			RelationSetTargetBlock(rel, InvalidBlockNumber);
 		}
 	}
-	
+
 	if (!fastpath)
 	{
 		/* find the first page containing this key */
