@@ -16,6 +16,7 @@
 
 #include "access/htup_details.h"
 #include "catalog/pg_user_mapping.h"
+#include "commands/defrem.h"
 #include "access/xact.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
@@ -91,6 +92,7 @@ static bool pgfdw_exec_cleanup_query(PGconn *conn, const char *query,
 						 bool ignore_errors);
 static bool pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime,
 						 PGresult **result);
+static bool UserMappingPasswordRequired(UserMapping *user);
 
 
 /*
@@ -274,14 +276,16 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 		/*
 		 * Check that non-superuser has used password to establish connection;
 		 * otherwise, he's piggybacking on the postgres server's user
-		 * identity. See also dblink_security_check() in contrib/dblink.
+		 * identity. See also dblink_security_check() in contrib/dblink
+		 * and check_conn_params.
 		 */
-		if (!superuser_arg(user->userid) && !PQconnectionUsedPassword(conn))
+		if (!superuser_arg(user->userid) && UserMappingPasswordRequired(user) &&
+			!PQconnectionUsedPassword(conn))
 			ereport(ERROR,
 					(errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
 					 errmsg("password is required"),
 					 errdetail("Non-superuser cannot connect if the server does not request a password."),
-					 errhint("Target server's authentication method must be changed.")));
+					 errhint("Target server's authentication method must be changed or password_required=false set in the user mapping attributes.")));
 
 		/* Prepare new session for use */
 		configure_remote_session(conn);
@@ -315,11 +319,30 @@ disconnect_pg_server(ConnCacheEntry *entry)
 }
 
 /*
+ * Return true if the password_required is defined and false for this user
+ * mapping, otherwise false. The mapping has been pre-validated.
+ */
+static bool
+UserMappingPasswordRequired(UserMapping *user)
+{
+	ListCell   *cell;
+
+	foreach(cell, user->options)
+	{
+		DefElem    *def = (DefElem *) lfirst(cell);
+		if (strcmp(def->defname, "password_required") == 0)
+			return defGetBoolean(def);
+	}
+
+	return true;
+}
+
+/*
  * For non-superusers, insist that the connstr specify a password.  This
- * prevents a password from being picked up from .pgpass, a service file,
- * the environment, etc.  We don't want the postgres user's passwords
- * to be accessible to non-superusers.  (See also dblink_connstr_check in
- * contrib/dblink.)
+ * prevents a password from being picked up from .pgpass, a service file, the
+ * environment, etc.  We don't want the postgres user's passwords,
+ * certificates, etc to be accessible to non-superusers.  (See also
+ * dblink_connstr_check in contrib/dblink.)
  */
 static void
 check_conn_params(const char **keywords, const char **values, UserMapping *user)
@@ -336,6 +359,10 @@ check_conn_params(const char **keywords, const char **values, UserMapping *user)
 		if (strcmp(keywords[i], "password") == 0 && values[i][0] != '\0')
 			return;
 	}
+
+	/* ok if the superuser explicitly said so at user mapping creation time */
+	if (!UserMappingPasswordRequired(user))
+		return;
 
 	ereport(ERROR,
 			(errcode(ERRCODE_S_R_E_PROHIBITED_SQL_STATEMENT_ATTEMPTED),
