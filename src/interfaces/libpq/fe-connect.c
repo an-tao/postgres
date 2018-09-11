@@ -324,6 +324,10 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Target-Session-Attrs", "", 11, /* sizeof("read-write") = 11 */
 	offsetof(struct pg_conn, target_session_attrs)},
 
+	{"sslpassword", NULL, NULL, NULL,
+		"SSL-Client-Key-Password", "*", 20,
+	offsetof(struct pg_conn, sslpassword)},
+
 	/* Terminating entry --- MUST BE LAST */
 	{NULL, NULL, NULL, NULL,
 	NULL, NULL, 0}
@@ -3621,6 +3625,8 @@ freePGconn(PGconn *conn)
 		free(conn->target_session_attrs);
 	termPQExpBuffer(&conn->errorMessage);
 	termPQExpBuffer(&conn->workBuffer);
+	if (conn->sslpassword)
+		free(conn->sslpassword);
 
 	free(conn);
 

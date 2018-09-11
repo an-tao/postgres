@@ -496,6 +496,9 @@ struct pg_conn
 
 	/* Buffer for receiving various parts of messages */
 	PQExpBufferData workBuffer; /* expansible string */
+
+	/* 2ndQPostgres additions */
+	char       *sslpassword;    /* client key file password */
 };
 
 /* PGcancel stores all data necessary to cancel a connection. A copy of this

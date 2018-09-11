@@ -70,6 +70,7 @@ static int	initialize_SSL(PGconn *conn);
 static PostgresPollingStatusType open_client_SSL(PGconn *);
 static char *SSLerrmessage(unsigned long ecode);
 static void SSLerrfree(char *buf);
+static int PQssl_passwd_cb(char *buf, int size, int rwflag, void *userdata);
 
 static int	my_sock_read(BIO *h, char *buf, int size);
 static int	my_sock_write(BIO *h, const char *buf, int size);
@@ -93,6 +94,7 @@ static long win32_ssl_create_mutex = 0;
 #endif
 #endif							/* ENABLE_THREAD_SAFETY */
 
+static PQsslKeyPassHook_type PQsslKeyPassHook = NULL;
 
 /* ------------------------------------------------------------ */
 /*			 Procedures common to all secure sessions			*/
@@ -816,6 +818,26 @@ initialize_SSL(PGconn *conn)
 						  err);
 		SSLerrfree(err);
 		return -1;
+	}
+
+	/*
+	 * Delegate the client cert password prompt to the libpq wrapper
+	 * callback if any is defined.
+	 *
+	 * If the application hasn't installed its own and the sslpassword
+	 * parameter is non-null, we install ours now to make sure we
+	 * supply PGconn->sslpassword to OpenSSL instead of letting it
+	 * prompt on stdin.
+	 *
+	 * This will replace OpenSSL's default PEM_def_callback (which
+	 * prompts on stdin), but we're only setting it for this SSL
+	 * context so it's harmless.
+	 */
+	if (PQsslKeyPassHook
+		|| (conn->sslpassword && strlen(conn->sslpassword) > 0))
+	{
+		SSL_CTX_set_default_passwd_cb(SSL_context, PQssl_passwd_cb);
+		SSL_CTX_set_default_passwd_cb_userdata(SSL_context, conn);
 	}
 
 	/* Disable old protocol versions */
@@ -1591,4 +1613,53 @@ my_SSL_set_fd(PGconn *conn, int fd)
 	ret = 1;
 err:
 	return ret;
+}
+
+/*
+ * This is the default handler to return a client cert password from
+ * conn->sslpassword. Apps may install it explicitly if they want to
+ * prevent openssl from ever prompting on stdin.
+ */
+int
+PQdefaultSSLKeyPassHook(char *buf, int size, PGconn *userdata)
+{
+	if (conn->sslpassword)
+	{
+		if (strlen(conn->sslpassword) + 1 > size)
+			fprintf(stderr, libpq_gettext("WARNING: sslpassword truncated"));
+		strncpy(buf, conn->sslpassword, size);
+		buf[size-1] = '\0';
+		return strlen(buf);
+	}
+	else
+	{
+		buf[0] = '\0';
+		return 0;
+	}
+}
+
+PQsslKeyPassHook_type
+PQgetSSLKeyPassHook(void)
+{
+	return PQsslKeyPassHook;
+}
+
+void
+PQsetSSLKeyPassHook(PQsslKeyPassHook_type *hook)
+{
+	PQsslKeyPassHook = hook;
+}
+
+/*
+ * Supply a password to decrypt a client certificate.
+ *
+ * This must match OpenSSL type pem_passwd_cb.
+ */
+static int
+PQssl_passwd_cb(char *buf, int size, int rwflag, void *userdata)
+{
+	PGconn *conn = userdata;
+
+	if (PQsslKeyPassHook)
+		return PQsslKeyPassHook(buf, size, conn);
 }
